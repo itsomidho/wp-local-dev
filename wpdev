@@ -16,11 +16,13 @@
 #   wpdev clean | clean-all
 #
 # Sites:
-#   wpdev add                 Provision a new site end-to-end (interactive prompt for domain)
-#   wpdev remove <name>       Delete a site: WP files, DB, Nginx config, SSL cert, logs
+#   wpdev add                 Provision a new site end-to-end (interactive prompt for domain),
+#                             or non-interactively: wpdev add --domain=<domain> [--php=<version>]
+#   wpdev remove <name> [--yes]  Delete a site: WP files, DB, Nginx config, SSL cert, logs
 #   wpdev clone <src> <new>   Duplicate a site (files + DB) under a new domain, URLs re-pointed
 #   wpdev snapshot <site> [label]   Save a files+DB snapshot of a site
-#   wpdev restore <site> [snap-id]  Restore a site from a snapshot (defaults to the latest)
+#   wpdev snapshots <site>    List saved snapshots for a site
+#   wpdev restore <site> [snap-id] [--yes]  Restore a site from a snapshot (defaults to the latest)
 #   wpdev db-export <site> [file]   Dump just that site's database (default: backups/<site>_<time>.sql.gz)
 #   wpdev db-import <site> <file>   Replace that site's database from a .sql or .sql.gz dump
 #   wpdev list                List configured site domains
@@ -96,18 +98,20 @@ show_help() {
     echo "  cache <site> on|off       Toggle nginx full-page cache for a site (bypassed when logged in, on POST, wp-admin, etc.)"
     echo "  cache-purge               Clear the full-page cache (shared across every site that has it enabled)"
     echo "  backup                    mysqldump --all-databases to backups/"
-    echo "  restore-all [file]        Replace every database from a backup (defaults to the latest in backups/)"
+    echo "  restore-all [file] [--yes]  Replace every database from a backup (defaults to the latest in backups/)"
     echo "  install-mkcert            One-time local CA setup for trusted SSL"
     echo "  clean                     Remove containers (keeps data)"
-    echo "  clean-all                 Remove containers + volumes (⚠ deletes data)"
+    echo "  clean-all [--yes]         Remove containers + volumes (⚠ deletes data)"
     echo "  uninstall                 Remove containers/volumes/images, the wpdev symlink, and optionally this whole directory"
     echo ""
     echo "Sites:"
     echo "  add                       Provision a new WordPress site (prompts for domain + PHP version)"
-    echo "  remove <name>             Delete a site: WP files, DB, Nginx config, SSL cert, logs"
+    echo "                            Non-interactive: add --domain=<domain> [--php=<version>]"
+    echo "  remove <name> [--yes]     Delete a site: WP files, DB, Nginx config, SSL cert, logs"
     echo "  clone <src> <new>         Duplicate a site (files + DB) under a new domain, URLs re-pointed"
     echo "  snapshot <site> [label]   Save a files+DB snapshot of a site"
-    echo "  restore <site> [snap-id]  Restore a site from a snapshot (defaults to the latest)"
+    echo "  snapshots <site>          List saved snapshots for a site"
+    echo "  restore <site> [snap-id] [--yes]  Restore a site from a snapshot (defaults to the latest)"
     echo "  db-export <site> [file]   Dump just that site's database (default: backups/<site>_<time>.sql.gz)"
     echo "  db-import <site> <file>   Replace that site's database from a .sql or .sql.gz dump"
     echo "  list                      List configured site domains"
@@ -816,7 +820,15 @@ cmd_backup() {
 # so piping the whole thing into a bare `mysql` (no database selected) is the
 # standard, correct way to restore one.
 cmd_restore_all() {
-    in_file="$1"
+    assume_yes=0
+    args=()
+    for a in "$@"; do
+        case "$a" in
+            --yes|-y) assume_yes=1 ;;
+            *) args+=("$a") ;;
+        esac
+    done
+    in_file="${args[0]:-}"
     if [ -z "$in_file" ]; then
         # Lexical sort = chronological, same reasoning as snapshot IDs: the
         # timestamp format (YYYYMMDD_HHMMSS) sorts correctly as text.
@@ -849,10 +861,14 @@ cmd_restore_all() {
     echo ""
     echo "Known sites right now: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
     echo ""
-    read -p "Type RESTORE to confirm: " confirm
-    if [ "$confirm" != "RESTORE" ]; then
-        echo "Cancelled."
-        return 0
+    if [ "$assume_yes" -eq 1 ]; then
+        print_info "Skipping confirmation (--yes)."
+    else
+        read -p "Type RESTORE to confirm: " confirm
+        if [ "$confirm" != "RESTORE" ]; then
+            echo "Cancelled."
+            return 0
+        fi
     fi
 
     print_step "1/2 Restoring from ${in_file}..."
@@ -880,8 +896,19 @@ cmd_install_mkcert() { ./install-mkcert.sh; }
 cmd_clean() { docker compose down; }
 
 cmd_clean_all() {
+    assume_yes=0
+    for a in "$@"; do
+        case "$a" in
+            --yes|-y) assume_yes=1 ;;
+        esac
+    done
     echo "⚠️  WARNING: This will delete all WordPress files and databases!"
-    read -p "Are you sure? (yes/no): " confirm
+    if [ "$assume_yes" -eq 1 ]; then
+        confirm="yes"
+        print_info "Skipping confirmation (--yes)."
+    else
+        read -p "Are you sure? (yes/no): " confirm
+    fi
     if [ "$confirm" = "yes" ]; then
         docker compose down -v
         rm -rf sites/*/
@@ -1087,9 +1114,17 @@ cmd_wp() {
 }
 
 cmd_remove() {
-    arg="$1"
+    assume_yes=0
+    args=()
+    for a in "$@"; do
+        case "$a" in
+            --yes|-y) assume_yes=1 ;;
+            *) args+=("$a") ;;
+        esac
+    done
+    arg="${args[0]:-}"
     if [ -z "$arg" ]; then
-        print_warning "Usage: wpdev remove <site-name>"
+        print_warning "Usage: wpdev remove <site-name> [--yes]"
         echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
         return 1
     fi
@@ -1135,10 +1170,14 @@ cmd_remove() {
     fi
     echo "  - This site's cached keys in Redis (if any)"
     echo ""
-    read -p "Type the domain to confirm (${domain}): " confirm
-    if [ "$confirm" != "$domain" ]; then
-        echo "Cancelled."
-        return 0
+    if [ "$assume_yes" -eq 1 ]; then
+        print_info "Skipping confirmation (--yes)."
+    else
+        read -p "Type the domain to confirm (${domain}): " confirm
+        if [ "$confirm" != "$domain" ]; then
+            echo "Cancelled."
+            return 0
+        fi
     fi
 
     # Needs .env for root creds and mysql to be up. Skip gracefully if the
@@ -1418,11 +1457,40 @@ cmd_snapshot() {
     echo "  (or just 'wpdev restore ${site_name}' to restore the most recent snapshot)"
 }
 
-cmd_restore() {
+cmd_snapshots() {
     site_arg="$1"
-    snap_id="$2"
     if [ -z "$site_arg" ]; then
-        print_warning "Usage: wpdev restore <site> [snapshot-id]"
+        print_warning "Usage: wpdev snapshots <site>"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+
+    site_name="${site_arg%.test}"
+    site_name="${site_name//./-}"
+
+    available="$(site_snapshots "$site_name")"
+    if [ -z "$available" ]; then
+        echo "No snapshots found for '${site_name}'. Create one with: wpdev snapshot ${site_name}"
+        return 0
+    fi
+
+    print_header "=== Snapshots for ${site_name} ==="
+    echo "$available"
+}
+
+cmd_restore() {
+    assume_yes=0
+    args=()
+    for a in "$@"; do
+        case "$a" in
+            --yes|-y) assume_yes=1 ;;
+            *) args+=("$a") ;;
+        esac
+    done
+    site_arg="${args[0]:-}"
+    snap_id="${args[1]:-}"
+    if [ -z "$site_arg" ]; then
+        print_warning "Usage: wpdev restore <site> [snapshot-id] [--yes]"
         echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
         return 1
     fi
@@ -1453,10 +1521,14 @@ cmd_restore() {
     echo "snapshot '${snap_id}'. The current state is NOT saved first — take a new"
     echo "snapshot now if you want to keep it (wpdev snapshot ${site_name})."
     echo ""
-    read -p "Type the domain to confirm (${domain}): " confirm
-    if [ "$confirm" != "$domain" ]; then
-        echo "Cancelled."
-        return 0
+    if [ "$assume_yes" -eq 1 ]; then
+        print_info "Skipping confirmation (--yes)."
+    else
+        read -p "Type the domain to confirm (${domain}): " confirm
+        if [ "$confirm" != "$domain" ]; then
+            echo "Cancelled."
+            return 0
+        fi
     fi
 
     if [ -f .env ]; then
@@ -1608,6 +1680,24 @@ cmd_db_import() {
 }
 
 cmd_add() {
+    # --domain=/--php= let this run headless (e.g. driven by an API instead
+    # of a human at a TTY). Providing --domain is what signals non-interactive
+    # mode: it skips the domain prompt, the PHP-version prompt (falling back
+    # to DEFAULT_PHP_VERSION if --php wasn't also given), and the final
+    # "Continue? (y/n)" confirmation -- all three use a bare `read -p` with no
+    # `|| true`, which would otherwise take the whole run down under `set -e`
+    # the moment stdin isn't an interactive TTY (e.g. piped from /dev/null).
+    domain=""
+    php_version=""
+    for a in "$@"; do
+        case "$a" in
+            --domain=*) domain="${a#--domain=}" ;;
+            --php=*) php_version="${a#--php=}" ;;
+        esac
+    done
+    non_interactive=0
+    [ -n "$domain" ] && non_interactive=1
+
     # 0. Make sure .env exists, and load it (needed for DB_ROOT_PASSWORD)
     if [ ! -f .env ]; then
         cp .env.example .env
@@ -1626,7 +1716,9 @@ cmd_add() {
     echo "  New WordPress Site Setup"
     echo "======================================"
     echo ""
-    read -p "Enter domain name (e.g., mysite.test): " domain
+    if [ -z "$domain" ]; then
+        read -p "Enter domain name (e.g., mysite.test): " domain
+    fi
 
     if [ -z "$domain" ]; then
         print_error "Domain name cannot be empty!"
@@ -1648,6 +1740,13 @@ cmd_add() {
     # regeneration happens here, so changing it later needs manual follow-up.
     if [ -f "sites/${site_name}/.php-version" ]; then
         php_version="$(cat "sites/${site_name}/.php-version")"
+    elif [ -n "$php_version" ]; then
+        case " $SUPPORTED_PHP_VERSIONS " in
+            *" $php_version "*) ;;
+            *) print_error "Unknown PHP version '${php_version}'. Supported: $SUPPORTED_PHP_VERSIONS" ;;
+        esac
+    elif [ "$non_interactive" -eq 1 ]; then
+        php_version="$DEFAULT_PHP_VERSION"
     else
         read -p "PHP version [$DEFAULT_PHP_VERSION] (choices: $SUPPORTED_PHP_VERSIONS): " php_version
         php_version="${php_version:-$DEFAULT_PHP_VERSION}"
@@ -1664,10 +1763,14 @@ cmd_add() {
     echo "Database:        $db_name"
     echo "PHP version:     $php_version ($php_svc)"
     echo ""
-    read -p "Continue? (y/n): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Cancelled."
-        exit 0
+    if [ "$non_interactive" -eq 1 ]; then
+        print_info "Skipping confirmation (--domain given -- non-interactive mode)."
+    else
+        read -p "Continue? (y/n): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
     fi
 
     # 1. Bring up MySQL + PHP + Redis (needed for wp-cli/db/cache steps below;
@@ -1966,16 +2069,17 @@ case "${1:-help}" in
     cache) cmd_cache "$2" "$3" ;;
     cache-purge) cmd_cache_purge ;;
     backup) cmd_backup ;;
-    restore-all) cmd_restore_all "$2" ;;
+    restore-all) shift; cmd_restore_all "$@" ;;
     install-mkcert) cmd_install_mkcert ;;
     clean) cmd_clean ;;
-    clean-all) cmd_clean_all ;;
+    clean-all) shift; cmd_clean_all "$@" ;;
     uninstall) cmd_uninstall ;;
-    add) cmd_add ;;
-    remove) cmd_remove "$2" ;;
+    add) shift; cmd_add "$@" ;;
+    remove) shift; cmd_remove "$@" ;;
     clone) cmd_clone "$2" "$3" ;;
     snapshot) cmd_snapshot "$2" "$3" ;;
-    restore) cmd_restore "$2" "$3" ;;
+    snapshots) cmd_snapshots "$2" ;;
+    restore) shift; cmd_restore "$@" ;;
     db-export) cmd_db_export "$2" "$3" ;;
     db-import) cmd_db_import "$2" "$3" ;;
     list) cmd_list ;;

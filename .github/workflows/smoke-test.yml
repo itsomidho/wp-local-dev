@@ -355,6 +355,30 @@ jobs:
             rmdir /var/www/citest/wp-content/plugins/permtest
           "
 
+      - name: >
+          Regression test -- add/remove/restore/snapshots accept
+          --domain=/--php=/--yes for non-interactive (API-driven) use.
+          Every one of these previously called a bare `read -p` with no
+          `|| true`, which aborts the whole run under `set -e` the moment
+          stdin isn't a real TTY -- exactly the environment an HTTP API
+          wrapping this script would run in. A separate throwaway site, not
+          citest -- its own plugin/cache state is checked by other steps
+          and shouldn't be disturbed.
+        run: |
+          out=$(./wpdev add --domain=flagtest.test --php=8.1 </dev/null 2>&1)
+          echo "$out"
+          echo "$out" | grep -qi "Skipping confirmation (--domain given"
+          echo "$out" | grep -qi "flagtest.test is ready"
+          [ "$(cat sites/flagtest/.php-version)" = "8.1" ]
+
+          ./wpdev snapshot flagtest headless </dev/null
+          ./wpdev snapshots flagtest </dev/null | grep -q "headless"
+
+          ./wpdev restore flagtest --yes </dev/null
+          ./wpdev remove flagtest --yes </dev/null
+          rm -rf snapshots/flagtest
+          ! ./wpdev list | grep -q flagtest.test
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone
