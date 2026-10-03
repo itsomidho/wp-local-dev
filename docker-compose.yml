@@ -184,12 +184,71 @@ services:
     networks:
       - network
 
+  # Thin HTTP API wrapping `wpdev` 1:1 -- no reimplemented logic, every
+  # endpoint execs or streams the real wpdev subcommand. Exists so a GUI (or
+  # anything else) can drive this stack without a shell. See the README's
+  # "API service" section.
+  #
+  # Docker-outside-of-Docker: this container has no Docker daemon of its
+  # own -- it talks to the HOST's daemon over the bind-mounted socket (same
+  # pattern as Portainer above), then runs `./wpdev`, which itself shells
+  # out `docker compose ...`. That INNER `docker compose` CLI resolves this
+  # file's relative volume paths (./sites, ./nginx, etc.) against its own
+  # cwd, but the resulting container-create request is serviced by the HOST
+  # daemon, which has no idea this container's filesystem even exists -- it
+  # only knows real host paths. Mounting the project here at the SAME
+  # absolute path it has on the host (${PROJECT_DIR}, kept in .env by
+  # `wpdev up`) makes that "wrong" in-container path and the real host path
+  # resolve to identical content, so the host daemon's bind mounts land
+  # correctly either way. This only works when this service is (re)created
+  # via `wpdev up` -- running `docker compose up` directly from a shell
+  # sitting somewhere else would use whatever PROJECT_DIR is already in
+  # .env, which is fine as long as it's ever been set by `wpdev up` once,
+  # but won't self-correct if the directory moved since.
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: wp-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CAROOT: /mkcert-ca
+      PROJECT_DIR: ${PROJECT_DIR}
+      API_UID: ${API_UID:-1000}
+      API_GID: ${API_GID:-1000}
+      DOCKER_GID: ${DOCKER_GID:-}
+    ports:
+      # 127.0.0.1-only -- this service can delete sites and drop databases
+      # on a bare HTTP call (plus whatever auth API_TOKEN adds on top; see
+      # .env.example). Never remove this binding without real auth in front.
+      - "127.0.0.1:${API_PORT:-9090}:9090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only, and safe to overlay Docker's own auto-managed /etc/hosts
+      # with the host's real one -- container-to-container name resolution
+      # (mysql, php82, ...) goes through Docker's embedded DNS (127.0.0.11),
+      # not /etc/hosts, so this only affects doctor's "/etc/hosts entry
+      # present" check, making it reflect the real host state instead of
+      # this container's own near-empty /etc/hosts.
+      - /etc/hosts:/etc/hosts:ro
+      - ${PROJECT_DIR}:${PROJECT_DIR}
+      # Falls back to a container-local named volume (its own untrusted CA,
+      # but still a valid cert nginx will happily load) when MKCERT_CAROOT
+      # isn't set. Set MKCERT_CAROOT to your host's `mkcert -CAROOT` output
+      # to share its already-browser-trusted CA instead.
+      - ${MKCERT_CAROOT:-wp_api_mkcert_ca}:/mkcert-ca
+    networks:
+      - network
+
 volumes:
   wp_mysql_data:
     driver: local
   wp_portainer_data:
     driver: local
   wp_fastcgi_cache:
+    driver: local
+  wp_api_mkcert_ca:
     driver: local
 
 networks:

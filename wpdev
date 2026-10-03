@@ -113,7 +113,7 @@ show_help() {
     echo "  snapshots <site>          List saved snapshots for a site"
     echo "  restore <site> [snap-id] [--yes]  Restore a site from a snapshot (defaults to the latest)"
     echo "  db-export <site> [file]   Dump just that site's database (default: backups/<site>_<time>.sql.gz)"
-    echo "  db-import <site> <file>   Replace that site's database from a .sql or .sql.gz dump"
+    echo "  db-import <site> <file> [--yes]  Replace that site's database from a .sql or .sql.gz dump"
     echo "  list                      List configured site domains"
     echo "  hosts                     Print /etc/hosts entries needed for all sites"
     echo "  creds <name>              Show a site's admin/DB credentials"
@@ -129,6 +129,23 @@ show_help() {
 # Stack lifecycle
 # ---------------------------------------------------------------------------
 
+# Sets (or updates) one KEY=value line in .env, in place. Used by cmd_up to
+# keep a handful of host-specific, auto-detected values in sync -- these are
+# real host facts (this directory's path, this user's uid/gid, the Docker
+# socket's gid), not preferences, so autodetecting and overwriting on every
+# `wpdev up` is correct, not just convenient: a value hardcoded once in
+# .env.example would be right on exactly one machine and silently wrong
+# (wrong uid, wrong docker gid) on every other one, CI included.
+set_env_var() {
+    key="$1"
+    value="$2"
+    if grep -q "^${key}=" .env; then
+        sed -i "s|^${key}=.*|${key}=${value}|" .env
+    else
+        echo "${key}=${value}" >> .env
+    fi
+}
+
 cmd_up() {
     # Group-writable so www-data (PHP-FPM, inside every phpXX container) can
     # create its own top-level dirs here too -- e.g. wp-cli's cache dir
@@ -137,6 +154,21 @@ cmd_up() {
     # instead of root. A fresh git checkout gets ./sites at whatever mode
     # the checkout's umask produced, so this can't just be committed once.
     chmod g+w sites 2>/dev/null || true
+
+    # Auto-detected values the `api` service (docker-compose.yml) needs --
+    # see that file's comments for why each one matters. Keyed off real
+    # facts about THIS machine (SCRIPT_DIR, `id -u`/`id -g`, the Docker
+    # socket's actual gid), not $PWD or a guess, so this is correct
+    # regardless of where `wpdev up` is invoked from and self-heals if any
+    # of them ever change (this directory moves, docker.sock's gid differs
+    # after a Docker reinstall, etc.).
+    if [ -f .env ]; then
+        set_env_var PROJECT_DIR "${SCRIPT_DIR}"
+        set_env_var API_UID "$(id -u)"
+        set_env_var API_GID "$(id -g)"
+        docker_gid="$(stat -c '%g' /var/run/docker.sock 2>/dev/null)" || true
+        [ -n "$docker_gid" ] && set_env_var DOCKER_GID "$docker_gid"
+    fi
 
     docker compose up -d
     echo "Containers started. Give MySQL 30 seconds to initialize if this is the first run."
@@ -287,7 +319,7 @@ cmd_doctor() {
         warnings=$((warnings + 1))
     fi
 
-    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer"
+    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer wp-api"
     for v in $SUPPORTED_PHP_VERSIONS; do
         expected_containers="$expected_containers wp-$(php_slug "$v")"
     done
@@ -1613,10 +1645,18 @@ cmd_db_export() {
 }
 
 cmd_db_import() {
-    site_arg="$1"
-    in_file="$2"
+    assume_yes=0
+    args=()
+    for a in "$@"; do
+        case "$a" in
+            --yes|-y) assume_yes=1 ;;
+            *) args+=("$a") ;;
+        esac
+    done
+    site_arg="${args[0]:-}"
+    in_file="${args[1]:-}"
     if [ -z "$site_arg" ] || [ -z "$in_file" ]; then
-        print_warning "Usage: wpdev db-import <site> <file.sql[.gz]>"
+        print_warning "Usage: wpdev db-import <site> <file.sql[.gz]> [--yes]"
         echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
         return 1
     fi
@@ -1638,10 +1678,14 @@ cmd_db_import() {
     echo "with the contents of ${in_file}. The current content is NOT saved first —"
     echo "run 'wpdev db-export ${site_name}' first if you want to keep it."
     echo ""
-    read -p "Type the domain to confirm (${domain}): " confirm
-    if [ "$confirm" != "$domain" ]; then
-        echo "Cancelled."
-        return 0
+    if [ "$assume_yes" -eq 1 ]; then
+        print_info "Skipping confirmation (--yes)."
+    else
+        read -p "Type the domain to confirm (${domain}): " confirm
+        if [ "$confirm" != "$domain" ]; then
+            echo "Cancelled."
+            return 0
+        fi
     fi
 
     if [ -f .env ]; then
@@ -2081,7 +2125,7 @@ case "${1:-help}" in
     snapshots) cmd_snapshots "$2" ;;
     restore) shift; cmd_restore "$@" ;;
     db-export) cmd_db_export "$2" "$3" ;;
-    db-import) cmd_db_import "$2" "$3" ;;
+    db-import) shift; cmd_db_import "$@" ;;
     list) cmd_list ;;
     hosts) cmd_hosts ;;
     creds) cmd_creds "$2" ;;

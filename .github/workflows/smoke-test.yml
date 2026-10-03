@@ -27,6 +27,11 @@ jobs:
       - name: Install mkcert and trust the local CA
         run: ./wpdev install-mkcert
 
+      - name: >
+          Start the stack (also builds+starts the api service, and syncs
+          PROJECT_DIR/API_UID/API_GID/DOCKER_GID into .env that it needs)
+        run: ./wpdev up
+
       - name: Provision a test site (domain, PHP version, continue, skip /etc/hosts)
         run: printf 'citest.test\n8.2\ny\nn\n' | ./wpdev add
 
@@ -46,13 +51,13 @@ jobs:
           [ "$code" = "200" ]
 
       - name: doctor reports no failures
-        # Not "Everything checks out": this stack deliberately never starts
-        # adminer/portainer (wpdev add doesn't need them) and skips the
-        # /etc/hosts entry (curl --resolve is used instead), both of which
-        # doctor correctly reports as warnings, not failures. Asserting on
-        # the absence of "need fixing" (only printed when fails > 0) checks
-        # what's actually meaningful here without requiring a fuller stack
-        # than this test needs.
+        # Not "Everything checks out": `wpdev up` above means every
+        # container (including adminer/portainer/api) is running, but the
+        # /etc/hosts entry is still deliberately skipped (curl --resolve is
+        # used instead throughout this file), which doctor correctly
+        # reports as a warning, not a failure. Asserting on the absence of
+        # "need fixing" (only printed when fails > 0) checks what's
+        # actually meaningful here.
         run: ./wpdev doctor | tee /tmp/doctor.log; ! grep -q "thing(s) need fixing" /tmp/doctor.log
 
       - name: Redis object cache connected
@@ -375,9 +380,62 @@ jobs:
           ./wpdev snapshots flagtest </dev/null | grep -q "headless"
 
           ./wpdev restore flagtest --yes </dev/null
+
+          # db-import had the exact same bare-`read -p` bug as the others
+          # above, just not caught until the API's db-import endpoint
+          # actually exercised it live -- a --yes flag that only covers
+          # 4 of 5 confirmation prompts isn't actually done.
+          ./wpdev db-export flagtest /tmp/flagtest.sql.gz </dev/null
+          ./wpdev db-import flagtest /tmp/flagtest.sql.gz --yes </dev/null
+          rm -f /tmp/flagtest.sql.gz
+
           ./wpdev remove flagtest --yes </dev/null
           rm -rf snapshots/flagtest
           ! ./wpdev list | grep -q flagtest.test
+
+      - name: >
+          Regression test -- the api service (thin HTTP wrapper around
+          wpdev, for a GUI or other automation) actually works end to end:
+          reachable over HTTP, a real site provisions/responds/gets removed
+          through it via SSE, and -- the actual bug this caught live while
+          building it -- files it writes directly (not through a separate
+          `docker compose exec` into another container, which has its own
+          ownership story) land owned by the real user, not root. Without
+          the entrypoint's privilege drop, `wpdev snapshot` run through
+          this container left root-owned files under snapshots/ that the
+          host user couldn't even `rm` without sudo.
+        run: |
+          curl -sf http://127.0.0.1:9090/api/health
+          echo
+
+          curl -s http://127.0.0.1:9090/api/status | grep -q '"code":0'
+
+          add_out=$(curl -N -s -X POST http://127.0.0.1:9090/api/sites \
+            -H "Content-Type: application/json" \
+            -d '{"domain":"apicitest.test","php":"8.2"}' --max-time 120)
+          echo "$add_out" | grep -qi "apicitest.test is ready"
+          echo "$add_out" | grep -q '"code":0'
+
+          code=""
+          for i in $(seq 1 10); do
+            code=$(curl -sk --noproxy '*' --resolve apicitest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://apicitest.test/ 2>/dev/null) && [ "$code" = "200" ] && break
+            sleep 1
+          done
+          echo "HTTP $code"
+          [ "$code" = "200" ]
+
+          # The actual regression: these must be owned by the CI runner's
+          # own user, not root.
+          owner=$(stat -c "%U" nginx/sites/apicitest.test.conf)
+          echo "nginx config owned by: $owner"
+          [ "$owner" != "root" ]
+
+          curl -s http://127.0.0.1:9090/api/sites/apicitest/creds | grep -qi "Site: apicitest"
+
+          remove_out=$(curl -N -s -X DELETE http://127.0.0.1:9090/api/sites/apicitest --max-time 60)
+          echo "$remove_out" | grep -qi "apicitest.test removed"
+
+          ! ./wpdev list | grep -q apicitest.test
 
       - name: Remove both sites and confirm doctor reports no failures
         run: |

@@ -26,6 +26,12 @@ backups/
 # Logs
 logs/**/*.log
 
+# API service (api/) — node_modules is rebuilt by the Docker image via
+# package-lock.json (committed); .api-uploads is a scratch dir for
+# in-flight db-import uploads, never meant to persist.
+api/node_modules/
+.api-uploads/
+
 # Local SSL certs
 nginx/ssl/certs/*
 nginx/ssl/private/*

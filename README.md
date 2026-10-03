@@ -57,6 +57,9 @@ touches `docker-compose.yml`.
   [Access points](#access-points).
 - **Tab completion** — fish, bash, and zsh, completing subcommands, PHP
   versions, and site names. See [Tab completion](#tab-completion).
+- **HTTP API** — every `wpdev` command available over HTTP (with live
+  progress streaming for the slow ones), for a GUI or other tooling to
+  drive this stack without a shell. See [API service](#api-service).
 
 ## Prerequisites
 
@@ -186,7 +189,7 @@ wpdev update
 
 ```bash
 wpdev install-mkcert     # 1. one-time: sets up a local trusted SSL CA
-wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, portainer
+wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api
 wpdev add                 # 3. provision your first site
 ```
 
@@ -258,18 +261,19 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev cache <site> on\|off` | Toggle nginx full-page cache for a site |
 | `wpdev cache-purge` | Clear the full-page cache (shared across every site that has it enabled) |
 | `wpdev backup` | `mysqldump --all-databases` to `backups/` |
-| `wpdev restore-all [file]` | Replace every database from a backup (defaults to the latest in `backups/`) |
+| `wpdev restore-all [file] [--yes]` | Replace every database from a backup (defaults to the latest in `backups/`) |
 | `wpdev install-mkcert` | One-time local CA setup for trusted SSL |
 | `wpdev clean` | Remove containers (keeps data) |
-| `wpdev clean-all` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
+| `wpdev clean-all [--yes]` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
 | `wpdev uninstall` | Remove containers/volumes/images + the `wpdev` symlink, then optionally this whole directory (see below) |
-| `wpdev add` | Provision a new site (interactive — prompts for domain + PHP version) |
-| `wpdev remove <name>` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
+| `wpdev add` | Provision a new site (interactive — prompts for domain + PHP version). Non-interactive: `wpdev add --domain=<domain> [--php=<version>]` |
+| `wpdev remove <name> [--yes]` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
 | `wpdev clone <src> <new>` | Duplicate a site (files + DB) under a new domain, with URLs re-pointed and its own DB/cache |
 | `wpdev snapshot <site> [label]` | Save a files+DB snapshot of a site |
-| `wpdev restore <site> [snap-id]` | Restore a site from a snapshot (asks you to confirm; defaults to the latest) |
+| `wpdev snapshots <site>` | List saved snapshots for a site |
+| `wpdev restore <site> [snap-id] [--yes]` | Restore a site from a snapshot (asks you to confirm; defaults to the latest) |
 | `wpdev db-export <site> [file]` | Dump just that site's database (default: `backups/<site>_<time>.sql.gz`) |
-| `wpdev db-import <site> <file>` | Replace that site's database from a `.sql` or `.sql.gz` dump (asks you to confirm) |
+| `wpdev db-import <site> <file> [--yes]` | Replace that site's database from a `.sql` or `.sql.gz` dump (asks you to confirm) |
 | `wpdev list` | List configured site domains |
 | `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
@@ -289,6 +293,7 @@ WP-CLI (site provisioning), nothing hidden behind it.
 | Redis (host) | `localhost:6379` | none (no auth configured — local dev only) |
 | Portainer | `http://localhost:9000` | Set your own admin account on first visit (see below) |
 | Mailpit | `http://localhost:8025` | none — local only, nothing ever really sends |
+| API | `http://localhost:9090` | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
 
 ## Status dashboard
 
@@ -415,6 +420,7 @@ something that might matter.
 
 ```bash
 wpdev snapshot mysite before-risky-plugin-update   # label is optional
+wpdev snapshots mysite                             # list what's saved
 wpdev restore mysite                               # defaults to the latest snapshot
 wpdev restore mysite 20260115_143022_before-risky-plugin-update
 ```
@@ -427,8 +433,9 @@ database backup, stored under `snapshots/<site>/<timestamp>[_label]/`
 `restore` overwrites the site's *current* files and database with the
 snapshot's, and flushes that site's Redis cache afterward so you don't end
 up looking at stale cached content from before the rollback. It asks you to
-type the domain to confirm first — the current state is not auto-saved
-before restoring, so if you want to keep it, take a snapshot of it first.
+type the domain to confirm first (skip with `--yes` for scripted use) — the
+current state is not auto-saved before restoring, so if you want to keep it,
+take a snapshot of it first.
 
 Snapshots are never deleted automatically — not by `restore`, and not by
 `wpdev remove` on the site they belong to (a safety net shouldn't quietly
@@ -446,9 +453,9 @@ wpdev restore-all path/to/file.sql # or a specific one (.sql or .sql.gz)
 `wpdev backup` used to be one-directional — the only way to actually use a
 dump was hand-crafting a `mysql < dump.sql` yourself. `restore-all` replaces
 *every* database currently in MySQL with the backup's contents, so it asks
-you to type `RESTORE` (not just `y`/`yes`) before doing anything, and doesn't
-back up the current state first — run `wpdev backup` right before it if you
-want to keep what's there now.
+you to type `RESTORE` (not just `y`/`yes`) before doing anything — skip with
+`--yes` for scripted use — and doesn't back up the current state first — run
+`wpdev backup` right before it if you want to keep what's there now.
 
 ## Sharing a site's database
 
@@ -463,7 +470,7 @@ wpdev db-import mysite that-file.sql.gz      # .sql or .sql.gz, auto-detected
 ```
 
 `db-import` **replaces** the site's entire current database (asks you to
-confirm) and flushes its Redis cache afterward. If the dump came from a
+confirm — skip with `--yes` for scripted use) and flushes its Redis cache afterward. If the dump came from a
 different domain, `wpdev` doesn't guess at re-pointing URLs for you — it
 prints the exact `wp search-replace` command to run, since only you know
 what the old domain actually was.
@@ -738,11 +745,67 @@ your *entire* Docker daemon, not just this project's four containers. That's
 inherent to how Portainer works, not a misconfiguration. Fine for a personal
 dev machine; worth remembering if this box is ever shared or exposed.
 
+## API service
+
+A thin HTTP API wrapping `wpdev` — no reimplemented logic. Every endpoint
+either runs a `wpdev` subcommand and returns its output as JSON, or (for
+anything slow and step-by-step: `add`, `clone`, `snapshot`, `restore`,
+`update`, `backup`, `restore-all`) streams its output live as
+Server-Sent Events. It exists so a GUI or other automation can drive this
+stack without shelling out itself. Starts automatically with `wpdev up`,
+same as every other service, at `http://127.0.0.1:9090` by default
+(`API_PORT` in `.env`).
+
+```bash
+curl http://127.0.0.1:9090/api/status
+curl http://127.0.0.1:9090/api/sites
+curl -X POST http://127.0.0.1:9090/api/sites \
+  -H 'Content-Type: application/json' \
+  -d '{"domain": "mysite.test", "php": "8.2"}'
+```
+
+Endpoints cover the stack (`status`, `doctor`, `up`/`down`/`restart`,
+`logs`), sites (`add`/`remove`/`clone`, `creds`, a generic WP-CLI
+passthrough, `cache`), snapshots/restore, database import/export, and
+`backup`/`restore-all`. A few just return a URL + login hint rather than
+duplicating wpdev's own credential-lookup logic (`/api/links/adminer`,
+`/api/links/portainer`, `/api/links/mailpit`) — open it yourself, since
+this container has no browser to open it for you.
+
+**Worth knowing:**
+
+- **Bound to `127.0.0.1` only**, regardless of `API_PORT` — this service can
+  delete sites and drop databases on a bare HTTP call. Set `API_TOKEN` in
+  `.env` to also require `Authorization: Bearer <token>`; without it, any
+  other local user/process on this machine can reach it.
+- **Docker-outside-of-Docker.** This container has no Docker daemon of its
+  own — it talks to the host's daemon over a bind-mounted socket (same as
+  Portainer) and runs real `wpdev`/`docker compose` commands against it. It
+  runs as your own user (`API_UID`/`API_GID`, auto-detected by `wpdev up`
+  from `id -u`/`id -g`), not root, so files it writes directly — snapshots,
+  nginx configs, SSL certificates, backups — land owned by you, same as if
+  you'd run `wpdev` from the CLI yourself.
+- **Certificates:** site creation through the API still generates a real
+  cert via mkcert. By default it uses its own container-local CA (valid,
+  but not browser-trusted — same visual warning as any self-signed cert).
+  Set `MKCERT_CAROOT` in `.env` to your host's `mkcert -CAROOT` output to
+  share its already-trusted CA instead.
+- **Some checks reflect the container's own vantage point, not the host's.**
+  `status`'s HTTP reachability column checks `127.0.0.1` from *inside* the
+  api container, which isn't where nginx runs — expect `000` there even
+  when a site is perfectly reachable from your browser. `doctor`'s
+  `/etc/hosts` check is accurate (the host's `/etc/hosts` is bind-mounted
+  in read-only).
+- **`PROJECT_DIR`, `API_UID`, `API_GID`, and `DOCKER_GID`** in `.env` are
+  auto-managed by `wpdev up` — real facts about this machine (this
+  directory's path, your uid/gid, the Docker socket's gid), re-detected on
+  every run. Don't hand-edit them or copy them from another machine.
+
 ## Project structure
 
 ```
 wp-local-dev/
-├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer
+├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── .env.example                 # template for .env, copied by install.sh
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)
@@ -753,6 +816,13 @@ wp-local-dev/
 │   ├── fish/wpdev.fish
 │   ├── bash/wpdev.bash
 │   └── zsh/{_wpdev,wpdev.plugin.zsh}
+│
+├── api/                         # HTTP API wrapping wpdev — see "API service"
+│   ├── Dockerfile
+│   ├── entrypoint.sh            # drops from root to your own uid/gid before running anything
+│   ├── server.js
+│   ├── lib/wpdev.js             # exec/stream wrapper — the only code that calls wpdev
+│   └── package.json
 │
 ├── php/
 │   ├── Dockerfile               # wordpress:php${PHP_VERSION}-fpm + xdebug + phpredis + msmtp + cron + wp-cli
