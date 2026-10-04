@@ -35,6 +35,7 @@ _wpdev() {
         'down:Stop all containers'
         'restart:Restart all containers'
         'update:git pull, then rebuild + recreate all containers'
+        'update-check:Fetch and report whether an update is available'
         'status:Show container status'
         'doctor:Proactive health check'
         'logs:Tail logs (all services, or one)'

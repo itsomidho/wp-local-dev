@@ -431,6 +431,22 @@ jobs:
           print('system stats OK')
           "
 
+          # Regression test -- /api/update-check (`wpdev update-check`
+          # under the hood) needs `git` inside this container, which
+          # node:20-slim doesn't ship with -- without it, every call here
+          # fails at the first line with "Not a git checkout", regardless
+          # of the real git state of the bind-mounted project. Not
+          # asserting updateAvailable either way (this runner's checkout
+          # may or may not be behind origin, and that's not what this
+          # guards); just that the git-missing regression is gone and the
+          # endpoint returns well-formed JSON. printf, not echo -- echo's
+          # backslash handling isn't consistent across shells, and the
+          # response's stdout field contains a real \n escape sequence.
+          check=$(curl -s http://127.0.0.1:39006/api/update-check)
+          printf '%s\n' "$check"
+          ! printf '%s' "$check" | grep -qi "not a git checkout"
+          printf '%s' "$check" | python3 -c "import json, sys; json.load(sys.stdin)"
+
           add_out=$(curl -N -s -X POST http://127.0.0.1:39006/api/sites \
             -H "Content-Type: application/json" \
             -d '{"domain":"apicitest.test","php":"8.2"}' --max-time 120)

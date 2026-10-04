@@ -563,6 +563,13 @@ input::placeholder {
   color: var(--muted-dim);
 }
 
+/* The only clickable badge -- needs its own hover, or button:hover's
+   accent-purple background (specificity beats .badge-ok's) would flash
+   on top of the green success look on every hover. */
+.update-badge:hover {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+}
+
 /* ---------------------------------------------------------------------
    Status table (Status modal)
    ------------------------------------------------------------------- */

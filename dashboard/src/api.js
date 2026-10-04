@@ -68,6 +68,7 @@ export const api = {
   stackUp: () => request('POST', '/api/stack/up'),
   stackDown: () => request('POST', '/api/stack/down'),
   stackRestart: () => request('POST', '/api/stack/restart'),
+  updateCheck: () => request('GET', '/api/update-check'),
   reloadNginx: () => request('POST', '/api/reload-nginx'),
   links: {
     adminer: (site) => request('GET', `/api/links/adminer${site ? `?site=${encodeURIComponent(site)}` : ''}`),

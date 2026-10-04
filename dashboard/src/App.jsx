@@ -20,6 +20,7 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false);
   const [manageSite, setManageSite] = useState(null);
   const [log, setLog] = useState(null); // {title, request, onFinished}
+  const [updateInfo, setUpdateInfo] = useState(null); // {updateAvailable, stdout} | null
 
   const refresh = useCallback(() => {
     api
@@ -64,22 +65,37 @@ export default function App() {
       .catch(() => {}); // best-effort -- sites list is the point, not this
   }, []);
 
+  // Checks git's upstream, not GitHub's release API -- consistent with
+  // the version badge itself (git describe), and it's also the correct
+  // signal for "does `wpdev update` have anything to do", which can be
+  // true from new commits alone, tagged release or not. Best-effort: no
+  // network, or this checkout predating `wpdev update-check`'s exit-code
+  // contract, should never show as a dashboard error.
+  const checkForUpdate = useCallback(() => {
+    api.updateCheck().then(setUpdateInfo).catch(() => {});
+  }, []);
+
   useEffect(() => {
     refresh();
     refreshVersions();
+    checkForUpdate();
     const id = setInterval(refresh, 15000);
     return () => clearInterval(id);
-  }, [refresh, refreshVersions]);
+  }, [refresh, refreshVersions, checkForUpdate]);
 
   // A manual refresh (the header button) is an explicit ask for the whole
   // picture, not a background tick -- it should include versions too, even
   // though the automatic poll deliberately doesn't. Also what actually
   // catches a site created/removed from the CLI rather than this UI, which
-  // the action-triggered refreshVersions calls below can't see.
+  // the action-triggered refreshVersions calls below can't see. Same
+  // reasoning extends to the update check -- a `git fetch` on every 15s
+  // tick would be wasteful, but an explicit refresh is exactly when
+  // someone would want a fresh answer.
   const refreshAll = useCallback(() => {
     refresh();
     refreshVersions();
-  }, [refresh, refreshVersions]);
+    checkForUpdate();
+  }, [refresh, refreshVersions, checkForUpdate]);
 
   const runStackAction = async (action) => {
     if (action === 'up') await api.stackUp();
@@ -96,6 +112,18 @@ export default function App() {
       onFinished: () => {
         refresh();
         refreshVersions();
+      },
+    });
+  };
+
+  const startUpdate = () => {
+    setLog({
+      title: 'wpdev update',
+      request: { method: 'POST', path: '/api/stack/update' },
+      onFinished: () => {
+        refresh();
+        refreshVersions();
+        checkForUpdate();
       },
     });
   };
@@ -120,6 +148,8 @@ export default function App() {
         onStackAction={runStackAction}
         onRefresh={refreshAll}
         onOpenDocs={() => setShowDocs(true)}
+        updateInfo={updateInfo}
+        onUpdate={startUpdate}
       />
 
       {showDocs ? (

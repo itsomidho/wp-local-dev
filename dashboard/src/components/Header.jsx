@@ -30,12 +30,13 @@ const STACK_CONFIRM = {
   },
 };
 
-export default function Header({ health, onStackAction, onRefresh, onOpenDocs }) {
+export default function Header({ health, onStackAction, onRefresh, onOpenDocs, updateInfo, onUpdate }) {
   const [view, setView] = useState(null); // 'doctor' | 'status' | 'settings' | null
   const [output, setOutput] = useState('');
   const [busy, setBusy] = useState(false);
   const [tokenInput, setTokenInput] = useState(getToken());
   const [confirmStackAction, setConfirmStackAction] = useState(null); // 'restart' | 'down' | null
+  const [confirmUpdate, setConfirmUpdate] = useState(false);
   const [theme, setThemeState] = useState(currentEffectiveTheme());
 
   const toggleTheme = () => {
@@ -105,6 +106,16 @@ export default function Header({ health, onStackAction, onRefresh, onOpenDocs })
           <span className="badge" title="git describe for this checkout">
             {appVersion()}
           </span>
+        )}
+        {updateInfo?.updateAvailable && (
+          <button
+            type="button"
+            className="badge badge-ok update-badge"
+            onClick={() => setConfirmUpdate(true)}
+            title={updateInfo.stdout?.trim()}
+          >
+            Update available
+          </button>
         )}
         <span className={`health-dot ${health}`} />
         <span className="health-label">{healthLabel}</span>
@@ -243,6 +254,19 @@ export default function Header({ health, onStackAction, onRefresh, onOpenDocs })
             const action = confirmStackAction;
             setConfirmStackAction(null);
             runStackAction(action);
+          }}
+        />
+      )}
+
+      {confirmUpdate && (
+        <ConfirmDialog
+          title="Update wp-local-dev?"
+          message="Pulls the latest code, rebuilds images, and recreates every container. Sites will be briefly unreachable."
+          confirmLabel="Update"
+          onCancel={() => setConfirmUpdate(false)}
+          onConfirm={() => {
+            setConfirmUpdate(false);
+            onUpdate();
           }}
         />
       )}

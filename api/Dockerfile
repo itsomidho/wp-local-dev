@@ -11,9 +11,11 @@ FROM node:20-slim
 # installs is whatever's current, not something that goes stale in this
 # Dockerfile. $VERSION_CODENAME is read from the base image's own
 # /etc/os-release rather than hardcoded, so this doesn't silently break the
-# next time the node:20-slim image moves to a newer Debian release.
+# next time the node:20-slim image moves to a newer Debian release. git is
+# here for `wpdev update`/`update-check`, run through this container same
+# as everything else -- node:20-slim doesn't include it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg util-linux \
+      ca-certificates curl gnupg util-linux git \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \

@@ -263,6 +263,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev down` | Stop all containers |
 | `wpdev restart` | Restart all containers |
 | `wpdev update` | `git pull` (fast-forward only), then rebuild + recreate every container |
+| `wpdev update-check` | Fetch and report whether an update is available — no changes made |
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
@@ -906,6 +907,12 @@ link.
   hash — `-dirty` appended over uncommitted changes), re-detected on
   every `wpdev up` the same way `API_UID`/`PROJECT_DIR` are. Not a
   hand-maintained version number that can fall out of sync with reality.
+- **A green "Update available" badge** shows up next to it when `git
+  fetch` finds commits on `origin` this checkout doesn't have yet (`wpdev
+  update-check`, checked on load and on every manual refresh — not on the
+  15s poll, since that would mean a `git fetch` every 15 seconds).
+  Clicking it confirms, then streams `wpdev update` live the same way
+  adding a site does: pulls, rebuilds, and recreates every container.
 - **The API token**, if you've set `API_TOKEN`, goes in the dashboard's own
   settings panel (⚙ in the header) — it's stored in your browser's
   `localStorage`, sent as `Authorization: Bearer <token>` on every request,

@@ -87,6 +87,7 @@ show_help() {
     echo "  down                      Stop all containers"
     echo "  restart                   Restart all containers"
     echo "  update                    git pull, then rebuild + recreate all containers"
+    echo "  update-check              Fetch and report whether an update is available (no changes made)"
     echo "  status                    Show container status"
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
     echo "  logs [service]            Tail logs (all services, or one)"
@@ -230,6 +231,37 @@ cmd_update() {
     docker compose build
     docker compose up -d --force-recreate
     print_info "Update complete."
+}
+
+# Read-only counterpart to cmd_update -- fetches and reports whether
+# there's anything to pull, without touching the working tree or any
+# container. Exit code is the signal a caller (the dashboard, via the api
+# service) actually needs: 0 up to date, 2 update available, 1 a real
+# error (no git checkout, no upstream, fetch failed) -- distinct from 0/2
+# so neither can be mistaken for the other on a network hiccup.
+cmd_update_check() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Not a git checkout -- can't check for updates. Re-clone from https://github.com/itsomidho/wp-local-dev."
+
+    git fetch origin --quiet || print_error "git fetch failed -- check network connectivity."
+
+    remote_rev="$(git rev-parse '@{u}' 2>/dev/null)" || print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
+    current_version="$(git describe --tags --always --dirty 2>/dev/null)" || current_version="unknown"
+
+    # Commits reachable from upstream but not HEAD -- not a plain
+    # local-rev-vs-remote-rev equality check, which would wrongly call a
+    # checkout that's ahead of (or diverged from) origin "update available"
+    # too. This is also the exact question `wpdev update`'s `pull --ff-only`
+    # answers by actually pulling -- this just asks it without doing it.
+    behind="$(git rev-list --count "HEAD..${remote_rev}")"
+
+    if [ "$behind" -eq 0 ]; then
+        echo "Up to date (${current_version})."
+        exit 0
+    fi
+
+    latest_version="$(git describe --tags --always "$remote_rev" 2>/dev/null)" || latest_version="$remote_rev"
+    echo "Update available: ${latest_version} (currently ${current_version}, ${behind} commit(s) behind)."
+    exit 2
 }
 cmd_status() {
     docker compose ps
@@ -2181,6 +2213,7 @@ case "${1:-help}" in
     down) cmd_down ;;
     restart) cmd_restart ;;
     update) cmd_update ;;
+    update-check) cmd_update_check ;;
     status) cmd_status ;;
     doctor) cmd_doctor ;;
     logs) cmd_logs "$2" ;;

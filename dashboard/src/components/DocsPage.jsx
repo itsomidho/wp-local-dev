@@ -55,7 +55,7 @@ function buildSections(markdown) {
 // markdown source -- rehype-highlight wraps tokens in nested <span>s, and
 // textContent flattens all of that back to the plain command a person
 // would actually want on their clipboard.
-function CodeBlock({ node, ...rest }) {
+function CodeBlock({ node: _node, ...rest }) {
   const preRef = useRef(null);
   const [copied, setCopied] = useState(false);
 

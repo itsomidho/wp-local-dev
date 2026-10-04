@@ -60,7 +60,7 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds wp help
+set -l __wpdev_cmds up down restart update update-check status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds wp help
 
 complete -c wpdev -f
 
@@ -69,6 +69,7 @@ complete -c wpdev -n "$__wpdev_top" -a up -d "Start all containers"
 complete -c wpdev -n "$__wpdev_top" -a down -d "Stop all containers"
 complete -c wpdev -n "$__wpdev_top" -a restart -d "Restart all containers"
 complete -c wpdev -n "$__wpdev_top" -a update -d "git pull, then rebuild + recreate all containers"
+complete -c wpdev -n "$__wpdev_top" -a update-check -d "Fetch and report whether an update is available"
 complete -c wpdev -n "$__wpdev_top" -a status -d "Show container status"
 complete -c wpdev -n "$__wpdev_top" -a doctor -d "Proactive health check"
 complete -c wpdev -n "$__wpdev_top" -a logs -d "Tail logs (all services, or one)"

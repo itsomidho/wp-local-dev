@@ -78,6 +78,16 @@ app.post('/api/stack/up', sync(() => ['up']));
 app.post('/api/stack/down', sync(() => ['down']));
 app.post('/api/stack/restart', sync(() => ['restart']));
 app.post('/api/stack/update', stream(() => ['update']));
+// Not sync() -- that maps any non-zero exit to HTTP 500, but
+// update-check's exit code is the result, not an error: 0 up to date, 2
+// update available. Only anything else is a real failure.
+app.get('/api/update-check', async (req, res) => {
+  const { code, stdout, stderr } = await runWpdev(['update-check']);
+  if (code !== 0 && code !== 2) {
+    return res.status(500).json({ code, stdout, stderr });
+  }
+  res.json({ updateAvailable: code === 2, stdout, stderr });
+});
 app.get('/api/logs/:service', (req, res) => streamWpdev(['logs', req.params.service], res));
 app.post('/api/reload-nginx', sync(() => ['reload-nginx']));
 app.post('/api/clean', sync(() => ['clean']));
