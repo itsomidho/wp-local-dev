@@ -226,15 +226,22 @@ select {
   border: 1px solid var(--border);
   border-radius: 10px;
   width: 420px;
+  min-width: 320px;
+  min-height: 220px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Native resize handle (bottom-right corner) -- lets a cramped log or
+     doctor/status view be dragged larger instead of only ever scrolling in
+     a fixed box. resize requires overflow != visible, already true above. */
+  resize: both;
 }
 
 .modal-wide {
   width: 640px;
+  min-width: 420px;
 }
 
 .modal-header {
@@ -253,6 +260,7 @@ select {
 .modal-body {
   padding: 16px 18px;
   overflow-y: auto;
+  flex: 1;
 }
 
 .modal-footer {
@@ -320,9 +328,11 @@ select {
 
 .terminal-modal {
   margin: 0 18px;
-  max-height: 50vh;
   overflow-y: auto;
   flex: 1;
+  /* No max-height -- it fills whatever space the (now resizable) modal
+     gives it instead of capping at 50% of the viewport regardless of how
+     large the modal itself has been dragged. */
 }
 
 .terminal-line {
