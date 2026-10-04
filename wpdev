@@ -18,7 +18,7 @@
 #
 # Sites:
 #   wpdev add                 Provision a new site end-to-end (interactive prompt for domain),
-#                             or non-interactively: wpdev add --domain=<domain> [--php=<version>]
+#                             or non-interactively: wpdev add --domain=<domain> [--php=<version>] [--wp-version=<version>]
 #   wpdev remove <name> [--yes]  Delete a site: WP files, DB, Nginx config, SSL cert, logs
 #   wpdev clone <src> <new> [--yes]  Duplicate a site (files + DB) under a new domain, URLs re-pointed
 #   wpdev snapshot <site> [label]   Save a files+DB snapshot of a site
@@ -108,7 +108,7 @@ show_help() {
     echo ""
     echo "Sites:"
     echo "  add                       Provision a new WordPress site (prompts for domain + PHP version)"
-    echo "                            Non-interactive: add --domain=<domain> [--php=<version>]"
+    echo "                            Non-interactive: add --domain=<domain> [--php=<version>] [--wp-version=<version>]"
     echo "  remove <name> [--yes]     Delete a site: WP files, DB, Nginx config, SSL cert, logs"
     echo "  clone <src> <new> [--yes] Duplicate a site (files + DB) under a new domain, URLs re-pointed"
     echo "  snapshot <site> [label]   Save a files+DB snapshot of a site"
@@ -1787,10 +1787,12 @@ cmd_add() {
     # the moment stdin isn't an interactive TTY (e.g. piped from /dev/null).
     domain=""
     php_version=""
+    wp_version=""
     for a in "$@"; do
         case "$a" in
             --domain=*) domain="${a#--domain=}" ;;
             --php=*) php_version="${a#--php=}" ;;
+            --wp-version=*) wp_version="${a#--wp-version=}" ;;
         esac
     done
     non_interactive=0
@@ -1855,11 +1857,25 @@ cmd_add() {
     fi
     php_svc="$(php_slug "$php_version")"
 
+    # WordPress version — optional, empty means "whatever wp-cli resolves
+    # as latest" (passed straight through to `wp core download`, so there's
+    # no fixed list to validate against or keep up to date the way PHP's
+    # SUPPORTED_PHP_VERSIONS has to be -- an unknown/mistyped version just
+    # fails there with wp-cli's own real error instead of a guessed one).
+    # Same idempotency note as PHP version: only asked for a genuinely new
+    # site, and even then only matters if step 3 below actually downloads
+    # anything -- an existing, non-empty site directory skips the download
+    # (and so this answer) entirely.
+    if [ -z "$wp_version" ] && [ "$non_interactive" -ne 1 ]; then
+        read -p "WordPress version [latest]: " wp_version
+    fi
+
     echo ""
     echo "Domain:          $domain"
     echo "Site directory:  sites/$site_name"
     echo "Database:        $db_name"
     echo "PHP version:     $php_version ($php_svc)"
+    echo "WordPress:       ${wp_version:-latest}"
     echo ""
     if [ "$non_interactive" -eq 1 ]; then
         print_info "Skipping confirmation (--domain given -- non-interactive mode)."
@@ -1907,14 +1923,15 @@ cmd_add() {
         preexisting_site=1
     else
         preexisting_site=0
-        print_info "Downloading WordPress..."
-        tmpdir=$(mktemp -d)
-        curl -fsSL https://wordpress.org/latest.tar.gz -o "$tmpdir/wordpress.tar.gz"
-        tar -xzf "$tmpdir/wordpress.tar.gz" -C "$tmpdir"
-        shopt -s dotglob
-        mv "$tmpdir/wordpress"/* "sites/$site_name/"
-        shopt -u dotglob
-        rm -rf "$tmpdir"
+        print_info "Downloading WordPress${wp_version:+ ${wp_version}}..."
+        # wp-cli's own downloader, not a manual curl+tar+mv -- it already
+        # knows how to resolve "latest" vs. a specific version, which is
+        # all `--version` does here. Not best-effort/guarded: a failure
+        # here (bad version string, network down) should stop the whole
+        # thing, same as the old curl call did.
+        download_args=(core download --path="/var/www/${site_name}" --allow-root)
+        [ -n "$wp_version" ] && download_args+=(--version="$wp_version")
+        docker compose exec -T "$php_svc" wp "${download_args[@]}" </dev/null >/dev/null
         print_info "WordPress downloaded to sites/$site_name"
     fi
 

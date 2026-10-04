@@ -86,11 +86,11 @@ export default function App() {
     refresh();
   };
 
-  const startAdd = ({ domain, php }) => {
+  const startAdd = ({ domain, php, wpVersion }) => {
     setShowAdd(false);
     setLog({
       title: `Add ${domain}`,
-      request: { method: 'POST', path: '/api/sites', body: { domain, php } },
+      request: { method: 'POST', path: '/api/sites', body: { domain, php, wpVersion } },
       onFinished: () => {
         refresh();
         refreshVersions();

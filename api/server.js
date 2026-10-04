@@ -90,10 +90,11 @@ app.post('/api/install-mkcert', sync(() => ['install-mkcert']));
 app.get('/api/sites', sync(() => ['list']));
 
 app.post('/api/sites', (req, res) => {
-  const { domain, php } = req.body || {};
+  const { domain, php, wpVersion } = req.body || {};
   if (!domain) return res.status(400).json({ error: 'domain is required' });
   const args = ['add', `--domain=${domain}`];
   if (php) args.push(`--php=${php}`);
+  if (wpVersion) args.push(`--wp-version=${wpVersion}`);
   streamWpdev(args, res);
 });
 

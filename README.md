@@ -203,11 +203,13 @@ $ wpdev add
 Enter domain name (e.g., mysite.test): mysite.test
 
 PHP version [8.2] (choices: 8.1 8.2 8.3 8.4): 8.3
+WordPress version [latest]: 6.4.3
 
 Domain:          mysite.test
 Site directory:  sites/mysite
 Database:        wp_mysite
 PHP version:     8.3 (php83)
+WordPress:       6.4.3
 
 Continue? (y/n): y
 [STEP] 1/9 Starting MySQL + php83 + Redis...
@@ -221,10 +223,13 @@ Continue? (y/n): y
 Add '127.0.0.1 mysite.test' to /etc/hosts now? (y/n): y
 ```
 
-Press enter at the PHP prompt to take the default (8.2). That one command:
+Press enter at either prompt to take the default (8.2, latest WordPress). That
+one command:
 
 1. Creates the Nginx vhost in `nginx/sites/<domain>.conf`, pointed at the chosen PHP version
-2. Downloads WordPress core into `sites/<name>/`, and saves the version choice to `sites/<name>/.php-version`
+2. Downloads the requested WordPress version (`wp core download`, latest if
+   left blank) into `sites/<name>/`, and saves the PHP version choice to
+   `sites/<name>/.php-version`
 3. Creates a dedicated MySQL database + user for the site
 4. Generates `wp-config.php` via WP-CLI (Redis + `DISABLE_WP_CRON` included — see below)
 5. Generates an mkcert SSL certificate
@@ -241,6 +246,12 @@ to `sites/mysite/.admin-password` if you need it again later (or just run
 
 Run `wpdev add` again for each additional site — the containers don't
 restart, and every site gets its own vhost, cert, and database.
+
+Unlike PHP, there's no fixed list of WordPress versions to pick from — any
+real release string (`6.4.3`, `6.0`, ...) is passed straight through to
+`wp core download --version=`, which is also what resolves a blank answer
+to the actual latest release. A typo or nonexistent version fails loudly
+with wp-cli's own error rather than silently falling back to latest.
 
 ## Command reference
 
@@ -270,7 +281,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev clean` | Remove containers (keeps data) |
 | `wpdev clean-all [--yes]` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
 | `wpdev uninstall` | Remove containers/volumes/images + the `wpdev` symlink, then optionally this whole directory (see below) |
-| `wpdev add` | Provision a new site (interactive — prompts for domain + PHP version). Non-interactive: `wpdev add --domain=<domain> [--php=<version>]` |
+| `wpdev add` | Provision a new site (interactive — prompts for domain + PHP + WordPress version). Non-interactive: `wpdev add --domain=<domain> [--php=<version>] [--wp-version=<version>]` |
 | `wpdev remove <name> [--yes]` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
 | `wpdev clone <src> <new> [--yes]` | Duplicate a site (files + DB) under a new domain, with URLs re-pointed and its own DB/cache |
 | `wpdev snapshot <site> [label]` | Save a files+DB snapshot of a site |

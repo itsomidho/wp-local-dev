@@ -473,6 +473,18 @@ jobs:
           curl -s http://127.0.0.1:39007/ | grep -qi "<title>wp-local-dev</title>"
           curl -s http://127.0.0.1:39007/config.js | grep -q 'http://localhost:39006'
 
+      - name: >
+          Regression test -- `wpdev add --wp-version=` actually installs
+          the requested version, not just accepts the flag. Switched the
+          download step from a manual curl+tar+mv to `wp core download
+          --version=`, so this also covers that `wp core download` runs
+          correctly against a just-started php container (it's step 3,
+          right after step 1 brings mysql/php/redis up).
+        run: |
+          ./wpdev add --domain=wpvertest.test --php=8.2 --wp-version=6.4.3 </dev/null
+          [ "$(./wpdev wp wpvertest core version)" = "6.4.3" ]
+          ./wpdev remove wpvertest --yes </dev/null
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone
