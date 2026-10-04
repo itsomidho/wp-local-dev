@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSlug from 'rehype-slug';
+import rehypeHighlight from 'rehype-highlight';
 import GithubSlugger from 'github-slugger';
 // The real README, not a copy -- imported as raw text, so this page can
 // never drift out of sync with the actual docs, and (in `npm run dev`
@@ -48,6 +49,37 @@ function buildSections(markdown) {
     const end = headingLines[idx + 1]?.i ?? lines.length;
     return { title: h.title, level: h.level, body: lines.slice(h.i + 1, end).join('\n') };
   });
+}
+
+// Reads the real rendered text via the DOM (.textContent), not the
+// markdown source -- rehype-highlight wraps tokens in nested <span>s, and
+// textContent flattens all of that back to the plain command a person
+// would actually want on their clipboard.
+function CodeBlock({ node, ...rest }) {
+  const preRef = useRef(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    const text = preRef.current?.textContent || '';
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <div className="docs-code-block">
+      <button
+        type="button"
+        className={`docs-code-copy${copied ? ' copied' : ''}`}
+        onClick={handleCopy}
+        aria-label="Copy code"
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      <pre ref={preRef} {...rest} />
+    </div>
+  );
 }
 
 export default function DocsPage({ onClose }) {
@@ -105,7 +137,11 @@ export default function DocsPage({ onClose }) {
       </aside>
 
       <div className="docs-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeSlug, rehypeHighlight]}
+          components={{ pre: CodeBlock }}
+        >
           {readmeRaw}
         </ReactMarkdown>
       </div>

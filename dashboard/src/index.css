@@ -969,6 +969,11 @@ input::placeholder {
   padding: 1px 5px;
 }
 
+.docs-code-block {
+  position: relative;
+  margin: 0 0 16px;
+}
+
 .docs-content pre {
   background: var(--terminal-bg);
   color: var(--terminal-text);
@@ -978,7 +983,7 @@ input::placeholder {
   padding: 14px 16px;
   border-radius: 6px;
   overflow-x: auto;
-  margin: 0 0 16px;
+  margin: 0;
 }
 
 .docs-content pre code {
@@ -986,6 +991,81 @@ input::placeholder {
   border: none;
   padding: 0;
   font-size: inherit;
+}
+
+/* Syntax highlighting (rehype-highlight/highlight.js classes) -- mapped
+   onto the same ANSI palette the Terminal component already uses for
+   wpdev's own colored output, not a generic imported theme, so a code
+   block here and a live command's output elsewhere in this app read as
+   the same visual language. Fixed colors, not theme-dependent vars --
+   the terminal itself is always dark regardless of light/dark mode. */
+.docs-content pre .hljs-comment,
+.docs-content pre .hljs-quote {
+  color: #7a8290;
+  font-style: italic;
+}
+
+.docs-content pre .hljs-string,
+.docs-content pre .hljs-addition {
+  color: var(--ansi-green);
+}
+
+.docs-content pre .hljs-number,
+.docs-content pre .hljs-variable,
+.docs-content pre .hljs-attr,
+.docs-content pre .hljs-template-variable {
+  color: var(--ansi-yellow);
+}
+
+.docs-content pre .hljs-keyword,
+.docs-content pre .hljs-built_in,
+.docs-content pre .hljs-literal,
+.docs-content pre .hljs-type {
+  color: var(--ansi-blue);
+}
+
+.docs-content pre .hljs-deletion,
+.docs-content pre .hljs-meta {
+  color: var(--ansi-red);
+}
+
+.docs-content pre .hljs-title,
+.docs-content pre .hljs-section {
+  color: var(--terminal-text);
+  font-weight: 600;
+}
+
+.docs-code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--terminal-text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.docs-code-copy:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.docs-code-block:hover .docs-code-copy,
+.docs-code-copy:focus-visible {
+  opacity: 1;
+}
+
+.docs-code-copy.copied {
+  opacity: 1;
+  color: var(--ansi-green);
+  border-color: color-mix(in srgb, var(--ansi-green) 45%, transparent);
+  background: color-mix(in srgb, var(--ansi-green) 15%, transparent);
 }
 
 .docs-content table {
