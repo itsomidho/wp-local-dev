@@ -170,7 +170,10 @@ code,
 }
 
 .header-title .mark {
-  font-family: var(--font-mono);
+  /* UI sans, not mono -- this is a logotype, not a fact from wpdev, so
+     the mono-means-data rule doesn't apply to it (it previously did,
+     which just read as an inconsistent font right next to "local-dev"). */
+  font-family: var(--font-ui);
   font-weight: 600;
   font-size: 13px;
   color: var(--bg);
