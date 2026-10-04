@@ -2,11 +2,11 @@
    Design system
    -----------------------------------------------------------------------
    Two typefaces, each with one job and never swapped: Space Grotesk is UI
-   chrome (labels, buttons, headings) -- Space Mono's sibling JetBrains Mono
-   is every actual fact from wpdev (domains, PHP versions, snapshot IDs,
-   credentials, raw terminal output). If it's a value, it's mono; if it's
-   interface, it's sans. That's a rule, not a style choice, so apply it
-   consistently rather than per-component.
+   chrome (labels, buttons, headings) -- Fira Code is every actual fact
+   from wpdev (domains, PHP versions, snapshot IDs, credentials, raw
+   terminal output). If it's a value, it's mono; if it's interface, it's
+   sans. That's a rule, not a style choice, so apply it consistently
+   rather than per-component.
 
    Two accents, each meaning one thing: indigo is "do this" (primary
    actions), green is "this is healthy / this succeeded" (status, done
@@ -47,7 +47,7 @@
   --ansi-blue: #7aa2f7;
 
   --font-ui: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+  --font-mono: 'Fira Code', ui-monospace, Menlo, Consolas, monospace;
 
   color-scheme: dark;
 }
@@ -658,9 +658,10 @@ input::placeholder {
   word-break: break-word;
   margin: 0;
   /* This is meant to be a literal, faithful rendering of real wpdev
-     output -- JetBrains Mono's default ligatures turn "===" section
-     rules into a fused triple-bar glyph, which looks like the tool
-     printed something it didn't. */
+     output -- Fira Code's default ligatures (even more aggressive than
+     most coding fonts) turn "===" section rules into a fused glyph and
+     would mangle other sequences in real output too, which looks like
+     the tool printed something it didn't. */
   font-variant-ligatures: none;
 }
 
