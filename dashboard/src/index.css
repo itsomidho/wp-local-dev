@@ -1,13 +1,40 @@
+/* ---------------------------------------------------------------------
+   Design system
+   -----------------------------------------------------------------------
+   Two typefaces, each with one job and never swapped: Space Grotesk is UI
+   chrome (labels, buttons, headings) -- Space Mono's sibling JetBrains Mono
+   is every actual fact from wpdev (domains, PHP versions, snapshot IDs,
+   credentials, raw terminal output). If it's a value, it's mono; if it's
+   interface, it's sans. That's a rule, not a style choice, so apply it
+   consistently rather than per-component.
+
+   Two accents, each meaning one thing: indigo is "do this" (primary
+   actions), green is "this is healthy / this succeeded" (status, done
+   pills) -- never the other way around. Red/amber are danger/caution only.
+   ------------------------------------------------------------------- */
+
 :root {
-  --bg: #0f1115;
-  --panel: #161922;
-  --border: #272b36;
-  --text: #e6e8ec;
-  --muted: #8a8f9c;
-  --accent: #4f8cff;
-  --green: #3fbf63;
-  --yellow: #e0b23c;
-  --red: #e15555;
+  --bg: #0e1013;
+  --panel: #161920;
+  --raised: #1b1f27;
+  --border: #272c37;
+  --border-soft: #1f2329;
+  --text: #edeff2;
+  --muted: #868d9c;
+  --muted-dim: #5b6271;
+
+  --accent: #6670e3;
+  --accent-hover: #7a84ea;
+  --accent-text: #ffffff;
+
+  --success: #45c98a;
+  --warning: #e3a94a;
+  --danger: #e8626b;
+  --danger-hover: #ee7980;
+
+  --font-ui: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+
   color-scheme: dark;
 }
 
@@ -19,7 +46,26 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 .app {
@@ -28,15 +74,17 @@ body {
   min-height: 100vh;
 }
 
-/* Header */
+/* ---------------------------------------------------------------------
+   Header
+   ------------------------------------------------------------------- */
 
 .header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 20px;
+  gap: 16px;
+  padding: 14px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
@@ -47,151 +95,180 @@ body {
   gap: 10px;
 }
 
+.header-title .mark {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 5px;
+  padding: 3px 6px;
+  line-height: 1;
+}
+
 .header-title h1 {
-  font-size: 18px;
+  font-size: 16px;
+  font-weight: 600;
   margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-dim);
+  margin-left: 6px;
+}
+
+.health-dot.ok {
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(69, 201, 138, 0.15);
+}
+
+.health-dot.down {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(232, 98, 107, 0.15);
+}
+
+.health-label {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .header-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-group {
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
-.health-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-.health-dot.ok {
-  background: var(--green);
-}
-
-.health-dot.down {
-  background: var(--red);
-}
-
-/* Main */
-
-.main {
-  flex: 1;
-  padding: 24px;
-  max-width: 960px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px 20px;
-}
-
-.panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.panel-header h2 {
-  margin: 0;
-  font-size: 15px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.sites-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.sites-table th {
-  text-align: left;
+.header-group-label {
   font-size: 12px;
-  color: var(--muted);
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
+  color: var(--muted-dim);
+  margin-right: 2px;
 }
 
-.sites-table td {
-  padding: 10px 8px;
-  border-bottom: 1px solid var(--border);
+.header-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
 }
 
-.sites-table a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-/* Buttons & forms */
+/* ---------------------------------------------------------------------
+   Buttons
+   ------------------------------------------------------------------- */
 
 button {
+  font-family: var(--font-ui);
   background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 7px 12px;
+  color: var(--accent-text);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 7px 13px;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
 }
 
 button:hover {
-  filter: brightness(1.1);
+  background: var(--accent-hover);
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: default;
 }
 
 button.secondary {
   background: transparent;
-  border: 1px solid var(--border);
+  border-color: var(--border);
   color: var(--text);
+}
+
+button.secondary:hover {
+  border-color: var(--muted-dim);
+  background: var(--raised);
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 10px;
+}
+
+button.ghost:hover {
+  color: var(--text);
+  background: var(--raised);
 }
 
 button.danger {
-  background: var(--red);
+  background: var(--danger);
+}
+
+button.danger:hover {
+  background: var(--danger-hover);
 }
 
 button.small {
-  padding: 4px 8px;
+  padding: 5px 10px;
   font-size: 12px;
 }
 
+button.icon-button {
+  background: transparent;
+  color: var(--muted);
+  padding: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button.icon-button:hover {
+  color: var(--text);
+  background: var(--raised);
+}
+
+/* ---------------------------------------------------------------------
+   Forms
+   ------------------------------------------------------------------- */
+
 input,
 select {
+  font-family: var(--font-mono);
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  border-radius: 6px;
+  border-radius: 7px;
   padding: 7px 10px;
   font-size: 13px;
+}
+
+input::placeholder {
+  color: var(--muted-dim);
+  font-family: var(--font-ui);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
-  font-size: 13px;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-size: 12.5px;
   color: var(--muted);
-}
-
-.field input,
-.field select {
-  color: var(--text);
 }
 
 .button-row {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   align-items: center;
 }
 
@@ -205,16 +282,108 @@ select {
 }
 
 .error {
-  color: var(--red);
+  color: var(--danger);
   font-size: 13px;
 }
 
-/* Modals */
+/* ---------------------------------------------------------------------
+   Main / panel
+   ------------------------------------------------------------------- */
+
+.main {
+  flex: 1;
+  padding: 32px 24px;
+  max-width: 880px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------------
+   Sites list
+   ------------------------------------------------------------------- */
+
+.sites-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.site-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.site-row:last-child {
+  border-bottom: none;
+}
+
+.site-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.site-domain {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  color: var(--text);
+  text-decoration: none;
+  width: fit-content;
+}
+
+.site-domain:hover {
+  color: var(--accent-hover);
+}
+
+.site-note {
+  font-size: 12px;
+  color: var(--muted-dim);
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------
+   Modals
+   ------------------------------------------------------------------- */
 
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(5, 6, 8, 0.65);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -222,7 +391,7 @@ select {
 }
 
 .modal {
-  background: var(--panel);
+  background: var(--raised);
   border: 1px solid var(--border);
   border-radius: 10px;
   width: 420px;
@@ -237,10 +406,11 @@ select {
      doctor/status view be dragged larger instead of only ever scrolling in
      a fixed box. resize requires overflow != visible, already true above. */
   resize: both;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
 
 .modal-wide {
-  width: 640px;
+  width: 680px;
   min-width: 420px;
 }
 
@@ -254,7 +424,24 @@ select {
 
 .modal-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+/* The doctor/status views are a real command's output -- say so in its
+   own vocabulary (a shell prompt, monospace) rather than a generic title,
+   the same distinction the type system draws everywhere else. */
+.modal-header-cmd {
+  background: #000;
+  border-bottom: 1px solid #000;
+}
+
+.modal-header-cmd h3 {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: #8fd6b0;
+  font-size: 13px;
+  font-variant-ligatures: none;
 }
 
 .modal-body {
@@ -272,22 +459,25 @@ select {
 }
 
 .pill {
-  font-size: 12px;
-  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 3px 9px;
   border-radius: 999px;
 }
 
 .pill-ok {
-  background: rgba(63, 191, 99, 0.2);
-  color: var(--green);
+  background: rgba(69, 201, 138, 0.15);
+  color: var(--success);
 }
 
 .pill-fail {
-  background: rgba(225, 85, 85, 0.2);
-  color: var(--red);
+  background: rgba(232, 98, 107, 0.15);
+  color: var(--danger);
 }
 
-/* Tabs */
+/* ---------------------------------------------------------------------
+   Tabs
+   ------------------------------------------------------------------- */
 
 .tabs {
   display: flex;
@@ -295,16 +485,24 @@ select {
   padding: 0 18px;
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  flex-shrink: 0;
 }
 
 .tab {
   background: transparent;
-  border: none;
   color: var(--muted);
-  padding: 10px 12px;
-  border-bottom: 2px solid transparent;
+  border: none;
   border-radius: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
   white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: transparent;
 }
 
 .tab-active {
@@ -312,65 +510,99 @@ select {
   border-bottom-color: var(--accent);
 }
 
-/* Terminal */
+/* ---------------------------------------------------------------------
+   Terminal -- a flat, sharp-edged black pane nested in the rounded UI,
+   deliberately: this is raw tool output, not another UI surface.
+   ------------------------------------------------------------------- */
 
 .terminal {
   background: #000;
-  color: #d4d4d4;
-  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  color: #c7cbd1;
+  font-family: var(--font-mono);
   font-size: 12.5px;
-  padding: 12px;
-  border-radius: 6px;
+  line-height: 1.55;
+  padding: 14px;
+  border-radius: 0;
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+  /* This is meant to be a literal, faithful rendering of real wpdev
+     output -- JetBrains Mono's default ligatures turn "===" section
+     rules into a fused triple-bar glyph, which looks like the tool
+     printed something it didn't. */
+  font-variant-ligatures: none;
 }
 
 .terminal-modal {
-  margin: 0 18px;
+  margin: 0;
   overflow-y: auto;
   flex: 1;
   /* No max-height -- it fills whatever space the (now resizable) modal
-     gives it instead of capping at 50% of the viewport regardless of how
-     large the modal itself has been dragged. */
+     gives it instead of capping at a fraction of the viewport regardless
+     of how large the modal itself has been dragged. */
 }
 
 .terminal-line {
-  min-height: 1.4em;
+  min-height: 1.5em;
 }
 
 .terminal-stderr {
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
 .ansi-green {
-  color: var(--green);
+  color: var(--success);
 }
 
 .ansi-yellow {
-  color: var(--yellow);
+  color: var(--warning);
 }
 
 .ansi-red {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .ansi-blue {
-  color: #6bb3ff;
+  color: #7aa2f7;
 }
 
-/* Snapshot list */
+/* ---------------------------------------------------------------------
+   Snapshot list
+   ------------------------------------------------------------------- */
 
 .snapshot-list {
   list-style: none;
   padding: 0;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
 
 .snapshot-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+}
+
+.snapshot-list code {
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------
+   Small screens
+   ------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .header {
+    padding: 12px 16px;
+  }
+
+  .main {
+    padding: 20px 16px;
+  }
+
+  .site-row {
+    flex-wrap: wrap;
+  }
 }

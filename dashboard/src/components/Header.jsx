@@ -72,35 +72,61 @@ export default function Header({ health, onStackAction, onRefresh }) {
     setConfirmStackAction(action);
   };
 
+  const healthLabel = health === 'ok' ? 'connected' : health === 'down' ? 'unreachable' : 'checking…';
+
   return (
     <header className="header">
       <div className="header-title">
-        <span className={`health-dot ${health}`} title={`API: ${health}`} />
-        <h1>wp-local-dev</h1>
+        <span className="mark">wp</span>
+        <h1>local-dev</h1>
+        <span className={`health-dot ${health}`} />
+        <span className="health-label">{healthLabel}</span>
       </div>
 
       <div className="header-actions">
-        <button disabled={busy} onClick={() => requestStackAction('up')}>Up</button>
-        <button disabled={busy} className="secondary" onClick={() => requestStackAction('restart')}>Restart</button>
-        <button disabled={busy} className="secondary" onClick={() => requestStackAction('down')}>Down</button>
-        <button className="secondary" onClick={openStatus}>Status</button>
-        <button className="secondary" onClick={openDoctor}>Doctor</button>
-        <button className="secondary" onClick={() => openLink('adminer')}>Adminer</button>
-        <button className="secondary" onClick={() => openLink('portainer')}>Portainer</button>
-        <button className="secondary" onClick={() => openLink('mailpit')}>Mailpit</button>
-        <button className="secondary" onClick={onRefresh}>Refresh</button>
-        <button className="secondary" onClick={() => setView('settings')}>⚙</button>
+        <div className="header-group">
+          <button disabled={busy} onClick={() => requestStackAction('up')}>Up</button>
+          <button disabled={busy} className="secondary" onClick={() => requestStackAction('restart')}>Restart</button>
+          <button disabled={busy} className="secondary" onClick={() => requestStackAction('down')}>Down</button>
+        </div>
+
+        <div className="header-divider" />
+
+        <div className="header-group">
+          <button className="ghost" onClick={openStatus}>Status</button>
+          <button className="ghost" onClick={openDoctor}>Doctor</button>
+        </div>
+
+        <div className="header-divider" />
+
+        <div className="header-group">
+          <span className="header-group-label">Open</span>
+          <button className="ghost" onClick={() => openLink('adminer')}>Adminer</button>
+          <button className="ghost" onClick={() => openLink('portainer')}>Portainer</button>
+          <button className="ghost" onClick={() => openLink('mailpit')}>Mailpit</button>
+        </div>
+
+        <div className="header-divider" />
+
+        <div className="header-group">
+          <button className="icon-button" onClick={onRefresh} title="Refresh" aria-label="Refresh">
+            <RefreshIcon />
+          </button>
+          <button className="icon-button" onClick={() => setView('settings')} title="Settings" aria-label="Settings">
+            <GearIcon />
+          </button>
+        </div>
       </div>
 
       {(view === 'doctor' || view === 'status') && (
         <div className="modal-backdrop" onClick={() => setView(null)}>
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>{view === 'doctor' ? 'Doctor' : 'Status'}</h3>
+            <div className="modal-header modal-header-cmd">
+              <h3>$ wpdev {view}</h3>
             </div>
             <Terminal lines={stripAnsiToLines(output)} className="terminal-modal" />
             <div className="modal-footer">
-              <button onClick={() => setView(null)}>Close</button>
+              <button className="secondary" onClick={() => setView(null)}>Close</button>
             </div>
           </div>
         </div>
@@ -158,5 +184,33 @@ export default function Header({ health, onStackAction, onRefresh }) {
         />
       )}
     </header>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+      <path
+        d="M12.5 7.5a5 5 0 1 1-1.47-3.54M12.5 2v3.5H9"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+      <circle cx="7.5" cy="7.5" r="2.1" stroke="currentColor" strokeWidth="1.3" />
+      <path
+        d="M7.5 1.5v1.4M7.5 12.1v1.4M13.5 7.5h-1.4M2.9 7.5H1.5M11.6 3.4l-1 1M4.4 10.6l-1 1M11.6 11.6l-1-1M4.4 4.4l-1-1"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }

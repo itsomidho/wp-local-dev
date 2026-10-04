@@ -7,12 +7,25 @@
 // meant for a terminal, not a stable data format.
 const SITE_LINE_RE = /https:\/\/([a-z0-9.-]+)\s*(?:→|->)\s*sites\/([a-z0-9-]+)\s*\(([^)]*)\)/i;
 
+const PHP_RE = /php\s+([0-9.]+)/i;
+
 export function parseSites(stdout) {
   return stdout
     .split('\n')
     .map((line) => SITE_LINE_RE.exec(line))
     .filter(Boolean)
-    .map((m) => ({ domain: m[1], name: m[2], statusText: m[3] }));
+    .map((m) => {
+      const statusText = m[3];
+      const phpMatch = PHP_RE.exec(statusText);
+      return {
+        domain: m[1],
+        name: m[2],
+        php: phpMatch ? phpMatch[1] : null,
+        // The rest of the status text, minus the PHP clause already shown
+        // as its own badge -- e.g. "provisioned, php 8.2" -> "provisioned".
+        note: statusText.replace(/,?\s*php\s+[0-9.]+/i, '').trim(),
+      };
+    });
 }
 
 export default function SitesPanel({ sites, onAdd, onManage }) {
@@ -23,34 +36,29 @@ export default function SitesPanel({ sites, onAdd, onManage }) {
         <button onClick={onAdd}>+ Add site</button>
       </div>
       {sites.length === 0 ? (
-        <p className="muted">No sites yet. Click "Add site" to provision one.</p>
+        <p className="muted">No sites yet — click "Add site" to provision one.</p>
       ) : (
-        <table className="sites-table">
-          <thead>
-            <tr>
-              <th>Domain</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {sites.map((site) => (
-              <tr key={site.name}>
-                <td>
-                  <a href={`https://${site.domain}`} target="_blank" rel="noreferrer">
-                    {site.domain}
-                  </a>
-                </td>
-                <td className="muted">{site.statusText}</td>
-                <td>
-                  <button className="secondary small" onClick={() => onManage(site)}>
-                    Manage
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ul className="sites-list">
+          {sites.map((site) => (
+            <li key={site.name} className="site-row">
+              <div className="site-identity">
+                <a
+                  className="site-domain"
+                  href={`https://${site.domain}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {site.domain}
+                </a>
+                <span className="site-note">{site.note}</span>
+              </div>
+              {site.php && <span className="badge">PHP {site.php}</span>}
+              <button className="secondary small" onClick={() => onManage(site)}>
+                Manage
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );
