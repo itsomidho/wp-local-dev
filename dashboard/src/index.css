@@ -470,6 +470,11 @@ input::placeholder {
   color: var(--muted-dim);
 }
 
+.stat-detail-extra {
+  margin-top: -3px;
+  opacity: 0.75;
+}
+
 @media (max-width: 640px) {
   .stats-grid {
     grid-template-columns: 1fr;

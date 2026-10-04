@@ -3,6 +3,7 @@
 const { execFile } = require('child_process');
 const os = require('os');
 const fs = require('fs');
+const path = require('path');
 
 // This is deliberately NOT routed through wpdev -- there's no WordPress-
 // domain judgment call here for a real implementation to diverge from (no
@@ -77,14 +78,60 @@ function getDisk(targetPath) {
   });
 }
 
+// `df` above answers "is this drive about to fill up" (the whole
+// partition, which may hold plenty of other things too); this answers the
+// different question "how much has wp-local-dev itself used" -- the same
+// three directories doctor's own disk line already looks at, just all of
+// them and in bytes instead of one `du -sh sites`.
+//
+// Cached, not recomputed on every poll: `du` walks the whole sites/ tree,
+// which only gets more expensive as more sites/snapshots pile up, and this
+// number changes slowly (only when something's actually added/removed) --
+// unlike CPU, there's no reason to pay that cost every 15s.
+let footprintCache = { bytes: null, at: 0 };
+const FOOTPRINT_TTL_MS = 60_000;
+
+function computeProjectFootprint(projectDir) {
+  return new Promise((resolve) => {
+    const dirs = ['sites', 'snapshots', 'backups'].filter((d) =>
+      fs.existsSync(path.join(projectDir, d))
+    );
+    if (dirs.length === 0) return resolve(0);
+    execFile('du', ['-sk', ...dirs], { cwd: projectDir }, (err, stdout) => {
+      // Best-effort -- a permission-denied entry under sites/ (e.g. from
+      // before the www-data ownership fix) makes `du` exit non-zero but
+      // still print a usable total on stdout, so only give up on this
+      // number if there's truly nothing to read.
+      if (!stdout) return resolve(null);
+      let totalKb = 0;
+      for (const line of stdout.trim().split('\n')) {
+        const kb = parseInt(line, 10);
+        if (!Number.isNaN(kb)) totalKb += kb;
+      }
+      resolve(totalKb * 1024);
+    });
+  });
+}
+
+async function getProjectFootprint(projectDir) {
+  if (Date.now() - footprintCache.at < FOOTPRINT_TTL_MS) return footprintCache.bytes;
+  const bytes = await computeProjectFootprint(projectDir);
+  footprintCache = { bytes, at: Date.now() };
+  return bytes;
+}
+
 async function getSystemStats(diskPath) {
-  const [cpu, disk] = await Promise.all([getCpuPercent(), getDisk(diskPath)]);
+  const [cpu, disk, projectBytes] = await Promise.all([
+    getCpuPercent(),
+    getDisk(diskPath),
+    getProjectFootprint(diskPath),
+  ]);
   const memory = getMemory();
   // 1-minute load average -- distinct from the instantaneous %busy figure
   // above (that's a snapshot; this is a trend), cheap to add since Node
   // already exposes it with no extra shelling out.
   const [loadAvg1] = os.loadavg();
-  return { cpu: { ...cpu, loadAvg1 }, memory, disk };
+  return { cpu: { ...cpu, loadAvg1 }, memory, disk: { ...disk, projectBytes } };
 }
 
 module.exports = { getSystemStats };

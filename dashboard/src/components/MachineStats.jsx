@@ -10,7 +10,7 @@ function levelClass(percent) {
   return 'stat-bar-fill stat-bar-ok';
 }
 
-function Stat({ label, percent, detail }) {
+function Stat({ label, percent, detail, extra }) {
   return (
     <div className="stat">
       <div className="stat-head">
@@ -21,6 +21,7 @@ function Stat({ label, percent, detail }) {
         <div className={levelClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
       </div>
       <span className="stat-detail mono">{detail}</span>
+      {extra && <span className="stat-detail stat-detail-extra mono">{extra}</span>}
     </div>
   );
 }
@@ -52,6 +53,12 @@ export default function MachineStats({ stats, error }) {
           label="Disk"
           percent={disk.percent}
           detail={`${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)}`}
+          extra={
+            // The bar above is the whole partition (is this drive filling
+            // up); this is just what wp-local-dev itself (sites + snapshots
+            // + backups) has used of that -- a different, smaller question.
+            disk.projectBytes != null ? `wp-local-dev: ${formatBytes(disk.projectBytes)}` : null
+          }
         />
       </div>
     </section>
