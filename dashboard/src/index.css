@@ -14,14 +14,16 @@
    ------------------------------------------------------------------- */
 
 :root {
-  --bg: #0e1013;
-  --panel: #161920;
-  --raised: #1b1f27;
-  --border: #272c37;
-  --border-soft: #1f2329;
-  --text: #edeff2;
-  --muted: #868d9c;
-  --muted-dim: #5b6271;
+  /* Dark (default). Charcoal-navy, not pure black -- a true #000 panel
+     reads harshly next to light text for long reading sessions. */
+  --bg: #121419;
+  --panel: #1a1d25;
+  --raised: #20242e;
+  --border: #2d323f;
+  --border-soft: #262b35;
+  --text: #e8eaef;
+  --muted: #8d94a3;
+  --muted-dim: #5f6676;
 
   --accent: #6670e3;
   --accent-hover: #7a84ea;
@@ -32,10 +34,71 @@
   --danger: #e8626b;
   --danger-hover: #ee7980;
 
+  /* The terminal pane stays dark regardless of theme (so does its ANSI
+     palette, below) -- a code/terminal surface conventionally doesn't
+     flip to a light scheme just because the UI around it did, and
+     wpdev's own color choices were designed for a dark background.
+     Softer than pure black for the same eye-comfort reason as --bg. */
+  --terminal-bg: #0c0e12;
+  --terminal-text: #c9cdd3;
+  --ansi-green: #45c98a;
+  --ansi-yellow: #e3a94a;
+  --ansi-red: #e8626b;
+  --ansi-blue: #7aa2f7;
+
   --font-ui: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
 
   color-scheme: dark;
+}
+
+/* Light -- follows the OS/browser preference by default; the toggle in
+   the header can force either mode explicitly via data-theme, which is
+   persisted (see theme.js) and always wins over the media query. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --raised: #ffffff;
+    --border: #e2e4ea;
+    --border-soft: #edeef2;
+    --text: #1c1f26;
+    --muted: #6b7280;
+    --muted-dim: #9aa0ac;
+
+    --accent: #5458d6;
+    --accent-hover: #4347c4;
+    --accent-text: #ffffff;
+
+    --success: #1f9d63;
+    --warning: #a66a0a;
+    --danger: #d23f49;
+    --danger-hover: #c22d38;
+
+    color-scheme: light;
+  }
+}
+
+:root[data-theme='light'] {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --raised: #ffffff;
+  --border: #e2e4ea;
+  --border-soft: #edeef2;
+  --text: #1c1f26;
+  --muted: #6b7280;
+  --muted-dim: #9aa0ac;
+
+  --accent: #5458d6;
+  --accent-hover: #4347c4;
+  --accent-text: #ffffff;
+
+  --success: #1f9d63;
+  --warning: #a66a0a;
+  --danger: #d23f49;
+  --danger-hover: #c22d38;
+
+  color-scheme: light;
 }
 
 * {
@@ -49,6 +112,17 @@ body {
   font-family: var(--font-ui);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.header,
+.panel,
+.modal,
+.modal-header,
+.modal-footer,
+.site-row,
+.badge {
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 code,
@@ -123,12 +197,12 @@ code,
 
 .health-dot.ok {
   background: var(--success);
-  box-shadow: 0 0 0 3px rgba(69, 201, 138, 0.15);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
 }
 
 .health-dot.down {
   background: var(--danger);
-  box-shadow: 0 0 0 3px rgba(232, 98, 107, 0.15);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
 }
 
 .health-label {
@@ -175,7 +249,14 @@ button {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   transition: background-color 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+button svg {
+  flex-shrink: 0;
 }
 
 button:hover {
@@ -376,6 +457,56 @@ input::placeholder {
   white-space: nowrap;
 }
 
+/* Status variants -- same shape as .badge, colored to match what it's
+   reporting (used by the Status modal's per-site table). */
+.badge-ok {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
+.badge-fail {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.badge-muted {
+  color: var(--muted-dim);
+}
+
+/* ---------------------------------------------------------------------
+   Status table (Status modal)
+   ------------------------------------------------------------------- */
+
+.status-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.status-table th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted-dim);
+  padding: 0 10px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-table td {
+  padding: 9px 10px 9px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.status-table tr:last-child td {
+  border-bottom: none;
+}
+
+.status-raw-toggle {
+  margin-top: 14px;
+}
+
 /* ---------------------------------------------------------------------
    Modals
    ------------------------------------------------------------------- */
@@ -432,14 +563,14 @@ input::placeholder {
    own vocabulary (a shell prompt, monospace) rather than a generic title,
    the same distinction the type system draws everywhere else. */
 .modal-header-cmd {
-  background: #000;
-  border-bottom: 1px solid #000;
+  background: var(--terminal-bg);
+  border-bottom: 1px solid var(--terminal-bg);
 }
 
 .modal-header-cmd h3 {
   font-family: var(--font-mono);
   font-weight: 500;
-  color: #8fd6b0;
+  color: var(--ansi-green);
   font-size: 13px;
   font-variant-ligatures: none;
 }
@@ -466,12 +597,12 @@ input::placeholder {
 }
 
 .pill-ok {
-  background: rgba(69, 201, 138, 0.15);
+  background: color-mix(in srgb, var(--success) 18%, transparent);
   color: var(--success);
 }
 
 .pill-fail {
-  background: rgba(232, 98, 107, 0.15);
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
   color: var(--danger);
 }
 
@@ -516,8 +647,8 @@ input::placeholder {
    ------------------------------------------------------------------- */
 
 .terminal {
-  background: #000;
-  color: #c7cbd1;
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.55;
@@ -551,19 +682,19 @@ input::placeholder {
 }
 
 .ansi-green {
-  color: var(--success);
+  color: var(--ansi-green);
 }
 
 .ansi-yellow {
-  color: var(--warning);
+  color: var(--ansi-yellow);
 }
 
 .ansi-red {
-  color: var(--danger);
+  color: var(--ansi-red);
 }
 
 .ansi-blue {
-  color: #7aa2f7;
+  color: var(--ansi-blue);
 }
 
 /* ---------------------------------------------------------------------

@@ -1,7 +1,21 @@
 import { useState } from 'react';
+import {
+  Play,
+  RotateCw,
+  Square,
+  Activity,
+  Stethoscope,
+  ExternalLink,
+  RefreshCw,
+  Settings as SettingsIcon,
+  Sun,
+  Moon,
+} from 'lucide-react';
 import { api, getToken, setToken } from '../api';
 import Terminal, { stripAnsiToLines } from './Terminal';
+import StatusTable, { parseStatusSites } from './StatusTable';
 import ConfirmDialog from './ConfirmDialog';
+import { currentEffectiveTheme, setTheme } from '../theme';
 
 const STACK_CONFIRM = {
   restart: {
@@ -21,6 +35,13 @@ export default function Header({ health, onStackAction, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [tokenInput, setTokenInput] = useState(getToken());
   const [confirmStackAction, setConfirmStackAction] = useState(null); // 'restart' | 'down' | null
+  const [theme, setThemeState] = useState(currentEffectiveTheme());
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    setThemeState(next);
+  };
 
   const openDoctor = async () => {
     setView('doctor');
@@ -85,46 +106,79 @@ export default function Header({ health, onStackAction, onRefresh }) {
 
       <div className="header-actions">
         <div className="header-group">
-          <button disabled={busy} onClick={() => requestStackAction('up')}>Up</button>
-          <button disabled={busy} className="secondary" onClick={() => requestStackAction('restart')}>Restart</button>
-          <button disabled={busy} className="secondary" onClick={() => requestStackAction('down')}>Down</button>
+          <button disabled={busy} onClick={() => requestStackAction('up')}>
+            <Play size={14} strokeWidth={2} /> Up
+          </button>
+          <button disabled={busy} className="secondary" onClick={() => requestStackAction('restart')}>
+            <RotateCw size={14} strokeWidth={2} /> Restart
+          </button>
+          <button disabled={busy} className="secondary" onClick={() => requestStackAction('down')}>
+            <Square size={14} strokeWidth={2} /> Down
+          </button>
         </div>
 
         <div className="header-divider" />
 
         <div className="header-group">
-          <button className="ghost" onClick={openStatus}>Status</button>
-          <button className="ghost" onClick={openDoctor}>Doctor</button>
+          <button className="ghost" onClick={openStatus}>
+            <Activity size={14} strokeWidth={2} /> Status
+          </button>
+          <button className="ghost" onClick={openDoctor}>
+            <Stethoscope size={14} strokeWidth={2} /> Doctor
+          </button>
         </div>
 
         <div className="header-divider" />
 
         <div className="header-group">
           <span className="header-group-label">Open</span>
-          <button className="ghost" onClick={() => openLink('adminer')}>Adminer</button>
-          <button className="ghost" onClick={() => openLink('portainer')}>Portainer</button>
-          <button className="ghost" onClick={() => openLink('mailpit')}>Mailpit</button>
+          <button className="ghost" onClick={() => openLink('adminer')}>
+            Adminer <ExternalLink size={12} strokeWidth={2} />
+          </button>
+          <button className="ghost" onClick={() => openLink('portainer')}>
+            Portainer <ExternalLink size={12} strokeWidth={2} />
+          </button>
+          <button className="ghost" onClick={() => openLink('mailpit')}>
+            Mailpit <ExternalLink size={12} strokeWidth={2} />
+          </button>
         </div>
 
         <div className="header-divider" />
 
         <div className="header-group">
+          <button className="icon-button" onClick={toggleTheme} title="Toggle theme" aria-label="Toggle theme">
+            {theme === 'dark' ? <Sun size={16} strokeWidth={2} /> : <Moon size={16} strokeWidth={2} />}
+          </button>
           <button className="icon-button" onClick={onRefresh} title="Refresh" aria-label="Refresh">
-            <RefreshIcon />
+            <RefreshCw size={16} strokeWidth={2} />
           </button>
           <button className="icon-button" onClick={() => setView('settings')} title="Settings" aria-label="Settings">
-            <GearIcon />
+            <SettingsIcon size={16} strokeWidth={2} />
           </button>
         </div>
       </div>
 
-      {(view === 'doctor' || view === 'status') && (
+      {view === 'doctor' && (
         <div className="modal-backdrop" onClick={() => setView(null)}>
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header modal-header-cmd">
-              <h3>$ wpdev {view}</h3>
+              <h3>$ wpdev doctor</h3>
             </div>
             <Terminal lines={stripAnsiToLines(output)} className="terminal-modal" />
+            <div className="modal-footer">
+              <button className="secondary" onClick={() => setView(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'status' && (
+        <div className="modal-backdrop" onClick={() => setView(null)}>
+          <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Status</h3>
+            </div>
+            <StatusTable rows={parseStatusSites(output)} rawOutput={output} />
             <div className="modal-footer">
               <button className="secondary" onClick={() => setView(null)}>Close</button>
             </div>
@@ -184,33 +238,5 @@ export default function Header({ health, onStackAction, onRefresh }) {
         />
       )}
     </header>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-      <path
-        d="M12.5 7.5a5 5 0 1 1-1.47-3.54M12.5 2v3.5H9"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function GearIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-      <circle cx="7.5" cy="7.5" r="2.1" stroke="currentColor" strokeWidth="1.3" />
-      <path
-        d="M7.5 1.5v1.4M7.5 12.1v1.4M13.5 7.5h-1.4M2.9 7.5H1.5M11.6 3.4l-1 1M4.4 10.6l-1 1M11.6 11.6l-1-1M4.4 4.4l-1-1"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }
