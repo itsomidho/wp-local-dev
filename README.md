@@ -252,7 +252,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev down` | Stop all containers |
 | `wpdev restart` | Restart all containers |
 | `wpdev update` | `git pull` (fast-forward only), then rebuild + recreate every container |
-| `wpdev status` | Container status, plus a per-site table: reachable? DB connected? Redis cache connected? |
+| `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
 | `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` |
@@ -317,11 +317,16 @@ Shows container health (`docker compose ps`) plus a per-site table — the
 WordPress-specific view Portainer's generic container UI can't give you:
 
 ```
-DOMAIN                       HTTP   DATABASE   CACHE
-mysite.test                  200    OK         Connected
-otherlab.test                200    OK         off
+DOMAIN                       PHP    WP        MYSQL     HTTP   DATABASE   CACHE
+mysite.test                  8.2    6.9.1     8.0.44    200    OK         Connected
+otherlab.test                8.3    6.7.2     8.0.44    200    OK         off
 ```
 
+- **PHP**/**WP** — the site's PHP version (`sites/<name>/.php-version`) and
+  its real WordPress core version (`wp core version`) — different sites can
+  genuinely be on different versions of each
+- **MYSQL** — the one shared server's version; the same on every row, since
+  there's only one `mysql` container for the whole stack
 - **HTTP** — the site's actual response code, checked directly against
   `127.0.0.1` (works even before you've added the `/etc/hosts` entry, and
   ignores any proxy your shell has set)
@@ -834,6 +839,15 @@ browser, rendering `wpdev`'s own colored output rather than re-deriving
 status text. `doctor`/`status` show up exactly as they would in a terminal,
 and every provisioning/removal action shows the real, live `wpdev` output as
 it happens.
+
+Each site's row shows its real WordPress core version alongside its PHP
+version (both genuinely vary per site), and the shared MySQL version once
+near the "+ Add site" button rather than repeated on every row, since
+every site uses the same one server. This comes from `status`, not
+`list` — getting it means a real `wp core version` per site, so unlike
+the sites list itself (which polls every 15s) it's only refreshed on
+load, after an action that changes the site list, or an explicit click
+on the refresh icon.
 
 A "Machine" panel at the top shows the host's CPU, memory, and disk usage —
 the one part of the dashboard not backed by `wpdev` at all, since there's no

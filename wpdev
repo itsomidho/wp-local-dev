@@ -246,7 +246,15 @@ cmd_status() {
     mysql_up=0
     if docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then mysql_up=1; fi
 
-    printf "%-28s %-6s %-6s %-10s %s\n" "DOMAIN" "PHP" "HTTP" "DATABASE" "CACHE"
+    # One shared MySQL server for every site, so its version is the same on
+    # every row -- fetched once here rather than once per site in the loop.
+    mysql_version="n/a"
+    if [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
+        mysql_version="$(docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -N -e "SELECT VERSION();" </dev/null 2>/dev/null | tr -d '[:space:]')"
+        [ -z "$mysql_version" ] && mysql_version="n/a"
+    fi
+
+    printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "DOMAIN" "PHP" "WP" "MYSQL" "HTTP" "DATABASE" "CACHE"
     for domain in $domains; do
         site_name="${domain%.test}"
         site_name="${site_name//./-}"
@@ -282,13 +290,24 @@ cmd_status() {
             db_status="down"
         fi
 
-        cache_status="n/a"
+        php_reachable=0
         if [ -f "$config" ] && docker compose exec -T "$php_svc" true </dev/null >/dev/null 2>&1; then
+            php_reachable=1
+        fi
+
+        cache_status="n/a"
+        if [ "$php_reachable" -eq 1 ]; then
             cache_status="$(docker compose exec -T "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
             [ -z "$cache_status" ] && cache_status="off"
         fi
 
-        printf "%-28s %-6s %-6s %-10s %s\n" "$domain" "$php_version" "$http_code" "$db_status" "$cache_status"
+        wp_version="n/a"
+        if [ "$php_reachable" -eq 1 ]; then
+            wp_version="$(docker compose exec -T "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
+            [ -z "$wp_version" ] && wp_version="n/a"
+        fi
+
+        printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "$domain" "$php_version" "$wp_version" "$mysql_version" "$http_code" "$db_status" "$cache_status"
     done
 }
 

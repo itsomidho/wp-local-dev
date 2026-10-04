@@ -396,6 +396,12 @@ input::placeholder {
   margin-bottom: 14px;
 }
 
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .panel-header h2 {
   margin: 0;
   font-size: 15px;

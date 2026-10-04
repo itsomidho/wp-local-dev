@@ -2,12 +2,12 @@ import { useState } from 'react';
 import Terminal, { stripAnsiToLines } from './Terminal';
 
 // Parses the per-site table `wpdev status` prints after "=== Sites ===":
-//   DOMAIN                       PHP    HTTP   DATABASE   CACHE
-//   mysite.test                  8.2    000    OK         Connected
+//   DOMAIN                       PHP    WP        MYSQL     HTTP   DATABASE   CACHE
+//   mysite.test                  8.2    6.9.1     8.0.44    200    OK         Connected
 // Fixed-width via printf on the wpdev side, so splitting on whitespace is
 // reliable -- each field is a single token, never containing a space.
-const HEADER_RE = /^DOMAIN\s+PHP\s+HTTP\s+DATABASE\s+CACHE\s*$/;
-const ROW_RE = /^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$/;
+const HEADER_RE = /^DOMAIN\s+PHP\s+WP\s+MYSQL\s+HTTP\s+DATABASE\s+CACHE\s*$/;
+const ROW_RE = /^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$/;
 
 export function parseStatusSites(stdout) {
   const lines = stdout.split('\n');
@@ -20,7 +20,7 @@ export function parseStatusSites(stdout) {
     if (!line) continue;
     const m = ROW_RE.exec(line);
     if (!m) continue;
-    rows.push({ domain: m[1], php: m[2], database: m[4], cache: m[5] });
+    rows.push({ domain: m[1], php: m[2], wp: m[3], mysql: m[4], database: m[6], cache: m[7] });
   }
   return rows;
 }
@@ -59,6 +59,8 @@ export default function StatusTable({ rows, rawOutput }) {
             <tr>
               <th>Domain</th>
               <th>PHP</th>
+              <th>WordPress</th>
+              <th>MySQL</th>
               <th>Database</th>
               <th>Cache</th>
             </tr>
@@ -72,6 +74,8 @@ export default function StatusTable({ rows, rawOutput }) {
                   </a>
                 </td>
                 <td className="mono muted">{row.php}</td>
+                <td className="mono muted">{row.wp}</td>
+                <td className="mono muted">{row.mysql}</td>
                 <td>
                   <span className={dbBadgeClass(row.database)}>{row.database}</span>
                 </td>
