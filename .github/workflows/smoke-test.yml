@@ -361,8 +361,8 @@ jobs:
           "
 
       - name: >
-          Regression test -- add/remove/restore/snapshots accept
-          --domain=/--php=/--yes for non-interactive (API-driven) use.
+          Regression test -- add/remove/restore/clone/db-import/snapshots
+          accept --domain=/--php=/--yes for non-interactive (API-driven) use.
           Every one of these previously called a bare `read -p` with no
           `|| true`, which aborts the whole run under `set -e` the moment
           stdin isn't a real TTY -- exactly the environment an HTTP API
@@ -381,13 +381,16 @@ jobs:
 
           ./wpdev restore flagtest --yes </dev/null
 
-          # db-import had the exact same bare-`read -p` bug as the others
-          # above, just not caught until the API's db-import endpoint
-          # actually exercised it live -- a --yes flag that only covers
-          # 4 of 5 confirmation prompts isn't actually done.
+          # db-import and clone had the exact same bare-`read -p` bug as the
+          # others above, just not caught until the API's own endpoints for
+          # them actually exercised it live -- a --yes flag that only covers
+          # some of a tool's confirmation prompts isn't actually done.
           ./wpdev db-export flagtest /tmp/flagtest.sql.gz </dev/null
           ./wpdev db-import flagtest /tmp/flagtest.sql.gz --yes </dev/null
           rm -f /tmp/flagtest.sql.gz
+
+          ./wpdev clone flagtest flagtest-clone --yes </dev/null
+          ./wpdev remove flagtest-clone --yes </dev/null
 
           ./wpdev remove flagtest --yes </dev/null
           rm -rf snapshots/flagtest

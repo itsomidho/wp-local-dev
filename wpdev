@@ -20,7 +20,7 @@
 #   wpdev add                 Provision a new site end-to-end (interactive prompt for domain),
 #                             or non-interactively: wpdev add --domain=<domain> [--php=<version>]
 #   wpdev remove <name> [--yes]  Delete a site: WP files, DB, Nginx config, SSL cert, logs
-#   wpdev clone <src> <new>   Duplicate a site (files + DB) under a new domain, URLs re-pointed
+#   wpdev clone <src> <new> [--yes]  Duplicate a site (files + DB) under a new domain, URLs re-pointed
 #   wpdev snapshot <site> [label]   Save a files+DB snapshot of a site
 #   wpdev snapshots <site>    List saved snapshots for a site
 #   wpdev restore <site> [snap-id] [--yes]  Restore a site from a snapshot (defaults to the latest)
@@ -110,7 +110,7 @@ show_help() {
     echo "  add                       Provision a new WordPress site (prompts for domain + PHP version)"
     echo "                            Non-interactive: add --domain=<domain> [--php=<version>]"
     echo "  remove <name> [--yes]     Delete a site: WP files, DB, Nginx config, SSL cert, logs"
-    echo "  clone <src> <new>         Duplicate a site (files + DB) under a new domain, URLs re-pointed"
+    echo "  clone <src> <new> [--yes] Duplicate a site (files + DB) under a new domain, URLs re-pointed"
     echo "  snapshot <site> [label]   Save a files+DB snapshot of a site"
     echo "  snapshots <site>          List saved snapshots for a site"
     echo "  restore <site> [snap-id] [--yes]  Restore a site from a snapshot (defaults to the latest)"
@@ -1303,10 +1303,18 @@ cmd_remove() {
 }
 
 cmd_clone() {
-    source_arg="$1"
-    new_arg="$2"
+    assume_yes=0
+    args=()
+    for a in "$@"; do
+        case "$a" in
+            --yes|-y) assume_yes=1 ;;
+            *) args+=("$a") ;;
+        esac
+    done
+    source_arg="${args[0]:-}"
+    new_arg="${args[1]:-}"
     if [ -z "$source_arg" ] || [ -z "$new_arg" ]; then
-        print_warning "Usage: wpdev clone <source-site> <new-site>"
+        print_warning "Usage: wpdev clone <source-site> <new-site> [--yes]"
         echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
         return 1
     fi
@@ -1337,10 +1345,14 @@ cmd_clone() {
     echo "  PHP version: $(cat "sites/${source_name}/.php-version" 2>/dev/null || echo "$DEFAULT_PHP_VERSION") (same as source)"
     echo "  Admin login will be the same as ${source_domain} (it's a copy of that database)."
     echo ""
-    read -p "Continue? (y/n): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Cancelled."
-        return 0
+    if [ "$assume_yes" -eq 1 ]; then
+        print_info "Skipping confirmation (--yes)."
+    else
+        read -p "Continue? (y/n): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Cancelled."
+            return 0
+        fi
     fi
 
     if [ -f .env ]; then
@@ -2144,7 +2156,7 @@ case "${1:-help}" in
     uninstall) cmd_uninstall ;;
     add) shift; cmd_add "$@" ;;
     remove) shift; cmd_remove "$@" ;;
-    clone) cmd_clone "$2" "$3" ;;
+    clone) shift; cmd_clone "$@" ;;
     snapshot) cmd_snapshot "$2" "$3" ;;
     snapshots) cmd_snapshots "$2" ;;
     restore) shift; cmd_restore "$@" ;;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import ConfirmDialog from './ConfirmDialog';
 
 const TABS = ['Overview', 'Cache', 'Snapshots', 'Clone', 'WP-CLI', 'Remove'];
 
@@ -74,6 +75,7 @@ function OverviewTab({ site }) {
 function CacheTab({ site }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
+  const [confirmPurge, setConfirmPurge] = useState(false);
 
   const toggle = async (mode) => {
     setBusy(true);
@@ -89,6 +91,7 @@ function CacheTab({ site }) {
   };
 
   const purge = async () => {
+    setConfirmPurge(false);
     setBusy(true);
     setResult(null);
     try {
@@ -114,11 +117,19 @@ function CacheTab({ site }) {
         <button disabled={busy} className="secondary" onClick={() => toggle('off')}>
           Turn off
         </button>
-        <button disabled={busy} className="secondary" onClick={purge}>
+        <button disabled={busy} className="secondary" onClick={() => setConfirmPurge(true)}>
           Purge cache
         </button>
       </div>
       {result && <pre className="terminal">{result}</pre>}
+      {confirmPurge && (
+        <ConfirmDialog
+          title="Purge the full-page cache?"
+          message="Clears cached pages for every site that has caching enabled, not just this one."
+          onCancel={() => setConfirmPurge(false)}
+          onConfirm={purge}
+        />
+      )}
     </div>
   );
 }
@@ -127,6 +138,7 @@ function SnapshotsTab({ site, onRunAction }) {
   const [list, setList] = useState('');
   const [label, setLabel] = useState('');
   const [error, setError] = useState(null);
+  const [confirmRestore, setConfirmRestore] = useState(null); // null, or {snapId} (snapId null = latest)
 
   const refresh = () => {
     api
@@ -151,9 +163,7 @@ function SnapshotsTab({ site, onRunAction }) {
   };
 
   const restore = (snapId) => {
-    if (!window.confirm(`Restore ${site.domain} from ${snapId || 'the latest snapshot'}? Current files and database will be overwritten.`)) {
-      return;
-    }
+    setConfirmRestore(null);
     onRunAction({
       title: `Restore ${site.domain}`,
       request: {
@@ -188,7 +198,7 @@ function SnapshotsTab({ site, onRunAction }) {
           {snapIds.map((id) => (
             <li key={id}>
               <code>{id}</code>
-              <button className="secondary small" onClick={() => restore(id)}>
+              <button className="secondary small" onClick={() => setConfirmRestore({ snapId: id })}>
                 Restore this
               </button>
             </li>
@@ -196,9 +206,18 @@ function SnapshotsTab({ site, onRunAction }) {
         </ul>
       )}
       {snapIds.length > 0 && (
-        <button className="secondary" onClick={() => restore(null)}>
+        <button className="secondary" onClick={() => setConfirmRestore({ snapId: null })}>
           Restore latest
         </button>
+      )}
+      {confirmRestore && (
+        <ConfirmDialog
+          title={`Restore ${site.domain}?`}
+          message={`Overwrites the current files and database with ${confirmRestore.snapId || 'the latest snapshot'}. The current state is not saved first.`}
+          danger
+          onCancel={() => setConfirmRestore(null)}
+          onConfirm={() => restore(confirmRestore.snapId)}
+        />
       )}
     </div>
   );
@@ -206,8 +225,10 @@ function SnapshotsTab({ site, onRunAction }) {
 
 function CloneTab({ site, onRunAction }) {
   const [newName, setNewName] = useState('');
+  const [confirmClone, setConfirmClone] = useState(false);
 
   const clone = () => {
+    setConfirmClone(false);
     const trimmed = newName.trim();
     if (!trimmed) return;
     onRunAction({
@@ -230,10 +251,19 @@ function CloneTab({ site, onRunAction }) {
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
         />
-        <button disabled={!newName.trim()} onClick={clone}>
+        <button disabled={!newName.trim()} onClick={() => setConfirmClone(true)}>
           Clone
         </button>
       </div>
+      {confirmClone && (
+        <ConfirmDialog
+          title="Clone this site?"
+          message={`Creates sites/${newName.trim()} and https://${newName.trim()}.test as a full copy of ${site.domain} (files + database).`}
+          confirmLabel="Clone"
+          onCancel={() => setConfirmClone(false)}
+          onConfirm={clone}
+        />
+      )}
     </div>
   );
 }
@@ -242,8 +272,10 @@ function WpCliTab({ site }) {
   const [cmd, setCmd] = useState('plugin list');
   const [busy, setBusy] = useState(false);
   const [output, setOutput] = useState(null);
+  const [confirmRun, setConfirmRun] = useState(false);
 
   const run = async () => {
+    setConfirmRun(false);
     const args = cmd.trim().split(/\s+/).filter(Boolean);
     if (args.length === 0) return;
     setBusy(true);
@@ -263,11 +295,21 @@ function WpCliTab({ site }) {
       <p className="muted">Runs against this site: <code>wp {cmd}</code></p>
       <div className="button-row">
         <input name="wpCliArgs" value={cmd} onChange={(e) => setCmd(e.target.value)} />
-        <button disabled={busy} onClick={run}>
+        <button disabled={busy || !cmd.trim()} onClick={() => setConfirmRun(true)}>
           Run
         </button>
       </div>
       {output && <pre className="terminal">{output}</pre>}
+      {confirmRun && (
+        <ConfirmDialog
+          title="Run this WP-CLI command?"
+          message={`wp ${cmd} -- runs directly against ${site.domain}'s real database and files. Some commands (e.g. db reset, option delete) are not reversible.`}
+          confirmLabel="Run"
+          danger
+          onCancel={() => setConfirmRun(false)}
+          onConfirm={run}
+        />
+      )}
     </div>
   );
 }

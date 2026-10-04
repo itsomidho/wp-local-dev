@@ -272,7 +272,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev uninstall` | Remove containers/volumes/images + the `wpdev` symlink, then optionally this whole directory (see below) |
 | `wpdev add` | Provision a new site (interactive — prompts for domain + PHP version). Non-interactive: `wpdev add --domain=<domain> [--php=<version>]` |
 | `wpdev remove <name> [--yes]` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
-| `wpdev clone <src> <new>` | Duplicate a site (files + DB) under a new domain, with URLs re-pointed and its own DB/cache |
+| `wpdev clone <src> <new> [--yes]` | Duplicate a site (files + DB) under a new domain, with URLs re-pointed and its own DB/cache |
 | `wpdev snapshot <site> [label]` | Save a files+DB snapshot of a site |
 | `wpdev snapshots <site>` | List saved snapshots for a site |
 | `wpdev restore <site> [snap-id] [--yes]` | Restore a site from a snapshot (asks you to confirm; defaults to the latest) |
@@ -420,6 +420,9 @@ it up. The source site is never touched; only files are read from it.
 Refuses to run if the destination name already exists — remove it first
 (`wpdev remove`) or pick a different name, rather than silently overwriting
 something that might matter.
+
+Asks "Continue? (y/n)" before doing anything — skip with `--yes` for
+scripted use.
 
 ## Snapshots
 
@@ -827,6 +830,13 @@ it happens.
 
 **Worth knowing:**
 
+- **Every action that stops a container, overwrites data, or runs an
+  arbitrary command asks for confirmation first** — Restart, Down, cache
+  purge, clone, restore, and running a WP-CLI command all show a yes/no
+  dialog describing exactly what's about to happen; removing a site asks
+  you to type its domain, the same higher bar the CLI itself uses. Up,
+  viewing status/doctor/creds, and toggling cache on/off don't ask, since
+  none of them stop anything or lose data.
 - **Bound to `127.0.0.1` only**, same reasoning as the API it talks to —
   it's just the UI, but there's no reason to expose it further than the
   service doing the actual work.

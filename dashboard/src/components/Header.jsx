@@ -1,12 +1,26 @@
 import { useState } from 'react';
 import { api, getToken, setToken } from '../api';
 import Terminal, { stripAnsiToLines } from './Terminal';
+import ConfirmDialog from './ConfirmDialog';
+
+const STACK_CONFIRM = {
+  restart: {
+    title: 'Restart the stack?',
+    message: 'Every container restarts. All sites will be briefly unreachable.',
+  },
+  down: {
+    title: 'Stop the stack?',
+    message: 'Every container stops. Sites stay unreachable until you run Up again (no data is deleted).',
+    danger: true,
+  },
+};
 
 export default function Header({ health, onStackAction, onRefresh }) {
   const [view, setView] = useState(null); // 'doctor' | 'status' | 'settings' | null
   const [output, setOutput] = useState('');
   const [busy, setBusy] = useState(false);
   const [tokenInput, setTokenInput] = useState(getToken());
+  const [confirmStackAction, setConfirmStackAction] = useState(null); // 'restart' | 'down' | null
 
   const openDoctor = async () => {
     setView('doctor');
@@ -50,6 +64,14 @@ export default function Header({ health, onStackAction, onRefresh }) {
     }
   };
 
+  const requestStackAction = (action) => {
+    if (action === 'up') {
+      runStackAction('up');
+      return;
+    }
+    setConfirmStackAction(action);
+  };
+
   return (
     <header className="header">
       <div className="header-title">
@@ -58,9 +80,9 @@ export default function Header({ health, onStackAction, onRefresh }) {
       </div>
 
       <div className="header-actions">
-        <button disabled={busy} onClick={() => runStackAction('up')}>Up</button>
-        <button disabled={busy} className="secondary" onClick={() => runStackAction('restart')}>Restart</button>
-        <button disabled={busy} className="secondary" onClick={() => runStackAction('down')}>Down</button>
+        <button disabled={busy} onClick={() => requestStackAction('up')}>Up</button>
+        <button disabled={busy} className="secondary" onClick={() => requestStackAction('restart')}>Restart</button>
+        <button disabled={busy} className="secondary" onClick={() => requestStackAction('down')}>Down</button>
         <button className="secondary" onClick={openStatus}>Status</button>
         <button className="secondary" onClick={openDoctor}>Doctor</button>
         <button className="secondary" onClick={() => openLink('adminer')}>Adminer</button>
@@ -119,6 +141,21 @@ export default function Header({ health, onStackAction, onRefresh }) {
             </div>
           </div>
         </div>
+      )}
+
+      {confirmStackAction && (
+        <ConfirmDialog
+          title={STACK_CONFIRM[confirmStackAction].title}
+          message={STACK_CONFIRM[confirmStackAction].message}
+          confirmLabel={confirmStackAction === 'down' ? 'Stop' : 'Restart'}
+          danger={STACK_CONFIRM[confirmStackAction].danger}
+          onCancel={() => setConfirmStackAction(null)}
+          onConfirm={() => {
+            const action = confirmStackAction;
+            setConfirmStackAction(null);
+            runStackAction(action);
+          }}
+        />
       )}
     </header>
   );

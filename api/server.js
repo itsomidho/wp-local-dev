@@ -97,7 +97,7 @@ app.post('/api/sites/:name/clone', requireValidSiteName, (req, res) => {
   if (!SITE_NAME_RE.test(newName || '')) {
     return res.status(400).json({ error: 'newName is required and must match ^[a-z0-9-]+$' });
   }
-  streamWpdev(['clone', req.params.name, newName], res);
+  streamWpdev(['clone', req.params.name, newName, '--yes'], res);
 });
 
 app.get('/api/sites/:name/creds', requireValidSiteName, sync((req) => ['creds', req.params.name]));
