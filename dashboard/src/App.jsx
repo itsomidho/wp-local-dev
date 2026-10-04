@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import Header from './components/Header';
+import MachineStats from './components/MachineStats';
 import SitesPanel, { parseSites } from './components/SitesPanel';
 import AddSiteDialog from './components/AddSiteDialog';
 import SiteManageDialog from './components/SiteManageDialog';
@@ -10,6 +11,8 @@ export default function App() {
   const [health, setHealth] = useState('checking');
   const [sites, setSites] = useState([]);
   const [sitesError, setSitesError] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [statsError, setStatsError] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [manageSite, setManageSite] = useState(null);
   const [log, setLog] = useState(null); // {title, request, onFinished}
@@ -26,6 +29,13 @@ export default function App() {
         setSitesError(null);
       })
       .catch((e) => setSitesError(e.message));
+    api
+      .systemStats()
+      .then((r) => {
+        setStats(r);
+        setStatsError(null);
+      })
+      .catch((e) => setStatsError(e.message));
   }, []);
 
   useEffect(() => {
@@ -67,6 +77,7 @@ export default function App() {
       <Header health={health} onStackAction={runStackAction} onRefresh={refresh} />
 
       <main className="main">
+        <MachineStats stats={stats} error={statsError} />
         {sitesError && <p className="error">{sitesError}</p>}
         <SitesPanel sites={sites} onAdd={() => setShowAdd(true)} onManage={setManageSite} />
       </main>

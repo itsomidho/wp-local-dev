@@ -413,6 +413,24 @@ jobs:
 
           curl -s http://127.0.0.1:9090/api/status | grep -q '"code":0'
 
+          # Regression test -- /api/system/stats reads /proc/meminfo,
+          # /proc/stat, and `df` on the bind-mounted project path from
+          # inside this container. Confirmed by hand (not assumed) that
+          # these reflect the real host, not a cgroup-scoped view of it --
+          # this just asserts the endpoint returns plausible numbers, not
+          # that they match the runner (which this job doesn't control).
+          curl -s http://127.0.0.1:9090/api/system/stats | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          assert 0 <= d['cpu']['percent'] <= 100, d
+          assert d['cpu']['cores'] >= 1, d
+          assert 0 <= d['memory']['percent'] <= 100, d
+          assert d['memory']['totalBytes'] > 0, d
+          assert 0 <= d['disk']['percent'] <= 100, d
+          assert d['disk']['totalBytes'] > 0, d
+          print('system stats OK')
+          "
+
           add_out=$(curl -N -s -X POST http://127.0.0.1:9090/api/sites \
             -H "Content-Type: application/json" \
             -d '{"domain":"apicitest.test","php":"8.2"}' --max-time 120)

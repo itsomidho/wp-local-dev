@@ -828,6 +828,14 @@ status text. `doctor`/`status` show up exactly as they would in a terminal,
 and every provisioning/removal action shows the real, live `wpdev` output as
 it happens.
 
+A "Machine" panel at the top shows the host's CPU, memory, and disk usage
+(for the drive holding this project) — the one part of the dashboard not
+backed by `wpdev` at all, since there's no WordPress-domain judgment call
+in reading `/proc/meminfo`/`/proc/stat`/`df` for a second implementation to
+drift from. On Docker Desktop (Mac/Windows) this reports the Linux VM's
+resources, not the raw host hardware — the more useful number anyway,
+since that VM is the real ceiling on what this stack can use.
+
 **Worth knowing:**
 
 - **Every action that stops a container, overwrites data, or runs an
@@ -869,7 +877,9 @@ wp-local-dev/
 │   ├── Dockerfile
 │   ├── entrypoint.sh            # drops from root to your own uid/gid before running anything
 │   ├── server.js
-│   ├── lib/wpdev.js             # exec/stream wrapper — the only code that calls wpdev
+│   ├── lib/
+│   │   ├── wpdev.js              # exec/stream wrapper — the only code that calls wpdev
+│   │   └── systemStats.js        # host CPU/memory/disk -- not wpdev, see "Web dashboard"
 │   └── package.json
 │
 ├── dashboard/                   # React GUI for the api service — see "Web dashboard"
@@ -878,7 +888,11 @@ wp-local-dev/
 │   ├── nginx.conf
 │   └── src/
 │       ├── api.js                # fetch + SSE client for the api service
+│       ├── theme.js               # dark/light persistence, follows prefers-color-scheme
 │       └── components/
+│           ├── Header.jsx, SitesPanel.jsx, MachineStats.jsx
+│           ├── AddSiteDialog.jsx, SiteManageDialog.jsx, ConfirmDialog.jsx
+│           ├── LogModal.jsx, StatusTable.jsx, Terminal.jsx
 │
 ├── php/
 │   ├── Dockerfile               # wordpress:php${PHP_VERSION}-fpm + xdebug + phpredis + msmtp + cron + wp-cli

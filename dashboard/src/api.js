@@ -47,6 +47,7 @@ async function request(method, path, body) {
 export const api = {
   base: apiBase,
   health: () => request('GET', '/api/health'),
+  systemStats: () => request('GET', '/api/system/stats'),
   status: () => request('GET', '/api/status'),
   doctor: () => request('GET', '/api/doctor'),
   sites: () => request('GET', '/api/sites'),

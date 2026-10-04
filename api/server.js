@@ -6,6 +6,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { runWpdev, streamWpdev, PROJECT_DIR } = require('./lib/wpdev');
+const { getSystemStats } = require('./lib/systemStats');
 
 // Always 9090 inside the container -- docker-compose.yml maps the HOST-side
 // port via API_PORT; this is a container-internal detail, not something
@@ -59,6 +60,14 @@ const sync = (buildArgs) => async (req, res) => {
 const stream = (buildArgs) => (req, res) => streamWpdev(buildArgs(req), res);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+app.get('/api/system/stats', async (req, res) => {
+  try {
+    res.json(await getSystemStats(PROJECT_DIR));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Stack
