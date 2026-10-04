@@ -437,6 +437,21 @@ jobs:
 
           ! ./wpdev list | grep -q apicitest.test
 
+      - name: >
+          Regression test -- the dashboard (React GUI for the api service,
+          started by `wpdev up` above) serves its built assets and renders
+          the right API_PORT into config.js. Not a full browser E2E test
+          (the dashboard is a thin client over the api service already
+          covered above, and was verified by hand in a real browser while
+          building it) -- this just catches a broken build or a
+          docker-entrypoint.sh/envsubst regression.
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/)
+          [ "$code" = "200" ]
+
+          curl -s http://127.0.0.1:8081/ | grep -qi "<title>wp-local-dev</title>"
+          curl -s http://127.0.0.1:8081/config.js | grep -q 'http://localhost:9090'
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wp-local-dev</title>
+    <!--
+      Runtime config, not baked at build time -- docker-entrypoint.sh
+      envsubst's this from .env's API_PORT on every container start, so
+      changing API_PORT doesn't require rebuilding the dashboard image.
+      In `npm run dev` this file doesn't exist; api.js's DEFAULT_BASE
+      (http://localhost:9090) covers that case.
+    -->
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

@@ -10,6 +10,7 @@
 #   wpdev adminer [name]      Open Adminer in the browser (root, or deep-linked to one site's DB)
 #   wpdev portainer           Open Portainer in the browser (Docker container/image management)
 #   wpdev mailpit             Open Mailpit in the browser (every site's outgoing mail, caught)
+#   wpdev dashboard           Open the web dashboard in the browser (GUI for everything above)
 #   wpdev reload-nginx
 #   wpdev backup
 #   wpdev install-mkcert
@@ -94,6 +95,7 @@ show_help() {
     echo "  adminer [name]            Open Adminer in the browser (root, or deep-linked to one site's DB)"
     echo "  portainer                 Open Portainer in the browser (Docker container/image management)"
     echo "  mailpit                   Open Mailpit in the browser (every site's outgoing mail, caught)"
+    echo "  dashboard                 Open the web dashboard in the browser (GUI for everything above)"
     echo "  reload-nginx              Test and reload Nginx config"
     echo "  cache <site> on|off       Toggle nginx full-page cache for a site (bypassed when logged in, on POST, wp-admin, etc.)"
     echo "  cache-purge               Clear the full-page cache (shared across every site that has it enabled)"
@@ -319,7 +321,7 @@ cmd_doctor() {
         warnings=$((warnings + 1))
     fi
 
-    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer wp-api"
+    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer wp-api wp-dashboard"
     for v in $SUPPORTED_PHP_VERSIONS; do
         expected_containers="$expected_containers wp-$(php_slug "$v")"
     done
@@ -608,6 +610,27 @@ cmd_mailpit() {
 
     echo "Opening ${url}"
     echo "Every site's outgoing mail lands here — nothing ever leaves the machine."
+
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then
+        open "$url" >/dev/null 2>&1 &
+    else
+        print_warning "No browser opener found (xdg-open/open) — open the URL above manually."
+    fi
+}
+
+cmd_dashboard() {
+    if [ -f .env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    port="${DASHBOARD_PORT:-8081}"
+    url="http://localhost:${port}/"
+
+    echo "Opening ${url}"
 
     if command -v xdg-open >/dev/null 2>&1; then
         xdg-open "$url" >/dev/null 2>&1 &
@@ -2109,6 +2132,7 @@ case "${1:-help}" in
     adminer) cmd_adminer "$2" ;;
     portainer) cmd_portainer ;;
     mailpit) cmd_mailpit ;;
+    dashboard) cmd_dashboard ;;
     reload-nginx) cmd_reload_nginx ;;
     cache) cmd_cache "$2" "$3" ;;
     cache-purge) cmd_cache_purge ;;

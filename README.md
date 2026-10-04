@@ -60,6 +60,9 @@ touches `docker-compose.yml`.
 - **HTTP API** — every `wpdev` command available over HTTP (with live
   progress streaming for the slow ones), for a GUI or other tooling to
   drive this stack without a shell. See [API service](#api-service).
+- **Web dashboard** — a React GUI for the API above: add/remove/clone
+  sites, snapshots, caching, WP-CLI, all from the browser. See
+  [Web dashboard](#web-dashboard).
 
 ## Prerequisites
 
@@ -189,7 +192,7 @@ wpdev update
 
 ```bash
 wpdev install-mkcert     # 1. one-time: sets up a local trusted SSL CA
-wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api
+wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api, dashboard
 wpdev add                 # 3. provision your first site
 ```
 
@@ -257,6 +260,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev adminer [name]` | Open Adminer in the browser — root by default, or deep-linked to one site's DB |
 | `wpdev portainer` | Open Portainer in the browser (Docker container/image management) |
 | `wpdev mailpit` | Open Mailpit in the browser — every site's outgoing mail, caught |
+| `wpdev dashboard` | Open the web dashboard in the browser (GUI for everything above) |
 | `wpdev reload-nginx` | Test + reload Nginx (after editing a vhost by hand) |
 | `wpdev cache <site> on\|off` | Toggle nginx full-page cache for a site |
 | `wpdev cache-purge` | Clear the full-page cache (shared across every site that has it enabled) |
@@ -294,6 +298,7 @@ WP-CLI (site provisioning), nothing hidden behind it.
 | Portainer | `http://localhost:9000` | Set your own admin account on first visit (see below) |
 | Mailpit | `http://localhost:8025` | none — local only, nothing ever really sends |
 | API | `http://localhost:9090` | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
+| Dashboard | `http://localhost:8081` | none — API token (if set) entered in its own settings panel |
 
 ## Status dashboard
 
@@ -801,11 +806,44 @@ this container has no browser to open it for you.
   directory's path, your uid/gid, the Docker socket's gid), re-detected on
   every run. Don't hand-edit them or copy them from another machine.
 
+## Web dashboard
+
+```bash
+wpdev dashboard
+```
+
+A React GUI (`dashboard/`) for everything above — add/remove/clone sites,
+manage snapshots, toggle caching, run WP-CLI commands, and watch
+long-running actions stream live, all from the browser instead of the CLI.
+Starts automatically with `wpdev up`, at `http://localhost:8081` by default
+(`DASHBOARD_PORT` in `.env`).
+
+It's a thin client, same principle as the API: it's static files (no server
+logic of its own) that talk directly to the `api` service from your
+browser, rendering `wpdev`'s own colored output rather than re-deriving
+status text. `doctor`/`status` show up exactly as they would in a terminal,
+and every provisioning/removal action shows the real, live `wpdev` output as
+it happens.
+
+**Worth knowing:**
+
+- **Bound to `127.0.0.1` only**, same reasoning as the API it talks to —
+  it's just the UI, but there's no reason to expose it further than the
+  service doing the actual work.
+- **No build-time coupling to `API_PORT`.** Changing `API_PORT` in `.env`
+  and restarting (not rebuilding) the `dashboard` container picks it up —
+  a small `config.js` is regenerated from the current `.env` on every
+  container start.
+- **The API token**, if you've set `API_TOKEN`, goes in the dashboard's own
+  settings panel (⚙ in the header) — it's stored in your browser's
+  `localStorage`, sent as `Authorization: Bearer <token>` on every request,
+  and never touches the image or the container.
+
 ## Project structure
 
 ```
 wp-local-dev/
-├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api
+├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api, dashboard
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── .env.example                 # template for .env, copied by install.sh
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)
@@ -823,6 +861,14 @@ wp-local-dev/
 │   ├── server.js
 │   ├── lib/wpdev.js             # exec/stream wrapper — the only code that calls wpdev
 │   └── package.json
+│
+├── dashboard/                   # React GUI for the api service — see "Web dashboard"
+│   ├── Dockerfile                # build: npm run build; runtime: nginx serving dist/
+│   ├── docker-entrypoint.sh      # renders config.js from .env's API_PORT on every start
+│   ├── nginx.conf
+│   └── src/
+│       ├── api.js                # fetch + SSE client for the api service
+│       └── components/
 │
 ├── php/
 │   ├── Dockerfile               # wordpress:php${PHP_VERSION}-fpm + xdebug + phpredis + msmtp + cron + wp-cli
