@@ -52,11 +52,13 @@ export default function MachineStats({ stats, error }) {
         <Stat
           label="Disk"
           percent={disk.percent}
-          detail={`${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)}`}
+          detail={`partition: ${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)}`}
           extra={
-            // The bar above is the whole partition (is this drive filling
-            // up); this is just what wp-local-dev itself (sites + snapshots
-            // + backups) has used of that -- a different, smaller question.
+            // The bar + detail above is the whole partition (is this drive
+            // filling up); this is just what wp-local-dev itself (sites +
+            // snapshots + backups) has used of that -- a different, smaller
+            // question, so it needs its own label rather than a bare number
+            // that reads like a second measurement of the same thing.
             disk.projectBytes != null ? `wp-local-dev: ${formatBytes(disk.projectBytes)}` : null
           }
         />
