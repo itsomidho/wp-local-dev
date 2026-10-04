@@ -876,6 +876,15 @@ line already reports) — "how much has this project itself used." They're
 easy to conflate but answer different questions, especially if this
 project shares a partition with anything else.
 
+A **Docs** button in the header opens this README itself, rendered in the
+dashboard — a searchable sidebar table of contents next to the full text,
+so there's one explanation of this project instead of a second, shorter one
+duplicated into the UI. It's the real `README.md`, imported directly at
+build time (not copied), so it can't drift out of sync with this file; the
+search box filters the table of contents to headings whose title or body
+text matches, and each entry jumps to its section like any in-page anchor
+link.
+
 **Worth knowing:**
 
 - **Every action that stops a container, overwrites data, or runs an

@@ -7,8 +7,10 @@ import { parseStatusSites } from './components/StatusTable';
 import AddSiteDialog from './components/AddSiteDialog';
 import SiteManageDialog from './components/SiteManageDialog';
 import LogModal from './components/LogModal';
+import DocsPage from './components/DocsPage';
 
 export default function App() {
+  const [showDocs, setShowDocs] = useState(false);
   const [health, setHealth] = useState('checking');
   const [sites, setSites] = useState([]);
   const [sitesError, setSitesError] = useState(null);
@@ -113,13 +115,22 @@ export default function App() {
 
   return (
     <div className="app">
-      <Header health={health} onStackAction={runStackAction} onRefresh={refreshAll} />
+      <Header
+        health={health}
+        onStackAction={runStackAction}
+        onRefresh={refreshAll}
+        onOpenDocs={() => setShowDocs(true)}
+      />
 
-      <main className="main">
-        <MachineStats stats={stats} error={statsError} />
-        {sitesError && <p className="error">{sitesError}</p>}
-        <SitesPanel sites={sites} versions={versions} onAdd={() => setShowAdd(true)} onManage={setManageSite} />
-      </main>
+      {showDocs ? (
+        <DocsPage onClose={() => setShowDocs(false)} />
+      ) : (
+        <main className="main">
+          <MachineStats stats={stats} error={statsError} />
+          {sitesError && <p className="error">{sitesError}</p>}
+          <SitesPanel sites={sites} versions={versions} onAdd={() => setShowAdd(true)} onManage={setManageSite} />
+        </main>
+      )}
 
       {showAdd && <AddSiteDialog onSubmit={startAdd} onClose={() => setShowAdd(false)} />}
 

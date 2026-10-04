@@ -473,6 +473,14 @@ jobs:
           curl -s http://127.0.0.1:39007/ | grep -qi "<title>wp-local-dev</title>"
           curl -s http://127.0.0.1:39007/config.js | grep -q 'http://localhost:39006'
 
+          # Regression test -- the Docs page bundles the real README.md at
+          # build time (Dockerfile must copy it to the same relative depth
+          # as local dev expects, see DocsPage.jsx's `?raw` import). Grep the
+          # built JS for actual README prose (not a source comment -- the
+          # build minifies those away) to catch a stale or empty bundle.
+          js_path=$(curl -s http://127.0.0.1:39007/ | grep -oE '/assets/index-[^"]+\.js' | head -1)
+          curl -s "http://127.0.0.1:39007$js_path" | grep -q "Multi-site, multi-PHP"
+
       - name: >
           Regression test -- `wpdev add --wp-version=` actually installs
           the requested version, not just accepts the flag. Switched the

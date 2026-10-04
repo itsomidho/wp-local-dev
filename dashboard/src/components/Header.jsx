@@ -5,6 +5,7 @@ import {
   Square,
   Activity,
   Stethoscope,
+  BookOpen,
   ExternalLink,
   RefreshCw,
   Settings as SettingsIcon,
@@ -29,7 +30,7 @@ const STACK_CONFIRM = {
   },
 };
 
-export default function Header({ health, onStackAction, onRefresh }) {
+export default function Header({ health, onStackAction, onRefresh, onOpenDocs }) {
   const [view, setView] = useState(null); // 'doctor' | 'status' | 'settings' | null
   const [output, setOutput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -125,6 +126,9 @@ export default function Header({ health, onStackAction, onRefresh }) {
           </button>
           <button className="ghost" onClick={openDoctor}>
             <Stethoscope size={14} strokeWidth={2} /> Doctor
+          </button>
+          <button className="ghost" onClick={onOpenDocs}>
+            <BookOpen size={14} strokeWidth={2} /> Docs
           </button>
         </div>
 
