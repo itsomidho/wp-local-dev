@@ -408,10 +408,10 @@ jobs:
           this container left root-owned files under snapshots/ that the
           host user couldn't even `rm` without sudo.
         run: |
-          curl -sf http://127.0.0.1:9090/api/health
+          curl -sf http://127.0.0.1:39006/api/health
           echo
 
-          curl -s http://127.0.0.1:9090/api/status | grep -q '"code":0'
+          curl -s http://127.0.0.1:39006/api/status | grep -q '"code":0'
 
           # Regression test -- /api/system/stats reads /proc/meminfo,
           # /proc/stat, and `df` on the bind-mounted project path from
@@ -419,7 +419,7 @@ jobs:
           # these reflect the real host, not a cgroup-scoped view of it --
           # this just asserts the endpoint returns plausible numbers, not
           # that they match the runner (which this job doesn't control).
-          curl -s http://127.0.0.1:9090/api/system/stats | python3 -c "
+          curl -s http://127.0.0.1:39006/api/system/stats | python3 -c "
           import json, sys
           d = json.load(sys.stdin)
           assert 0 <= d['cpu']['percent'] <= 100, d
@@ -431,7 +431,7 @@ jobs:
           print('system stats OK')
           "
 
-          add_out=$(curl -N -s -X POST http://127.0.0.1:9090/api/sites \
+          add_out=$(curl -N -s -X POST http://127.0.0.1:39006/api/sites \
             -H "Content-Type: application/json" \
             -d '{"domain":"apicitest.test","php":"8.2"}' --max-time 120)
           echo "$add_out" | grep -qi "apicitest.test is ready"
@@ -451,9 +451,9 @@ jobs:
           echo "nginx config owned by: $owner"
           [ "$owner" != "root" ]
 
-          curl -s http://127.0.0.1:9090/api/sites/apicitest/creds | grep -qi "Site: apicitest"
+          curl -s http://127.0.0.1:39006/api/sites/apicitest/creds | grep -qi "Site: apicitest"
 
-          remove_out=$(curl -N -s -X DELETE http://127.0.0.1:9090/api/sites/apicitest --max-time 60)
+          remove_out=$(curl -N -s -X DELETE http://127.0.0.1:39006/api/sites/apicitest --max-time 60)
           echo "$remove_out" | grep -qi "apicitest.test removed"
 
           ! ./wpdev list | grep -q apicitest.test
@@ -467,11 +467,11 @@ jobs:
           building it) -- this just catches a broken build or a
           docker-entrypoint.sh/envsubst regression.
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/)
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:39007/)
           [ "$code" = "200" ]
 
-          curl -s http://127.0.0.1:8081/ | grep -qi "<title>wp-local-dev</title>"
-          curl -s http://127.0.0.1:8081/config.js | grep -q 'http://localhost:9090'
+          curl -s http://127.0.0.1:39007/ | grep -qi "<title>wp-local-dev</title>"
+          curl -s http://127.0.0.1:39007/config.js | grep -q 'http://localhost:39006'
 
       - name: Remove both sites and confirm doctor reports no failures
         run: |

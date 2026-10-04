@@ -532,7 +532,7 @@ cmd_adminer() {
         source .env
         set +a
     fi
-    port="${ADMINER_PORT:-8080}"
+    port="${ADMINER_PORT:-39002}"
     # Server is prefilled by the ADMINER_DEFAULT_SERVER env var on the
     # container itself (docker-compose.yml) — this image doesn't take it as
     # a URL param. username/db here do work as URL params.
@@ -582,7 +582,7 @@ cmd_portainer() {
         source .env
         set +a
     fi
-    port="${PORTAINER_PORT:-9000}"
+    port="${PORTAINER_PORT:-39003}"
     url="http://localhost:${port}/"
 
     echo "Opening ${url}"
@@ -605,7 +605,7 @@ cmd_mailpit() {
         source .env
         set +a
     fi
-    port="${MAILPIT_UI_PORT:-8025}"
+    port="${MAILPIT_UI_PORT:-39004}"
     url="http://localhost:${port}/"
 
     echo "Opening ${url}"
@@ -627,7 +627,7 @@ cmd_dashboard() {
         source .env
         set +a
     fi
-    port="${DASHBOARD_PORT:-8081}"
+    port="${DASHBOARD_PORT:-39007}"
     url="http://localhost:${port}/"
 
     echo "Opening ${url}"

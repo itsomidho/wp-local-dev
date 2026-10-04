@@ -292,13 +292,20 @@ WP-CLI (site provisioning), nothing hidden behind it.
 | Service | URL | Credentials |
 |---|---|---|
 | Your sites | `https://<domain>` | `wpdev creds <name>` |
-| Adminer | `http://localhost:8080` | `root` / `DB_ROOT_PASSWORD` in `.env` |
-| MySQL (host) | `localhost:3306` | `root` / `DB_ROOT_PASSWORD` in `.env` |
-| Redis (host) | `localhost:6379` | none (no auth configured — local dev only) |
-| Portainer | `http://localhost:9000` | Set your own admin account on first visit (see below) |
-| Mailpit | `http://localhost:8025` | none — local only, nothing ever really sends |
-| API | `http://localhost:9090` | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
-| Dashboard | `http://localhost:8081` | none — API token (if set) entered in its own settings panel |
+| Adminer | `http://localhost:39002` (`ADMINER_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
+| MySQL (host) | `localhost:39000` (`MYSQL_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
+| Redis (host) | `localhost:39001` (`REDIS_PORT`) | none (no auth configured — local dev only) |
+| Portainer | `http://localhost:39003` (`PORTAINER_PORT`) | Set your own admin account on first visit (see below) |
+| Mailpit | `http://localhost:39004` (`MAILPIT_UI_PORT`) | none — local only, nothing ever really sends |
+| API | `http://localhost:39006` (`API_PORT`) | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
+| Dashboard | `http://localhost:39007` (`DASHBOARD_PORT`) | none — API token (if set) entered in its own settings panel |
+
+Every port above except nginx's 80/443 lives in one deliberately-uncommon
+block (39000–39007, see `.env.example`) specifically to avoid colliding with
+another locally-installed MySQL/Redis or some other tool's web UI on 8080/
+9000 — the single most common reason a `docker compose up` fails on a dev
+machine that already has other things running. Change any one of them in
+`.env` if it ever does collide with something else.
 
 ## Status dashboard
 
@@ -689,8 +696,8 @@ automatically for every site — including ones that predate this feature.
 wpdev mailpit
 ```
 
-Opens the web inbox at `http://localhost:8025`. Real SMTP too, at
-`localhost:1025`, if some tool wants to connect directly instead of going
+Opens the web inbox at `http://localhost:39004`. Real SMTP too, at
+`localhost:39005`, if some tool wants to connect directly instead of going
 through `mail()`.
 
 ## Real WP-Cron
@@ -748,7 +755,7 @@ screen — get it with `docker logs wp-portainer`, paste it in, then create
 your own admin account.
 
 **Worth knowing:** Portainer works by mounting your host's `docker.sock`,
-which gives it — and anyone who can reach `localhost:9000` — full control of
+which gives it — and anyone who can reach `localhost:39003` — full control of
 your *entire* Docker daemon, not just this project's four containers. That's
 inherent to how Portainer works, not a misconfiguration. Fine for a personal
 dev machine; worth remembering if this box is ever shared or exposed.
@@ -761,13 +768,13 @@ anything slow and step-by-step: `add`, `clone`, `snapshot`, `restore`,
 `update`, `backup`, `restore-all`) streams its output live as
 Server-Sent Events. It exists so a GUI or other automation can drive this
 stack without shelling out itself. Starts automatically with `wpdev up`,
-same as every other service, at `http://127.0.0.1:9090` by default
+same as every other service, at `http://127.0.0.1:39006` by default
 (`API_PORT` in `.env`).
 
 ```bash
-curl http://127.0.0.1:9090/api/status
-curl http://127.0.0.1:9090/api/sites
-curl -X POST http://127.0.0.1:9090/api/sites \
+curl http://127.0.0.1:39006/api/status
+curl http://127.0.0.1:39006/api/sites
+curl -X POST http://127.0.0.1:39006/api/sites \
   -H 'Content-Type: application/json' \
   -d '{"domain": "mysite.test", "php": "8.2"}'
 ```
@@ -818,7 +825,7 @@ wpdev dashboard
 A React GUI (`dashboard/`) for everything above — add/remove/clone sites,
 manage snapshots, toggle caching, run WP-CLI commands, and watch
 long-running actions stream live, all from the browser instead of the CLI.
-Starts automatically with `wpdev up`, at `http://localhost:8081` by default
+Starts automatically with `wpdev up`, at `http://localhost:39007` by default
 (`DASHBOARD_PORT` in `.env`).
 
 It's a thin client, same principle as the API: it's static files (no server
