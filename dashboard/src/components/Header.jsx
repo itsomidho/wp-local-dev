@@ -12,7 +12,7 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import { api, getToken, setToken } from '../api';
+import { api, appVersion, getToken, setToken } from '../api';
 import Terminal, { stripAnsiToLines } from './Terminal';
 import StatusTable, { parseStatusSites } from './StatusTable';
 import ConfirmDialog from './ConfirmDialog';
@@ -101,6 +101,11 @@ export default function Header({ health, onStackAction, onRefresh, onOpenDocs })
       <div className="header-title">
         <span className="mark">wp</span>
         <h1>local-dev</h1>
+        {appVersion() && (
+          <span className="badge" title="git describe for this checkout">
+            {appVersion()}
+          </span>
+        )}
         <span className={`health-dot ${health}`} />
         <span className="health-label">{healthLabel}</span>
       </div>

@@ -170,6 +170,15 @@ cmd_up() {
         set_env_var API_GID "$(id -g)"
         docker_gid="$(stat -c '%g' /var/run/docker.sock 2>/dev/null)" || true
         [ -n "$docker_gid" ] && set_env_var DOCKER_GID "$docker_gid"
+
+        # What the dashboard shows as its own version -- nearest tag plus
+        # commits-since-and-hash (git describe), not a hand-maintained
+        # version file that drifts the moment someone forgets to bump it.
+        # `--always` falls back to a bare short hash if this checkout has
+        # no tags reachable at all; `|| echo unknown` only fires if git
+        # itself fails outright (e.g. .git missing from a tarball install).
+        app_version="$(git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null)" || app_version="unknown"
+        set_env_var APP_VERSION "$app_version"
     fi
 
     docker compose up -d

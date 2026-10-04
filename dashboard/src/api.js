@@ -8,6 +8,14 @@ function apiBase() {
   return (window.__WPDEV_API_BASE__ && window.__WPDEV_API_BASE__.trim()) || DEFAULT_BASE;
 }
 
+// Set by config.js (rendered from .env's APP_VERSION on every container
+// start -- see docker-entrypoint.sh) to `git describe`'s output for this
+// checkout. Null in `npm run dev`, where config.js doesn't exist at all
+// (same as apiBase's DEFAULT_BASE fallback above).
+export function appVersion() {
+  return window.__WPDEV_APP_VERSION__ || null;
+}
+
 export function getToken() {
   return localStorage.getItem('wpdev_api_token') || '';
 }

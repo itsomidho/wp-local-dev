@@ -473,6 +473,20 @@ jobs:
           curl -s http://127.0.0.1:39007/ | grep -qi "<title>wp-local-dev</title>"
           curl -s http://127.0.0.1:39007/config.js | grep -q 'http://localhost:39006'
 
+          # Regression test -- `wpdev up` (run above) must have synced a real
+          # `git describe` into .env's APP_VERSION and docker-entrypoint.sh
+          # must have envsubst'd it into config.js, same mechanism as
+          # API_PORT above. Not asserting on the exact format (whether this
+          # checkout's tags were fetched affects whether it's a full
+          # "vX.Y.Z-N-gHASH" or just the bare short hash) -- just that
+          # something real landed, not an empty string or the literal
+          # unsubstituted placeholder a missing envsubst allow-list entry
+          # would leave behind.
+          config=$(curl -s http://127.0.0.1:39007/config.js)
+          echo "$config" | grep -qE '__WPDEV_APP_VERSION__ = "[^"]+"'
+          ! echo "$config" | grep -q '__WPDEV_APP_VERSION__ = "unknown"'
+          ! echo "$config" | grep -q '\${APP_VERSION}'
+
           # Regression test -- the Docs page bundles the real README.md at
           # build time (Dockerfile must copy it to the same relative depth
           # as local dev expects, see DocsPage.jsx's `?raw` import). Grep the

@@ -901,6 +901,11 @@ link.
   and restarting (not rebuilding) the `dashboard` container picks it up —
   a small `config.js` is regenerated from the current `.env` on every
   container start.
+- **The small version badge next to "local-dev"** is `git describe` for
+  whatever commit is actually checked out (tag, commits-since, short
+  hash — `-dirty` appended over uncommitted changes), re-detected on
+  every `wpdev up` the same way `API_UID`/`PROJECT_DIR` are. Not a
+  hand-maintained version number that can fall out of sync with reality.
 - **The API token**, if you've set `API_TOKEN`, goes in the dashboard's own
   settings panel (⚙ in the header) — it's stored in your browser's
   `localStorage`, sent as `Authorization: Bearer <token>` on every request,
