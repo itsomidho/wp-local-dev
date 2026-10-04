@@ -46,7 +46,7 @@
   --ansi-red: #e8626b;
   --ansi-blue: #7aa2f7;
 
-  --font-ui: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'Fira Code', ui-monospace, Menlo, Consolas, monospace;
 
   color-scheme: dark;

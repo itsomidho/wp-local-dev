@@ -4,9 +4,10 @@ import { createRoot } from 'react-dom/client'
 // premise is running locally with nothing phoning out (mail is caught by
 // Mailpit, certs are local, etc.), so the dashboard shouldn't need a live
 // connection to render its own UI.
-import '@fontsource/space-grotesk/500.css'
-import '@fontsource/space-grotesk/600.css'
-import '@fontsource/space-grotesk/700.css'
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
 import '@fontsource/fira-code/400.css'
 import '@fontsource/fira-code/500.css'
 import '@fontsource/fira-code/600.css'
