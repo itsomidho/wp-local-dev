@@ -238,6 +238,9 @@ services:
       API_UID: ${API_UID:-1000}
       API_GID: ${API_GID:-1000}
       DOCKER_GID: ${DOCKER_GID:-}
+      # Tells wpdev it's running inside this container, so up/restart/down/
+      # update leave wp-api itself alone (see stack_services in wpdev).
+      WPDEV_IN_API: "1"
     ports:
       # 127.0.0.1-only -- this service can delete sites and drop databases
       # on a bare HTTP call (plus whatever auth API_TOKEN adds on top; see
