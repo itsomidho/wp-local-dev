@@ -47,6 +47,23 @@ export default function SiteManageDialog({ site, onClose, onRunAction, onRemoved
 function OverviewTab({ site }) {
   const [creds, setCreds] = useState(null);
   const [error, setError] = useState(null);
+  const [certBusy, setCertBusy] = useState(false);
+  const [certResult, setCertResult] = useState(null);
+  const [confirmCert, setConfirmCert] = useState(false);
+
+  const reissueCert = async () => {
+    setConfirmCert(false);
+    setCertBusy(true);
+    setCertResult(null);
+    try {
+      const r = await api.cert(site.name);
+      setCertResult(r.stdout || r.stderr);
+    } catch (e) {
+      setCertResult(e.message);
+    } finally {
+      setCertBusy(false);
+    }
+  };
 
   useEffect(() => {
     api
@@ -59,7 +76,7 @@ function OverviewTab({ site }) {
     <div>
       <p>
         <a href={siteUrl(site.domain)} target="_blank" rel="noreferrer">
-          https://{site.domain}
+          {siteUrl(site.domain)}
         </a>{' '}
         /{' '}
         <a href={`${siteUrl(site.domain)}/wp-admin`} target="_blank" rel="noreferrer">
@@ -68,6 +85,20 @@ function OverviewTab({ site }) {
       </p>
       {error && <p className="error">{error}</p>}
       {creds && <pre className="terminal">{creds}</pre>}
+      <div className="button-row">
+        <button disabled={certBusy} className="secondary" onClick={() => setConfirmCert(true)}>
+          Reissue HTTPS certificate
+        </button>
+      </div>
+      {certResult && <pre className="terminal">{certResult}</pre>}
+      {confirmCert && (
+        <ConfirmDialog
+          title="Reissue this site's certificate?"
+          message={`Replaces ${site.domain}'s certificate with a new one from the current mkcert CA and reloads nginx. Use it when Doctor flags the cert, or the browser shows a certificate warning.`}
+          onCancel={() => setConfirmCert(false)}
+          onConfirm={reissueCert}
+        />
+      )}
     </div>
   );
 }

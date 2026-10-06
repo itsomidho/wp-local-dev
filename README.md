@@ -294,6 +294,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev list` | List configured site domains |
 | `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
+| `wpdev cert <name>` | Reissue a site's HTTPS certificate from the current mkcert CA, then reload nginx |
 | `wpdev wp <name> <args...>` | Run any WP-CLI command against a site, e.g. `wpdev wp mysite plugin list` |
 
 Answering "no" to any confirmation prompt prints `Cancelled.` and exits
@@ -377,13 +378,19 @@ for you, just tells you the command to run:
 - Docker daemon reachable, `.env` present and populated
 - Every expected container actually running (not just present)
 - Orphaned `wp-*` containers left over from a renamed/removed service
+- Containers left behind by an interrupted recreate. Compose temporarily
+  renames a container it's replacing to `<id>_wp-<service>`, and if the
+  process doing that dies mid-way, the never-started replacement stays
+  behind. `wpdev up` removes those itself.
 - mkcert's local CA actually exists (not just that `mkcert` is installed)
 - A stray `docker/` directory at the repo root, if present
 - Two host-level problems that masquerade as a broken stack — a dead Docker
   credential helper, and a VPN resolver containers can't reach. `wpdev up`
   repairs both by itself; `doctor` just reports them (see "Host environment")
 - Disk usage of `sites/`
-- Per site: `/etc/hosts` entry present, SSL cert present, and — the one
+- Per site: `/etc/hosts` entry present, SSL cert present and still good
+  (not expired or expiring within 30 days, and issued by the mkcert CA
+  your browser trusts; if not, run `wpdev cert <site>`), and — the one
   this was built for — **whether the database `wp-config.php` actually
   points at really exists**, distinct from existing-but-empty. This is
   exactly the check that would have caught the incident that led to this
@@ -842,11 +849,14 @@ this container has no browser to open it for you.
   from `id -u`/`id -g`), not root, so files it writes directly — snapshots,
   nginx configs, SSL certificates, backups — land owned by you, same as if
   you'd run `wpdev` from the CLI yourself.
-- **Certificates:** site creation through the API still generates a real
-  cert via mkcert. By default it uses its own container-local CA (valid,
-  but not browser-trusted — same visual warning as any self-signed cert).
-  Set `MKCERT_CAROOT` in `.env` to your host's `mkcert -CAROOT` output to
-  share its already-trusted CA instead.
+- **Certificates:** site creation through the API generates a real cert via
+  mkcert, from your host's own mkcert CA, so it's browser-trusted the same
+  as a site created from the CLI. `wpdev up` fills `MKCERT_CAROOT` in `.env`
+  with your host's `mkcert -CAROOT` when it's empty, and mounts that CA into
+  the api container. It never overrides a value you've set. Without mkcert
+  on the host, the api falls back to a container-local CA of its own
+  (valid, but browsers show a certificate warning). A site created that way
+  can be fixed later with `wpdev cert <site>` once the CA is shared.
 - **`status` checks reachability the same way from here as from the host.**
   Inside the api container, `127.0.0.1` is the container itself, not
   nginx, so the check connects to nginx over the compose network instead,
@@ -947,6 +957,9 @@ link.
   15s poll, since that would mean a `git fetch` every 15 seconds).
   Clicking it confirms, then streams `wpdev update` live the same way
   adding a site does: pulls, rebuilds, and recreates every container.
+- **A "Reissue HTTPS certificate" button** in each site's Overview tab runs
+  `wpdev cert` for that site (after a confirmation). Use it when Doctor
+  flags the cert, or your browser shows a certificate warning.
 - **The API token**, if you've set `API_TOKEN`, goes in the dashboard's own
   settings panel (⚙ in the header) — it's stored in your browser's
   `localStorage`, sent as `Authorization: Bearer <token>` on every request,
