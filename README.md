@@ -266,6 +266,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev update-check` | Fetch and report whether an update is available — no changes made |
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
+| `wpdev fix-dns` | Repair container DNS when the host's resolver lives behind a VPN tunnel (needs sudo). `wpdev up` already does this for you — this is for running it on its own |
 | `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
 | `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` |
 | `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
@@ -363,6 +364,9 @@ for you, just tells you the command to run:
 - Orphaned `wp-*` containers left over from a renamed/removed service
 - mkcert's local CA actually exists (not just that `mkcert` is installed)
 - A stray `docker/` directory at the repo root, if present
+- Two host-level problems that masquerade as a broken stack — a dead Docker
+  credential helper, and a VPN resolver containers can't reach. `wpdev up`
+  repairs both by itself; `doctor` just reports them (see "Host environment")
 - Disk usage of `sites/`
 - Per site: `/etc/hosts` entry present, SSL cert present, and — the one
   this was built for — **whether the database `wp-config.php` actually
@@ -989,6 +993,143 @@ wp-local-dev/
 └── .github/workflows/           # CI: provisions real sites and exercises every feature above on each push
 ```
 
+## Host environment
+
+Four things *outside* this repo break the stack in ways whose error messages
+point nowhere near their cause. `wpdev doctor` reports all four; `wpdev up`
+repairs the two that are unambiguously broken settings rather than choices.
+
+### Builds run in the host network namespace
+
+Every `build:` here sets `network: host`, so build steps resolve names and
+reach the internet exactly the way any other process on the machine does.
+This is not a performance tweak — it's what keeps builds working on a
+machine whose *container* networking is unusable, which on a corporate
+laptop is the normal case rather than the exception. A bridge-network build
+inherits whatever resolver the host advertises, and if that resolver lives
+behind a VPN tunnel the build can't reach it (see below).
+
+It's also the only reason the `HTTP_PROXY` in `.env.example` can say
+`127.0.0.1` — on a bridge network that address is the build container
+itself, not your proxy.
+
+The php images had this from early on and the `api`/`dashboard` images did
+not, which produced a memorable afternoon: `php82` built fine while
+`dashboard` failed on `npm ci` and `api` failed on `apt-get`, every time, on
+the same machine and the same network. If you add a service with a `build:`
+stanza, give it `network: host` and the three proxy args too, or it will
+fail alone and look like a mystery.
+
+### A credential helper that isn't installed
+
+If `~/.docker/config.json` carries a `"credsStore"` naming a helper binary
+that isn't on `PATH` — classically `"desktop"`, left behind by a Docker
+Desktop that's since been removed — then *every* image pull dies before it
+reaches the registry:
+
+```
+error getting credentials - err: exec: "docker-credential-desktop":
+executable file not found in $PATH
+```
+
+Nothing is wrong with the stack; `wpdev up` just can't fetch its first
+image. `wpdev up` detects this, drops the dead key (keeping a timestamped
+backup next to the file), and carries on. No sudo needed.
+
+One consequence worth knowing: credentials that helper was storing are gone
+with it, so a private registry will want a fresh `docker login`, and that
+login lands base64'd in `config.json` rather than in a keyring. To keep a
+keyring, install one (`apt install golang-docker-credential-helpers` on
+Debian or Ubuntu) and set `"credsStore": "secretservice"`.
+
+### A VPN resolver containers can't route to
+
+With a corporate VPN connected — Cisco AnyConnect's `cscotun0`, WireGuard,
+plain `tun0` — systemd-resolved's uplink is usually a private address routed
+*through the tunnel*. Docker copies that address into every container's
+`/etc/resolv.conf`, but packets from a bridge network never enter the
+tunnel, so lookups from inside a running container time out.
+
+Because builds use `network: host`, this does **not** break them. What it
+breaks is everything a *running* container fetches: `wp plugin install`,
+`composer install`, a plugin update from wp-admin. And `docker pull` keeps
+working throughout, since the daemon resolves on the host — so the stack
+looks healthy right up until WordPress tries to reach the network.
+
+`wpdev up` repairs it: systemd-resolved is told to listen on docker0's
+gateway as well as `127.0.0.53`, the daemon's `dns` is pointed at that
+gateway, port 53 is opened from `172.16.0.0/12` if ufw is active, both
+services restart, and a lookup from a real container is verified before the
+stack starts. Containers end up asking the host, and the host forwards over
+the tunnel like everything else — so it holds whether or not the VPN is
+connected, and it's a one-time repair rather than a per-session toggle.
+
+```bash
+wpdev fix-dns     # the same repair, on its own
+```
+
+It needs `sudo`, so expect a password prompt the first time — in keeping
+with `wpdev add`, which already appends to `/etc/hosts` with sudo, and
+`wpdev install-mkcert`, which installs packages. `/etc/docker/daemon.json`
+is backed up and *merged*, never overwritten, so registry mirrors, log
+limits and proxy settings survive.
+
+The one part that can't be silent is the daemon restart: `dns` isn't among
+the options dockerd re-reads on `SIGHUP`, so the daemon has to restart, and
+that stops every running container. This stack's own containers are fair
+game — the `up` in progress is about to recreate them — but if anything else
+is running on the daemon, `up` lists those containers by name and waits for
+a yes. It works out which are foreign by diffing `docker ps` against
+`docker compose ps`, so a clone in a differently-named directory behaves
+correctly.
+
+If a container can't reach even its own gateway, that's not DNS and no
+resolver setting will help — a host firewall or a VPN enforcing tunnel-all
+against `172.16.0.0/12` is dropping everything. `doctor` says so explicitly
+rather than blaming the resolver, and names the VPN client if one is
+running.
+
+### A proxy that's configured but not running
+
+Builds inherit `HTTP_PROXY` (from `.env` or your environment, passed as a
+build arg), and apt and npm obey it absolutely: with the proxy down they do
+not fall back to a direct connection, they fail. Several minutes in, as
+`Connection refused [IP: 127.0.0.1 10808]` buried in apt output, which reads
+like a mirror problem rather than a local one. `up` and `doctor` check it
+with a single TCP connect before anything tries to build through it — a
+local proxy (xray, v2ray, an SSH tunnel) not being up yet is an ordinary
+morning.
+
+Note that this covers *builds only*. Image pulls — every `FROM`, every
+`docker pull` — are the daemon's work, and dockerd reads neither your shell
+environment nor a build arg. On a network that throttles or resets Docker
+Hub, the result is builds whose apt and npm steps fly through the proxy
+while the base-image pulls ahead of them crawl and die on `connection reset
+by peer` from the registry CDN. The fix is a `"proxies"` block in
+`/etc/docker/daemon.json`:
+
+```json
+{
+  "proxies": {
+    "http-proxy": "http://127.0.0.1:10808",
+    "https-proxy": "http://127.0.0.1:10808",
+    "no-proxy": "localhost,127.0.0.1,*.internal.example"
+  }
+}
+```
+
+`doctor` points this out when a reachable build proxy exists and the daemon
+has none, but `up` does not do it for you: sending every registry pull on
+the machine through a personal proxy is a policy choice, not a broken
+setting, and plenty of people set `HTTP_PROXY` for builds alone on purpose.
+
+### Escape hatches
+
+- `WPDEV_SKIP_DNS_FIX=1 wpdev up` skips the DNS and connectivity checks and
+  their repair entirely, for a machine managed some other way.
+- On CI, or anywhere with no TTY and no cached sudo credentials, `up` stops
+  with instructions rather than hanging on a prompt.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -999,6 +1140,11 @@ wp-local-dev/
 | 502 Bad Gateway | `docker compose restart php81 php82 php83 php84` (there's no single `php` service — see "Multiple PHP versions") |
 | Nginx won't reload | `docker exec wp-nginx nginx -t` for the actual error |
 | Permission denied under `sites/` | `sudo chown -R $USER:$USER sites/` |
+| `error getting credentials - err: exec: "docker-credential-…"` | A `credsStore` in `~/.docker/config.json` naming a helper that isn't installed — `wpdev up` repairs this for you, no sudo needed (see "Host environment") |
+| A build fails on `Temporary failure resolving …` while pulls work | That service's `build:` is missing `network: host` — compare it with the php services (see "Host environment") |
+| A build fails on `Connection refused [IP: 127.0.0.1 10808]` | Your `HTTP_PROXY` is set but the proxy isn't running — start it, or unset `HTTP_PROXY`/`HTTPS_PROXY`. `wpdev up` now checks this before building |
+| Base-image pulls crawl, or die on `connection reset by peer` | The daemon doesn't use your build proxy — add a `"proxies"` block to `/etc/docker/daemon.json` (see "Host environment") |
+| `wp plugin install` or `composer` hangs inside a container | A VPN resolver containers can't route to — `wpdev up` repairs this automatically (needs sudo), or `wpdev fix-dns` (see "Host environment") |
 | `docker compose build` fails to reach the internet | your network may need a proxy — set `HTTP_PROXY`/`HTTPS_PROXY` in `.env` (see `.env.example`); left unset, no proxy is used |
 | `docker pull`/`docker compose up` fails (CDN block or "RBAC: access denied") | Docker Hub geo-blocking, not a config error — `.env`'s proxy only covers the `php` image *build*, not plain `docker pull`. Retry with `HTTP_PROXY=http://<proxy> HTTPS_PROXY=http://<proxy> docker pull <image>` once, then `wpdev up` normally |
 
