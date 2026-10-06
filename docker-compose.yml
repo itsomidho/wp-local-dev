@@ -209,6 +209,26 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
+      # Host network namespace for the build, exactly as the php images do
+      # above. Not an optimisation -- it's what makes the build work at all
+      # on a machine whose container DNS is unusable: a bridge-network build
+      # inherits a resolver it may not be able to reach (a VPN's, routed
+      # through a tunnel that bridge traffic never enters), while a host-netns
+      # build resolves the way every other process on the machine does. It's
+      # also the only way the HTTP_PROXY below can refer to 127.0.0.1, which
+      # is what .env.example suggests: on a bridge network that address is the
+      # build container itself, not the host's proxy.
+      network: host
+      args:
+        # Same build-time proxy the php images get (see .env). Docker treats
+        # these four names as predefined build args, so apt and npm inside
+        # the build pick them up without the Dockerfile declaring anything.
+        # Left out for a long time, which is why `npm ci` here would time out
+        # on a network where the php builds -- going through the proxy --
+        # were fine.
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     container_name: wp-api
     restart: unless-stopped
     env_file: .env
@@ -251,6 +271,26 @@ services:
     build:
       context: .
       dockerfile: dashboard/Dockerfile
+      # Host network namespace for the build, exactly as the php images do
+      # above. Not an optimisation -- it's what makes the build work at all
+      # on a machine whose container DNS is unusable: a bridge-network build
+      # inherits a resolver it may not be able to reach (a VPN's, routed
+      # through a tunnel that bridge traffic never enters), while a host-netns
+      # build resolves the way every other process on the machine does. It's
+      # also the only way the HTTP_PROXY below can refer to 127.0.0.1, which
+      # is what .env.example suggests: on a bridge network that address is the
+      # build container itself, not the host's proxy.
+      network: host
+      args:
+        # Same build-time proxy the php images get (see .env). Docker treats
+        # these four names as predefined build args, so apt and npm inside
+        # the build pick them up without the Dockerfile declaring anything.
+        # Left out for a long time, which is why `npm ci` here would time out
+        # on a network where the php builds -- going through the proxy --
+        # were fine.
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     container_name: wp-dashboard
     restart: unless-stopped
     environment:

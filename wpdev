@@ -5,6 +5,8 @@
 # Stack lifecycle:
 #   wpdev up | down | restart | status | logs [service]
 #   wpdev doctor              Proactive health check — CA trust, orphan containers, per-site DB sanity
+#   wpdev fix-dns             Repair container DNS when the host resolver is behind a VPN tunnel (sudo);
+#                             `wpdev up` already does this automatically when it detects the problem
 #   wpdev shell php[ version]|db|nginx|redis
 #   wpdev db [name]           Open a MySQL prompt (root, or scoped to one site's DB)
 #   wpdev adminer [name]      Open Adminer in the browser (root, or deep-linked to one site's DB)
@@ -90,6 +92,8 @@ show_help() {
     echo "  update-check              Fetch and report whether an update is available (no changes made)"
     echo "  status                    Show container status"
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
+    echo "  fix-dns                   Repair container DNS when the host resolver is behind a VPN tunnel (needs sudo;"
+    echo "                            'up' does this automatically — this is for running it on its own)"
     echo "  logs [service]            Tail logs (all services, or one)"
     echo "  shell php[ ver]|db|nginx|redis  Shell into a container (php defaults to $DEFAULT_PHP_VERSION; e.g. 'shell php 8.4')"
     echo "  db [name]                 Open a MySQL prompt (root, or scoped to one site's DB)"
@@ -129,6 +133,396 @@ show_help() {
 }
 
 # ---------------------------------------------------------------------------
+# Host environment
+# ---------------------------------------------------------------------------
+#
+# Two host-level misconfigurations that have nothing to do with this repo but
+# present as "the stack is broken", both with error messages that point
+# nowhere near their cause. Detected here so they get named instead of
+# guessed at; see cmd_doctor (reports them) and cmd_up (repairs the first).
+
+DOCKER_CONFIG_JSON="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+
+# Echoes the credential helper ~/.docker/config.json asks for when that
+# helper isn't actually installed; silent when the config is fine.
+#
+# The usual culprit is a "credsStore": "desktop" left behind by a Docker
+# Desktop that's since been removed, which makes every pull die with
+#   error getting credentials - err: exec: "docker-credential-desktop":
+#   executable file not found in $PATH
+# before it even reaches the registry -- so `wpdev up` fails on the very
+# first image with a message naming neither Docker Desktop nor this file.
+stale_creds_helper() {
+    [ -f "$DOCKER_CONFIG_JSON" ] || return 0
+    helper="$(sed -n 's/.*"credsStore"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DOCKER_CONFIG_JSON" | head -1)"
+    [ -n "$helper" ] || return 0
+    command -v "docker-credential-${helper}" >/dev/null 2>&1 || echo "$helper"
+}
+
+# Drops the dead credsStore key, keeping a timestamped backup. Only ever
+# called on a config stale_creds_helper has already condemned: a helper that
+# isn't on PATH can't be a preference worth preserving, it's just a config
+# that can no longer work. Needs a JSON-aware editor -- deleting the line
+# with sed would leave a trailing comma behind and turn a broken-but-valid
+# config into an unparseable one -- so with neither python3 nor jq around we
+# print the one-line manual edit rather than risk that.
+repair_stale_creds_helper() {
+    if ! command -v python3 >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1; then
+        return 1
+    fi
+    backup="${DOCKER_CONFIG_JSON}.bak-$(date +%Y%m%d%H%M%S)"
+    cp "$DOCKER_CONFIG_JSON" "$backup" || return 1
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$DOCKER_CONFIG_JSON" <<'PY' || { cp "$backup" "$DOCKER_CONFIG_JSON"; return 1; }
+import json, sys
+p = sys.argv[1]
+with open(p) as f:
+    d = json.load(f)
+d.pop("credsStore", None)
+with open(p, "w") as f:
+    json.dump(d, f, indent="\t")
+    f.write("\n")
+PY
+    else
+        jq 'del(.credsStore)' "$backup" > "$DOCKER_CONFIG_JSON" || { cp "$backup" "$DOCKER_CONFIG_JSON"; return 1; }
+    fi
+    echo "$backup"
+}
+
+# Echoes "<ip> via <iface>" when the host's resolver is one containers can't
+# reach; silent otherwise.
+#
+# With a corporate VPN connected (Cisco AnyConnect's cscotun0, WireGuard,
+# plain tun0), systemd-resolved's uplink is typically a private address
+# routed *through the tunnel*. Docker copies that address into every
+# container's /etc/resolv.conf, but packets from a bridge network never
+# enter the tunnel, so every lookup inside a container times out. `docker
+# pull` keeps working the whole time -- the daemon resolves on the host --
+# which is what makes this one so confusing: images download fine and then
+# the build dies on "Temporary failure resolving 'deb.debian.org'", and
+# anything a container fetches later (composer, npm, wp plugin install)
+# hangs the same way. Fix: wpdev fix-dns.
+vpn_dns_unreachable_from_containers() {
+    # An explicit daemon-level override means containers are handed that
+    # address instead of the host's, so the tunnel doesn't come into it.
+    grep -q '"dns"' /etc/docker/daemon.json 2>/dev/null && return 0
+    command -v resolvectl >/dev/null 2>&1 || return 0
+    dns="$(resolvectl status 2>/dev/null | sed -n 's/.*Current DNS Server:[[:space:]]*\([0-9.]\{7,\}\).*/\1/p' | head -1)"
+    [ -n "$dns" ] || return 0
+    iface="$(ip route get "$dns" 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | head -1)"
+    case "$iface" in
+        tun*|*tun[0-9]*|wg*|ppp*|utun*) echo "${dns} via ${iface}" ;;
+    esac
+}
+
+# Echoes the images `docker compose up` would have to BUILD because they
+# don't exist yet; silent when every build target is already present.
+#
+# This is what separates "container DNS is broken but it doesn't matter"
+# from "container DNS is broken and nothing can possibly work": starting an
+# already-built stack needs no name resolution inside a container at all, so
+# a tunnel-only resolver is harmless then and `up` should not get in the
+# way. A missing image, on the other hand, means a build, and a build means
+# apt/npm reaching out from inside a container -- guaranteed to fail, after
+# several minutes of retries, on exactly the DNS that's broken.
+#
+# Compose names a build target it has no explicit `image:` for after
+# <project>-<service>, which is what's reconstructed here. Needs python3 to
+# read compose's own resolved config; without it this stays silent and the
+# caller falls back to warning rather than guessing.
+pending_image_builds() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    docker compose config --format json 2>/dev/null | python3 -c '
+import json, subprocess, sys
+try:
+    c = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+project = c.get("name") or ""
+for name, svc in sorted(c.get("services", {}).items()):
+    if "build" not in svc:
+        continue
+    image = svc.get("image") or (f"{project}-{name}" if project else None)
+    if not image:
+        continue
+    if subprocess.run(["docker", "image", "inspect", image],
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL).returncode != 0:
+        print(image)
+' 2>/dev/null
+}
+
+# Echoes "<url>" when a build-time proxy is configured but nothing is
+# accepting connections at it; silent when there's no proxy or it answers.
+#
+# Every image build inherits HTTP_PROXY (docker-compose.yml passes it as a
+# build arg, from .env or the environment), and apt and npm obey it
+# absolutely: with the proxy down they don't fall back to a direct
+# connection, they fail. The failure surfaces several minutes in as
+# "Connection refused [IP: 127.0.0.1 10808]" buried in apt output, which
+# reads like a mirror problem rather than a local one. Cheap to rule out up
+# front, and a local proxy (xray, v2ray, an SSH tunnel) not running yet is
+# an ordinary morning.
+unreachable_build_proxy() {
+    proxy="${HTTP_PROXY:-${http_proxy:-}}"
+    if [ -z "$proxy" ] && [ -f .env ]; then
+        proxy="$(sed -n 's/^[[:space:]]*HTTP_PROXY=//p' .env | head -1)"
+    fi
+    [ -n "$proxy" ] || return 0
+
+    # http://host:port/ -> host, port. Only host:port forms are checked; a
+    # proxy named without a port isn't something to guess a default for.
+    hostport="${proxy#*://}"
+    hostport="${hostport%%/*}"
+    hostport="${hostport##*@}"
+    case "$hostport" in
+        *:*) phost="${hostport%:*}"; pport="${hostport##*:}" ;;
+        *) return 0 ;;
+    esac
+    case "$pport" in ''|*[!0-9]*) return 0 ;; esac
+
+    # bash's own /dev/tcp, so this needs neither nc nor curl installed.
+    if ! timeout 3 bash -c "exec 3<>/dev/tcp/${phost}/${pport}" 2>/dev/null; then
+        echo "$proxy"
+    fi
+}
+
+# Echoes the build proxy when one is configured and reachable but the Docker
+# DAEMON has no proxy of its own; silent otherwise.
+#
+# Worth telling apart from a build-time proxy problem, because they cover
+# different traffic and only one of them is visible in .env. Image pulls --
+# every `FROM`, every `docker pull` -- are done by dockerd, which does not
+# read HTTP_PROXY from your shell or from a build arg; it needs a "proxies"
+# block in /etc/docker/daemon.json. On a network that throttles or resets
+# Docker Hub, the result is builds whose apt and npm steps fly through the
+# proxy while the base-image pulls ahead of them crawl at kilobytes a second
+# and die on "connection reset by peer" from the registry CDN.
+#
+# Not repaired automatically: sending every registry pull on the machine
+# through a personal proxy is a policy choice, not a broken setting, and
+# plenty of people set HTTP_PROXY for builds alone on purpose.
+daemon_missing_registry_proxy() {
+    grep -q '"proxies"' /etc/docker/daemon.json 2>/dev/null && return 0
+    docker info 2>/dev/null | grep -qi "HTTP Proxy" && return 0
+    proxy="${HTTP_PROXY:-${http_proxy:-}}"
+    if [ -z "$proxy" ] && [ -f .env ]; then
+        proxy="$(sed -n 's/^[[:space:]]*HTTP_PROXY=//p' .env | head -1)"
+    fi
+    [ -n "$proxy" ] || return 0
+    # Only when it actually answers -- a dead proxy is unreachable_build_proxy's
+    # story, and reporting both about the same URL would just be noise.
+    [ -z "$(unreachable_build_proxy)" ] && echo "$proxy"
+}
+
+# Echoes a one-line verdict on what a bridge-network container can actually
+# reach: "" when DNS resolves, "dns" when the gateway answers but names
+# don't, "offline" when it can't even reach its own default gateway.
+#
+# Worth distinguishing, because the third case is not a DNS problem and the
+# DNS advice is actively misleading there. A container with no route to its
+# gateway has no outbound connectivity at all -- every lookup, every apt
+# fetch, every composer download fails identically -- and the cause is a
+# host firewall or a VPN client enforcing tunnel-all against traffic whose
+# source isn't the tunnel address (Cisco Secure Client's vpnagentd does
+# exactly this). No amount of resolver configuration fixes that.
+container_reachability() {
+    image=""
+    for img in redis:alpine nginx:alpine alpine:latest; do
+        if docker image inspect "$img" >/dev/null 2>&1; then image="$img"; break; fi
+    done
+    if [ -z "$image" ]; then
+        image="alpine:latest"
+        docker pull -q "$image" >/dev/null 2>&1 || return 0
+    fi
+    docker run --rm --entrypoint sh "$image" -c '
+        nslookup deb.debian.org >/dev/null 2>&1 && exit 0
+        gw="$(ip route | awk "/^default/ {print \$3; exit}")"
+        [ -n "$gw" ] && ping -c 1 -W 2 "$gw" >/dev/null 2>&1 && exit 2
+        exit 3
+    ' >/dev/null 2>&1
+    case "$?" in
+        0) ;;
+        2) echo "dns" ;;
+        *) echo "offline" ;;
+    esac
+}
+
+# Make container DNS work when the host's resolver lives behind a VPN
+# tunnel (see vpn_dns_unreachable_from_containers for the diagnosis).
+#
+# systemd-resolved is told to listen on docker0's gateway in addition to
+# 127.0.0.53, and the daemon is told to hand containers that address.
+# Containers then ask the host, and the host forwards over the tunnel the
+# way everything else on the machine does -- so this holds whether or not
+# the VPN happens to be connected, which is why it's a one-time repair and
+# not something to toggle per session.
+#
+# Called two ways: `wpdev up` runs it automatically on any machine with the
+# problem (mode "auto"), and `wpdev fix-dns` runs it on demand (mode
+# "manual", which lists the changes and waits for a yes first). The repair
+# itself is identical; only the consent differs. Returns nonzero if it
+# couldn't finish, so `up` can stop rather than march into a doomed build.
+#
+# Needs root. That's consistent with the rest of this script -- `wpdev add`
+# already appends to /etc/hosts with sudo mid-provision, and install-mkcert
+# installs packages -- so it prompts for a password where sudo would, and
+# gives up with instructions where it can't (no TTY and no cached
+# credentials, i.e. CI).
+#
+# Set WPDEV_SKIP_DNS_FIX=1 to suppress the automatic repair entirely, for a
+# machine whose container DNS is managed some other way.
+fix_container_dns() {
+    mode="${1:-manual}"
+
+    if ! command -v resolvectl >/dev/null 2>&1; then
+        print_fail "This repair is systemd-resolved specific and resolvectl isn't here. Point /etc/docker/daemon.json's \"dns\" at a resolver your containers can reach."
+        return 1
+    fi
+
+    gateway="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
+    if [ -z "$gateway" ]; then
+        print_fail "No docker0 interface — is Docker running?"
+        return 1
+    fi
+
+    tunnel_dns="$(vpn_dns_unreachable_from_containers)"
+    if [ -z "$tunnel_dns" ]; then
+        [ "$mode" = "manual" ] && print_info "Nothing to repair: container DNS already works (or /etc/docker/daemon.json already sets \"dns\")."
+        return 0
+    fi
+
+    # The one genuinely destructive part: `dns` isn't among the options
+    # dockerd re-reads on SIGHUP, so the daemon has to restart, and that
+    # stops every running container -- including ones belonging to other
+    # projects entirely. Ours are fair game (this `up` is about to recreate
+    # them anyway); somebody else's are not, so those get an explicit yes
+    # even in auto mode.
+    # Asked as "running containers that aren't ours" rather than by
+    # matching a project label against a hardcoded name -- the compose
+    # project name follows the directory, so anyone who clones this
+    # somewhere else would silently have every container of their own
+    # treated as ours. --no-trunc so these ids are comparable with the full
+    # ones `docker compose ps -q` returns.
+    ours="$(docker compose ps -q 2>/dev/null)" || true
+    foreign=""
+    for cid in $(docker ps -q --no-trunc 2>/dev/null); do
+        case " $(echo $ours) " in
+            *" ${cid} "*) ;;
+            *) foreign="${foreign}$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+" ;;
+        esac
+    done
+    foreign="$(echo "$foreign" | grep -v '^$')" || true
+
+    if [ "$mode" = "manual" ] || [ -n "$foreign" ]; then
+        print_warning "Host DNS is ${tunnel_dns}, which containers can't reach."
+        echo "This will, with sudo:"
+        echo "  1. have systemd-resolved listen on ${gateway} as well as 127.0.0.53"
+        echo "  2. set \"dns\": [\"${gateway}\"] in /etc/docker/daemon.json (backed up first)"
+        echo "  3. allow port 53 from 172.16.0.0/12 to ${gateway}, if ufw is active"
+        echo "  4. restart systemd-resolved and docker"
+        if [ -n "$foreign" ]; then
+            echo ""
+            print_warning "Restarting docker will stop these containers, which aren't part of this stack:"
+            echo "$foreign" | sed 's/^/    /'
+        fi
+        echo ""
+        if [ ! -t 0 ]; then
+            print_fail "Needs confirmation but there's no terminal to ask on. Run 'wpdev fix-dns' interactively, or set WPDEV_SKIP_DNS_FIX=1 to skip."
+            return 1
+        fi
+        read -r -p "Proceed? [y/N] " confirm
+        case "$confirm" in [yY]*) ;; *) echo "Aborted."; return 1 ;; esac
+    else
+        print_warning "Host DNS is ${tunnel_dns} — not reachable from inside a container. Repairing (needs sudo)..."
+    fi
+
+    if ! sudo -n true 2>/dev/null && [ ! -t 0 ]; then
+        print_fail "Needs sudo, with no cached credentials and no terminal to prompt on. Run 'wpdev fix-dns' interactively first, or set WPDEV_SKIP_DNS_FIX=1."
+        return 1
+    fi
+
+    sudo install -d /etc/systemd/resolved.conf.d || return 1
+    printf '[Resolve]\nDNSStubListenerExtra=%s\n' "$gateway" | sudo tee /etc/systemd/resolved.conf.d/docker.conf >/dev/null || return 1
+    print_info "Wrote /etc/systemd/resolved.conf.d/docker.conf"
+
+    sudo install -d /etc/docker || return 1
+    if [ -f /etc/docker/daemon.json ]; then
+        sudo cp /etc/docker/daemon.json "/etc/docker/daemon.json.bak-$(date +%Y%m%d%H%M%S)" || return 1
+        # Merged, not overwritten: daemon.json routinely carries unrelated
+        # settings (registry mirrors, log limits, proxies) that have to
+        # survive this.
+        sudo python3 - "$gateway" <<'PY' || return 1
+import json, sys
+p = "/etc/docker/daemon.json"
+with open(p) as f:
+    d = json.load(f)
+d["dns"] = [sys.argv[1]]
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+PY
+    else
+        printf '{\n  "dns": ["%s"]\n}\n' "$gateway" | sudo tee /etc/docker/daemon.json >/dev/null || return 1
+    fi
+    print_info "Set \"dns\": [\"${gateway}\"] in /etc/docker/daemon.json"
+
+    # ufw defaults to deny-incoming, and these queries arrive at the host on
+    # the bridge gateway. Every docker bridge sits inside 172.16.0.0/12
+    # (docker0 plus whatever subnets compose allocates), so one pair of
+    # rules covers the networks that exist now and any added later.
+    if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "^Status: active"; then
+        sudo ufw allow from 172.16.0.0/12 to "$gateway" port 53 proto udp >/dev/null
+        sudo ufw allow from 172.16.0.0/12 to "$gateway" port 53 proto tcp >/dev/null
+        print_info "Opened port 53 from 172.16.0.0/12 to ${gateway} (ufw)"
+    fi
+
+    sudo systemctl restart systemd-resolved || return 1
+    sudo systemctl restart docker || return 1
+    print_info "Restarted systemd-resolved and docker"
+
+    # The daemon needs a moment to accept connections again; without this
+    # wait the probe below -- and, in auto mode, the `docker compose up`
+    # right after it -- can race the restart and fail on a closed socket.
+    for _ in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && break
+        sleep 1
+    done
+
+    if ss -lnu 2>/dev/null | grep -q "${gateway}:53"; then
+        print_info "systemd-resolved is listening on ${gateway}:53"
+    else
+        print_warning "systemd-resolved doesn't appear to be listening on ${gateway}:53 — check: resolvectl status"
+    fi
+
+    case "$(container_reachability)" in
+        "")
+            print_info "Container DNS works"
+            return 0
+            ;;
+        offline)
+            # The resolver config is now correct and irrelevant: nothing
+            # outbound works from a bridge network, so say that plainly
+            # instead of sending someone back to look at DNS again.
+            print_fail "Containers have no outbound connectivity at all — a bridge-network container can't even reach its own gateway, so this isn't a DNS problem and the change just made won't help on its own."
+            echo "  Likely a host firewall or a VPN client enforcing tunnel-all against traffic sourced from 172.16.0.0/12."
+            if pgrep -x vpnagentd >/dev/null 2>&1; then
+                echo "  Cisco Secure Client (vpnagentd) is running — the quickest way to confirm is to disconnect it and re-run 'wpdev doctor'."
+            fi
+            echo "  Check: sudo ufw status verbose; sudo iptables -t filter -L -n -v"
+            return 1
+            ;;
+        *)
+            print_fail "Container DNS still failing, though the gateway is reachable. Check 'sudo ufw status' and 'resolvectl status', then re-run 'wpdev doctor'."
+            return 1
+            ;;
+    esac
+}
+
+cmd_fix_dns() { fix_container_dns manual; }
+
+# ---------------------------------------------------------------------------
 # Stack lifecycle
 # ---------------------------------------------------------------------------
 
@@ -150,6 +544,83 @@ set_env_var() {
 }
 
 cmd_up() {
+    # Host config that would otherwise fail mid-pull or mid-build with a
+    # message pointing nowhere near its cause. The credential one is
+    # repaired in place (no sudo, nothing lost -- see
+    # repair_stale_creds_helper); the DNS one needs root and a daemon
+    # restart, so it's reported and left to an explicit `wpdev fix-dns`
+    # rather than done behind your back halfway through bringing the
+    # stack up.
+    helper="$(stale_creds_helper)"
+    if [ -n "$helper" ]; then
+        print_warning "~/.docker/config.json wants credential helper 'docker-credential-${helper}', which isn't installed — every image pull would fail before reaching the registry."
+        if backup="$(repair_stale_creds_helper)"; then
+            print_info "Removed the dead \"credsStore\": \"${helper}\" (backup: ${backup})"
+        else
+            print_error "Couldn't edit it automatically (needs python3 or jq). Remove the \"credsStore\" line from ${DOCKER_CONFIG_JSON} by hand, then re-run."
+        fi
+    fi
+
+    # Repaired here, not merely reported: a resolver containers can't reach
+    # makes every image build fail (apt and npm run inside a container) and
+    # bakes the dead address into the /etc/resolv.conf of every container
+    # this `up` is about to create. Reporting it would just hand back a
+    # 150-second build failure whose real cause has scrolled off the top of
+    # a 70-step log. `up` is the right moment for the repair too: the daemon
+    # restart it needs is cheapest before the stack is running, and `up` is
+    # the command people actually run.
+    # Before the DNS work, because a dead proxy breaks builds regardless of
+    # how well DNS resolves, and it's a one-connect check.
+    dead_proxy="$(unreachable_build_proxy)"
+    if [ -n "$dead_proxy" ] && [ -n "$(pending_image_builds)" ]; then
+        print_warning "A build proxy is configured (${dead_proxy}) but nothing is listening there."
+        echo "  Every build inherits it as HTTP_PROXY, and apt and npm won't fall back to a direct connection — they'll fail several minutes in."
+        print_error "Start the proxy, or unset HTTP_PROXY/HTTPS_PROXY (shell environment and .env) to build directly, then re-run."
+    fi
+
+    if [ -z "${WPDEV_SKIP_DNS_FIX:-}" ]; then
+        if [ -n "$(vpn_dns_unreachable_from_containers)" ]; then
+            # Config-only check, so it's cheap enough to run every time --
+            # and worth acting on even with nothing to build, because every
+            # container this `up` creates would otherwise bake the dead
+            # resolver into its own /etc/resolv.conf.
+            pending="$(pending_image_builds)"
+            if [ -n "$pending" ]; then
+                echo "These images still need building, and every build fetches packages from inside a container:"
+                echo "$pending" | sed 's/^/    /'
+            fi
+            if ! fix_container_dns auto; then
+                print_error "Couldn't repair container DNS — builds and in-container downloads would fail. Fix it and re-run, or set WPDEV_SKIP_DNS_FIX=1 to proceed anyway."
+            fi
+        else
+            # The resolver is configured correctly, which is not the same as
+            # containers being able to use it: a host firewall or a VPN
+            # enforcing tunnel-all can still drop everything they send. That
+            # takes an actual container to detect, so it's only paid for when
+            # something needs building -- a build is what needs container
+            # networking, and a plain `up` with every image present doesn't
+            # deserve the extra few seconds.
+            pending="$(pending_image_builds)"
+            if [ -n "$pending" ]; then
+                case "$(container_reachability)" in
+                    offline)
+                        echo "These images still need building, and every build fetches packages from inside a container:"
+                        echo "$pending" | sed 's/^/    /'
+                        print_fail "Containers have no outbound connectivity — a bridge-network container can't even reach its own gateway, so these builds would fail."
+                        echo "  Not a DNS problem: look at the host firewall, or a VPN client enforcing tunnel-all against 172.16.0.0/12."
+                        if pgrep -x vpnagentd >/dev/null 2>&1; then
+                            echo "  Cisco Secure Client (vpnagentd) is running — disconnecting it is the quickest way to confirm."
+                        fi
+                        print_error "Fix connectivity and re-run, or set WPDEV_SKIP_DNS_FIX=1 to try the build anyway."
+                        ;;
+                    dns)
+                        print_warning "Containers can reach the network but can't resolve names — these builds will likely fail. Check 'resolvectl status' and /etc/docker/daemon.json's \"dns\"."
+                        ;;
+                esac
+            fi
+        fi
+    fi
+
     # Group-writable so www-data (PHP-FPM, inside every phpXX container) can
     # create its own top-level dirs here too -- e.g. wp-cli's cache dir
     # (/var/www/.wp-cli), which it otherwise warns about (non-fatal, just
@@ -209,7 +680,20 @@ cmd_update() {
     git fetch origin
 
     local_rev="$(git rev-parse HEAD)"
-    remote_rev="$(git rev-parse '@{u}' 2>/dev/null)" || print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
+    if ! remote_rev="$(git rev-parse '@{u}' 2>/dev/null)"; then
+        # install.sh clones with --depth 1, which is single-branch too:
+        # remote.origin.fetch covers main alone, so no other branch has a
+        # remote-tracking ref for @{u} to resolve -- not even one `git push
+        # -u` has already written tracking config for. Git's own wording for
+        # this is "no upstream configured", which sends you to
+        # --set-upstream-to, and that doesn't help: the upstream is set, the
+        # remote-tracking ref is what's missing.
+        cur_branch="$(git rev-parse --abbrev-ref HEAD)"
+        if ! git config --get-all remote.origin.fetch | grep -q 'refs/heads/\*'; then
+            print_error "On branch '${cur_branch}', but this is a single-branch clone that only tracks main, so there's nothing here to update from. Either switch back: git checkout main && wpdev update — or widen the clone: git remote set-branches origin '*' && git fetch origin"
+        fi
+        print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
+    fi
 
     if [ "$local_rev" = "$remote_rev" ]; then
         print_info "Already up to date."
@@ -437,6 +921,56 @@ cmd_doctor() {
 
     du_sites="$(du -sh sites 2>/dev/null | cut -f1)"
     [ -n "$du_sites" ] && echo "  Disk: sites/ = ${du_sites:-0}"
+
+    echo ""
+    print_header "=== Host environment ==="
+
+    helper="$(stale_creds_helper)"
+    if [ -n "$helper" ]; then
+        print_fail "~/.docker/config.json asks for 'docker-credential-${helper}', which isn't installed — image pulls fail before reaching the registry. 'wpdev up' repairs this for you, or drop the \"credsStore\" line from ${DOCKER_CONFIG_JSON}"
+        fails=$((fails + 1))
+    else
+        print_info "Docker credential config is usable"
+    fi
+
+    dead_proxy="$(unreachable_build_proxy)"
+    if [ -n "$dead_proxy" ]; then
+        print_fail "Build proxy ${dead_proxy} is configured but not accepting connections — image builds inherit it as HTTP_PROXY and will fail rather than connect directly. Start it, or unset HTTP_PROXY/HTTPS_PROXY."
+        fails=$((fails + 1))
+    else
+        print_info "No dead build proxy in the way"
+    fi
+
+    reg_proxy="$(daemon_missing_registry_proxy)"
+    if [ -n "$reg_proxy" ]; then
+        print_warning "Builds use proxy ${reg_proxy}, but the Docker daemon has none — so image pulls (every FROM) go direct. On a network that throttles Docker Hub that shows up as very slow pulls and \"connection reset by peer\". Add a \"proxies\" block to /etc/docker/daemon.json to route pulls through it too."
+        warnings=$((warnings + 1))
+    fi
+
+    # Asked in this order deliberately: a container with no outbound route
+    # at all would also fail every DNS check, and reporting that as a
+    # resolver problem sends you off to fix the wrong thing.
+    case "$(container_reachability)" in
+        offline)
+            print_fail "Containers have no outbound connectivity — a bridge-network container can't reach its own gateway. Not a DNS problem: look at the host firewall, or a VPN client enforcing tunnel-all against 172.16.0.0/12."
+            if pgrep -x vpnagentd >/dev/null 2>&1; then
+                echo "    Cisco Secure Client (vpnagentd) is running — disconnect it and re-run this to confirm."
+            fi
+            fails=$((fails + 1))
+            ;;
+        dns)
+            tunnel_dns="$(vpn_dns_unreachable_from_containers)"
+            if [ -n "$tunnel_dns" ]; then
+                print_fail "Host DNS is ${tunnel_dns} — a VPN resolver containers can't route to, so builds and in-container downloads time out while 'docker pull' still works. 'wpdev up' repairs this automatically, or run it now: wpdev fix-dns"
+            else
+                print_fail "Containers can reach the network but can't resolve names — check 'resolvectl status' and /etc/docker/daemon.json's \"dns\""
+            fi
+            fails=$((fails + 1))
+            ;;
+        *)
+            print_info "Containers can resolve names and reach the network"
+            ;;
+    esac
 
     echo ""
     print_header "=== Sites ==="
@@ -2216,6 +2750,7 @@ case "${1:-help}" in
     update-check) cmd_update_check ;;
     status) cmd_status ;;
     doctor) cmd_doctor ;;
+    fix-dns) cmd_fix_dns ;;
     logs) cmd_logs "$2" ;;
     shell) cmd_shell "$2" ;;
     db) cmd_db "$2" ;;
