@@ -121,6 +121,7 @@ app.post('/api/sites/:name/clone', requireValidSiteName, (req, res) => {
 });
 
 app.get('/api/sites/:name/creds', requireValidSiteName, sync((req) => ['creds', req.params.name]));
+app.post('/api/sites/:name/cert', requireValidSiteName, sync((req) => ['cert', req.params.name]));
 
 // Generic WP-CLI passthrough -- the escape hatch for anything not covered by
 // a dedicated endpoint. `args` is a plain array of argv elements, forwarded

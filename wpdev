@@ -31,6 +31,7 @@
 #   wpdev list                List configured site domains
 #   wpdev hosts               Print /etc/hosts entries needed for all sites
 #   wpdev creds <name>        Show a site's admin/DB credentials
+#   wpdev cert <name>         Reissue a site's HTTPS certificate from the current mkcert CA
 #   wpdev wp <name> <args...> Run any WP-CLI command against a site, e.g.:
 #                               wpdev wp mysite plugin list
 #
@@ -119,6 +120,47 @@ site_http_code() {
     [ -z "$code" ] || [ "$code" = "000" ] && code="down"
     echo "$code"
 }
+
+# The mkcert CA new certs are issued from (and browsers are expected to
+# trust), or nothing if mkcert or its CA is missing. Inside the api
+# container this is whatever MKCERT_CAROOT mounted at $CAROOT.
+mkcert_caroot() {
+    command -v mkcert >/dev/null 2>&1 || return 0
+    local d
+    d="$(mkcert -CAROOT 2>/dev/null)" || true
+    [ -n "$d" ] && [ -f "${d}/rootCA.pem" ] && echo "$d"
+    return 0
+}
+
+# Why a site's certificate needs reissuing, or nothing if it's fine. Order
+# matters: an expired cert also fails `openssl verify`, which would
+# otherwise be misreported as "wrong CA" (hence -no_check_time there).
+cert_problem() {
+    local cert="nginx/ssl/certs/$1.pem" caroot
+    [ -f "$cert" ] || { echo "is missing"; return 0; }
+    command -v openssl >/dev/null 2>&1 || return 0
+    if ! openssl x509 -checkend 0 -noout -in "$cert" >/dev/null 2>&1; then
+        echo "has expired"; return 0
+    fi
+    caroot="$(mkcert_caroot)"
+    if [ -n "$caroot" ] && ! openssl verify -no_check_time -CAfile "${caroot}/rootCA.pem" "$cert" >/dev/null 2>&1; then
+        echo "wasn't issued by the current mkcert CA (${caroot}), so browsers that trust that CA won't trust it"
+        return 0
+    fi
+    if ! openssl x509 -checkend $((30 * 86400)) -noout -in "$cert" >/dev/null 2>&1; then
+        echo "expires within 30 days"
+    fi
+    return 0
+}
+
+# Containers a compose recreate left behind when it was interrupted
+# mid-way: compose renames the old container to <12-hex>_<name> while it
+# swaps in the new one, so a run killed at the wrong moment leaves one of
+# these, never started, that nothing else reports. (#12) Prints
+# "<name> <state>" lines.
+recreate_leftovers() {
+    docker ps -a --format '{{.Names}} {{.State}}' 2>/dev/null | grep -E '^[0-9a-f]{12}_wp-' || true
+}
 print_fail() { echo -e "${RED}✗${NC} $1"; }
 
 show_help() {
@@ -166,6 +208,7 @@ show_help() {
     echo "  list                      List configured site domains"
     echo "  hosts                     Print /etc/hosts entries needed for all sites"
     echo "  creds <name>              Show a site's admin/DB credentials"
+    echo "  cert <name>               Reissue a site's HTTPS certificate from the current mkcert CA"
     echo "  wp <name> <args...>       Run a WP-CLI command against a site"
     echo ""
     echo "Examples:"
@@ -701,6 +744,33 @@ cmd_up() {
         # itself fails outright (e.g. .git missing from a tarball install).
         app_version="$(git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null)" || app_version="unknown"
         set_env_var APP_VERSION "$app_version"
+
+        # Share the host's (browser-trusted) mkcert CA with the api
+        # container, so sites created from the dashboard get trusted certs
+        # too -- otherwise it issues them from a private CA of its own.
+        # Only fills an empty value, never overrides one you set; and never
+        # from inside the api, where `mkcert -CAROOT` is the container's own
+        # /mkcert-ca, not a host path. (#10)
+        if [ -z "${WPDEV_IN_API:-}" ] && [ -z "$(sed -n 's/^MKCERT_CAROOT=//p' .env | tail -1)" ]; then
+            host_caroot="$(mkcert_caroot)"
+            if [ -n "$host_caroot" ]; then
+                if grep -q '^#[[:space:]]*MKCERT_CAROOT=' .env; then
+                    sed -i "0,/^#[[:space:]]*MKCERT_CAROOT=.*/s||MKCERT_CAROOT=${host_caroot}|" .env
+                else
+                    set_env_var MKCERT_CAROOT "$host_caroot"
+                fi
+                print_info "Set MKCERT_CAROOT=${host_caroot} in .env, so the dashboard issues browser-trusted certs"
+            fi
+        fi
+    fi
+
+    # Only ones that never started ("created"): a renamed container that's
+    # still running or stopping belongs to a recreate in progress right now.
+    stale="$(recreate_leftovers | awk '$2 == "created" {print $1}')"
+    if [ -n "$stale" ]; then
+        # shellcheck disable=SC2086
+        docker rm $stale >/dev/null
+        print_info "Removed container(s) left by an interrupted recreate: $(echo $stale)"
     fi
 
     docker compose up -d $(stack_services)
@@ -989,6 +1059,14 @@ cmd_doctor() {
         print_info "No orphaned containers"
     fi
 
+    leftovers="$(recreate_leftovers)"
+    if [ -n "$leftovers" ]; then
+        print_warning "Containers left behind by an interrupted recreate (compose's <id>_<name> temporaries):"
+        echo "$leftovers" | sed 's/^/    /'
+        echo "    Remove with: docker rm -f $(echo "$leftovers" | awk '{print $1}' | tr '\n' ' ')(wpdev up removes never-started ones itself)"
+        warnings=$((warnings + 1))
+    fi
+
     if command -v mkcert >/dev/null 2>&1; then
         # || true: same set -e gotcha as elsewhere -- mkcert -CAROOT failing
         # (unlikely, but possible if mkcert is installed yet not fully
@@ -1094,7 +1172,13 @@ cmd_doctor() {
             fi
 
             if [ -f "nginx/ssl/certs/${domain}.pem" ] && [ -f "nginx/ssl/private/${domain}-key.pem" ]; then
-                print_info "  SSL certificate present"
+                problem="$(cert_problem "$domain")"
+                if [ -z "$problem" ]; then
+                    print_info "  SSL certificate present"
+                else
+                    print_warning "  SSL certificate ${problem} — run: wpdev cert ${site_name}"
+                    warnings=$((warnings + 1))
+                fi
             else
                 print_fail "  Missing SSL certificate — run: wpdev add (skips steps that already exist)"
                 fails=$((fails + 1))
@@ -1329,6 +1413,43 @@ cmd_dashboard() {
 cmd_reload_nginx() {
     docker exec wp-nginx nginx -t
     docker exec wp-nginx nginx -s reload
+}
+
+# Reissue a site's certificate from the current mkcert CA and reload
+# nginx. `add`/`clone` never replace an existing cert, so this is the way
+# out for one that expired or came from a different CA -- e.g. a site
+# created from the dashboard before MKCERT_CAROOT was shared with it.
+# Written to temp files first: a failed mkcert leaves the old cert (and
+# a working site) in place rather than half-replaced. (#11)
+cmd_cert() {
+    arg="$1"
+    if [ -z "$arg" ]; then
+        print_warning "Usage: wpdev cert <site-name>"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+    site_name="${arg%.test}"
+    site_name="${site_name//./-}"
+    domain="${site_name}.test"
+    [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
+    command -v mkcert >/dev/null 2>&1 || print_error "mkcert isn't installed — run: wpdev install-mkcert"
+
+    mkdir -p nginx/ssl/certs nginx/ssl/private
+    cert="nginx/ssl/certs/${domain}.pem"
+    key="nginx/ssl/private/${domain}-key.pem"
+    if ! mkcert -cert-file "${cert}.new" -key-file "${key}.new" "$domain" >/dev/null 2>&1; then
+        rm -f "${cert}.new" "${key}.new"
+        print_error "mkcert failed — the existing certificate was left as it was."
+    fi
+    mv -f "${cert}.new" "$cert"
+    mv -f "${key}.new" "$key"
+    print_info "Certificate reissued for ${domain} (CA: $(mkcert -CAROOT 2>/dev/null))"
+
+    if docker exec wp-nginx nginx -t >/dev/null 2>&1 && docker exec wp-nginx nginx -s reload >/dev/null 2>&1; then
+        print_info "nginx reloaded — reload the page in your browser to pick it up"
+    else
+        print_warning "nginx didn't reload (is it running?) — the new cert takes effect on its next start: wpdev up"
+    fi
 }
 
 # Opt-in nginx FastCGI full-page cache, toggled by regenerating the site's
@@ -2902,6 +3023,7 @@ case "${1:-help}" in
     list) cmd_list ;;
     hosts) cmd_hosts ;;
     creds) cmd_creds "$2" ;;
+    cert) cmd_cert "$2" ;;
     wp) shift; cmd_wp "$@" ;;
     help|-h|--help) show_help ;;
     *)

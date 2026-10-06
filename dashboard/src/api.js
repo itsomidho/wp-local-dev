@@ -70,6 +70,7 @@ export const api = {
   sites: () => request('GET', '/api/sites'),
   hosts: () => request('GET', '/api/hosts'),
   creds: (name) => request('GET', `/api/sites/${name}/creds`),
+  cert: (name) => request('POST', `/api/sites/${name}/cert`),
   snapshots: (name) => request('GET', `/api/sites/${name}/snapshots`),
   wpCli: (name, args) => request('POST', `/api/sites/${name}/wp`, { args }),
   cache: (name, mode) => request('POST', `/api/sites/${name}/cache`, { mode }),
