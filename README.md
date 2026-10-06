@@ -308,7 +308,7 @@ WP-CLI (site provisioning), nothing hidden behind it.
 
 | Service | URL | Credentials |
 |---|---|---|
-| Your sites | `https://<domain>` | `wpdev creds <name>` |
+| Your sites | `https://<domain>` (or `https://<domain>:<NGINX_HTTPS_PORT>`) | `wpdev creds <name>` |
 | Adminer | `http://localhost:39002` (`ADMINER_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | MySQL (host) | `localhost:39000` (`MYSQL_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | Redis (host) | `localhost:39001` (`REDIS_PORT`) | none (no auth configured — local dev only) |
@@ -323,6 +323,17 @@ another locally-installed MySQL/Redis or some other tool's web UI on 8080/
 9000 — the single most common reason a `docker compose up` fails on a dev
 machine that already has other things running. Change any one of them in
 `.env` if it ever does collide with something else.
+
+nginx's own ports can move too (`NGINX_HTTP_PORT`/`NGINX_HTTPS_PORT`), if
+something else on this machine already owns 80/443. Sites then live at
+`https://<domain>:<port>`, and everything follows that: the URL `add`
+writes into `WP_HOME`/`WP_SITEURL` and installs WordPress with, `clone`'s
+URL rewrite, `status`'s reachability check, `list`, and the dashboard's
+links. That URL is fixed when a site is created, though. Change the port
+afterwards and existing sites keep redirecting to the old one until you
+update their `WP_HOME`/`WP_SITEURL` in `wp-config.php` (plus a `wpdev wp
+<site> search-replace` of the old URL for content). Switching back to
+80/443 is simplest when nothing else needs those ports.
 
 ## Status dashboard
 
@@ -444,6 +455,10 @@ Duplicates `mysite`'s files and database under a new domain
   not the old one
 - Sets its own `WP_REDIS_PREFIX` so the clone's cache never collides with
   the source's, and enables the object cache
+- Re-points any symlink that pointed into the source site so it points into
+  the clone instead. Query Monitor's `wp-content/db.php` drop-in is an
+  absolute symlink, and a clone that kept it ran the source's copy of the
+  plugin and failed with a 500 on every page.
 
 The admin login is whatever the source site's was — it's a copy of that
 same database, not a new account. `wpdev creds mysite` still works to look
@@ -454,7 +469,9 @@ Refuses to run if the destination name already exists — remove it first
 something that might matter.
 
 Asks "Continue? (y/n)" before doing anything — skip with `--yes` for
-scripted use.
+scripted use. With `--yes` it also skips the trailing "add to /etc/hosts?"
+question and just prints the line to add, the same as `add --domain=…`
+does, so nothing waits on input that may never come.
 
 ## Snapshots
 
@@ -830,12 +847,12 @@ this container has no browser to open it for you.
   but not browser-trusted — same visual warning as any self-signed cert).
   Set `MKCERT_CAROOT` in `.env` to your host's `mkcert -CAROOT` output to
   share its already-trusted CA instead.
-- **Some checks reflect the container's own vantage point, not the host's.**
-  `status`'s HTTP reachability column checks `127.0.0.1` from *inside* the
-  api container, which isn't where nginx runs — expect `000` there even
-  when a site is perfectly reachable from your browser. `doctor`'s
-  `/etc/hosts` check is accurate (the host's `/etc/hosts` is bind-mounted
-  in read-only).
+- **`status` checks reachability the same way from here as from the host.**
+  Inside the api container, `127.0.0.1` is the container itself, not
+  nginx, so the check connects to nginx over the compose network instead,
+  while still sending the site's real hostname. A site shows the same code
+  in the dashboard as in a terminal. `doctor`'s `/etc/hosts` check is
+  accurate too (the host's `/etc/hosts` is bind-mounted in read-only).
 - **Stack commands run from here leave the api container itself alone.**
   `up`, `down`, `restart` and `update` sent through the API (the dashboard's
   Up/Down/Restart/Update buttons) run inside `wp-api`, and stopping or

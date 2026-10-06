@@ -1,12 +1,16 @@
+import { siteUrl } from '../api';
+
 // Parses wpdev list's one-line-per-site format:
 //   "  https://mysite.test  →  sites/mysite  (provisioned, php 8.2)"
+// (or https://mysite.test:8444 when nginx isn't on 443 -- the port is
+// matched but not captured, since links are rebuilt by siteUrl).
 // Deliberately simple regex, not a general parser -- this is the one
 // stable, single-line-per-site format wpdev prints. WordPress/MySQL
 // versions come from a separate, much-less-frequent fetch of `status`'s
 // own table (see App.jsx's refreshVersions) and are merged in by domain,
 // since getting them means wpdev running a real `wp core version` per
 // site -- not something to redo on this list's own fast poll cycle.
-const SITE_LINE_RE = /https:\/\/([a-z0-9.-]+)\s*(?:→|->)\s*sites\/([a-z0-9-]+)\s*\(([^)]*)\)/i;
+const SITE_LINE_RE = /https:\/\/([a-z0-9.-]+)(?::\d+)?\s*(?:→|->)\s*sites\/([a-z0-9-]+)\s*\(([^)]*)\)/i;
 
 const PHP_RE = /php\s+([0-9.]+)/i;
 
@@ -55,7 +59,7 @@ export default function SitesPanel({ sites, versions, onAdd, onManage }) {
                 <div className="site-identity">
                   <a
                     className="site-domain"
-                    href={`https://${site.domain}`}
+                    href={siteUrl(site.domain)}
                     target="_blank"
                     rel="noreferrer"
                   >

@@ -530,6 +530,59 @@ jobs:
           ./wpdev remove wpvertest --yes </dev/null
 
       - name: >
+          Regression test -- status run through the api reports real
+          reachability (#6). It used to curl the api container's own
+          loopback, which isn't nginx, so every site showed 000.
+        run: |
+          out=$(curl -s http://127.0.0.1:39006/api/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"])')
+          echo "$out"
+          echo "$out" | grep -E '^citest\.test ' | grep -qw 200
+
+      - name: >
+          Regression test -- a non-default NGINX_HTTPS_PORT works end to end
+          (#5). WP_HOME/WP_SITEURL, the install --url, clone, status and the
+          dashboard's links all used to assume :443, so WordPress redirected
+          every request to a port nothing listened on.
+        run: |
+          restore() {
+            sed -i 's/^NGINX_HTTPS_PORT=.*/NGINX_HTTPS_PORT=443/' .env
+            docker compose up -d nginx dashboard >/dev/null 2>&1
+          }
+          trap restore EXIT
+          sed -i 's/^NGINX_HTTPS_PORT=.*/NGINX_HTTPS_PORT=8444/' .env
+          docker compose up -d nginx dashboard
+
+          ./wpdev add --domain=porttest.test --php=8.2 </dev/null
+          ./wpdev clone porttest portclone --yes </dev/null
+          grep -q "'https://porttest.test:8444'" sites/porttest/wp-config.php
+
+          probe() {
+            curl -sk --noproxy '*' --connect-to "$1:8444:127.0.0.1:8444" \
+              -o /dev/null -w '%{http_code} %{redirect_url}' "https://$1:8444$2"
+          }
+          for site in porttest.test portclone.test; do
+            code=""
+            for i in $(seq 1 10); do
+              code=$(probe "$site" /) && [ "$code" = "200 " ] && break
+              sleep 1
+            done
+            echo "$site / -> $code"
+            [ "$code" = "200 " ]
+            r=$(probe "$site" /wp-admin/)
+            echo "$site /wp-admin/ -> $r"
+            echo "$r" | grep -q "https://${site}:8444/wp-login.php"
+          done
+          ! docker compose exec -T php82 wp --path=/var/www/portclone --allow-root \
+              post list --post_type=any --fields=guid --format=csv | grep -q '8444:8444'
+
+          ./wpdev status | grep -E '^porttest\.test ' | grep -qw 200
+          ./wpdev list | grep -q 'https://porttest.test:8444'
+          curl -s http://127.0.0.1:39007/config.js | grep -q '__WPDEV_HTTPS_PORT__ = "8444"'
+
+          ./wpdev remove portclone --yes </dev/null
+          ./wpdev remove porttest --yes </dev/null
+
+      - name: >
           Regression test -- declining a confirmation exits non-zero (#7).
           `add` used to print "Cancelled." and exit 0, which let a shifted
           piped answer silently skip provisioning in this very workflow.

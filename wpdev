@@ -81,6 +81,44 @@ print_error() { echo -e "${RED}✗${NC} $1"; exit 1; }
 # CI piping answers in) can tell "cancelled" from "done". Exiting 0 here
 # once hid a real provisioning failure behind a shifted piped answer.
 cancelled() { echo "Cancelled."; exit 1; }
+
+# The host port nginx publishes 443 on (NGINX_HTTPS_PORT in .env). Read
+# from the file first, so the api container -- which only got .env's
+# values as of its own last recreate -- still agrees with the host.
+nginx_https_port() {
+    local p=""
+    [ -f .env ] && p="$(sed -n 's/^NGINX_HTTPS_PORT=//p' .env | tail -1 | tr -d '"\r'"'"' ')"
+    [ -z "$p" ] && p="${NGINX_HTTPS_PORT:-}"
+    echo "${p:-443}"
+}
+
+# A site's real base URL: https://<domain>, plus :<port> only when nginx
+# isn't on 443. Every URL wpdev writes into WordPress (WP_HOME/WP_SITEURL,
+# install --url, clone's search-replace) or prints goes through this --
+# hard-coding the bare domain made WordPress redirect every request on a
+# non-default port to :443, where nothing listens. (#5)
+site_url() {
+    local p
+    p="$(nginx_https_port)"
+    if [ "$p" = "443" ]; then echo "https://$1"; else echo "https://$1:$p"; fi
+}
+
+# HTTP status of https://<domain><path>, or "down". --connect-to keeps the
+# URL (so Host and SNI) exactly what a browser sends while choosing where
+# to actually connect: the host's published port, or -- inside the api
+# container, whose loopback isn't nginx at all -- nginx's own :443 on the
+# compose network (#6). --noproxy: a shell-level http_proxy would
+# otherwise misroute it; no /etc/hosts entry needed either way. `|| true`:
+# a failed probe must report "down", not abort the caller under set -e.
+site_http_code() {
+    local domain="$1" path="${2:-/}" port target code
+    port="$(nginx_https_port)"
+    if [ -n "${WPDEV_IN_API:-}" ]; then target="nginx:443"; else target="127.0.0.1:${port}"; fi
+    code="$(curl -sk --noproxy '*' --max-time 3 --connect-to "${domain}:${port}:${target}" \
+        -o /dev/null -w "%{http_code}" "https://${domain}:${port}${path}" 2>/dev/null || true)"
+    [ -z "$code" ] || [ "$code" = "000" ] && code="down"
+    echo "$code"
+}
 print_fail() { echo -e "${RED}✗${NC} $1"; }
 
 show_help() {
@@ -854,14 +892,7 @@ cmd_status() {
         [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
         php_svc="$(php_slug "$php_version")"
 
-        # --noproxy/--resolve: check the site regardless of a shell-level
-        # http_proxy (which would otherwise silently misroute this to some
-        # unrelated proxy) or missing /etc/hosts entries. `|| true`: a
-        # connection failure must show as "down" for this one row, not
-        # abort the whole dashboard under `set -e`.
-        http_code="$(curl -sk --noproxy '*' --max-time 3 --resolve "${domain}:443:127.0.0.1" \
-            -o /dev/null -w "%{http_code}" "https://${domain}/" 2>/dev/null || true)"
-        [ -z "$http_code" ] && http_code="down"
+        http_code="$(site_http_code "$domain")"
 
         db_status="n/a"
         if [ -f "$config" ] && [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
@@ -1497,7 +1528,7 @@ cmd_cache() {
 
     if [ "$mode" = "on" ]; then
         print_info "Full-page cache enabled for ${domain}."
-        echo "Check it: curl -skI https://${domain}/ | grep -i x-fastcgi-cache"
+        echo "Check it: curl -skI $(site_url "$domain")/ | grep -i x-fastcgi-cache"
         echo "(MISS the first request, HIT after -- BYPASS whenever you're logged in,"
         echo "posting a form, or hitting wp-admin.)"
     else
@@ -1755,7 +1786,7 @@ cmd_list() {
         else
             wp_status="no site files found (expected sites/${site_name})"
         fi
-        echo "  https://${domain}  →  sites/${site_name}  ($wp_status)"
+        echo "  $(site_url "$domain")  →  sites/${site_name}  ($wp_status)"
     done
     echo ""
 }
@@ -1989,10 +2020,11 @@ cmd_clone() {
     # along with everything else `cp -a` copies below, so this is also just
     # what site_php_service will resolve to for the clone afterward.
     php_svc="$(site_php_service "$source_name")"
+    new_url="$(site_url "$new_domain")"
 
     echo "This will clone:"
     echo "  sites/${source_name}/  ->  sites/${new_name}/  (files + database)"
-    echo "  New domain: https://${new_domain}"
+    echo "  New domain: $(site_url "$new_domain")"
     echo "  PHP version: $(cat "sites/${source_name}/.php-version" 2>/dev/null || echo "$DEFAULT_PHP_VERSION") (same as source)"
     echo "  Admin login will be the same as ${source_domain} (it's a copy of that database)."
     echo ""
@@ -2030,6 +2062,20 @@ cmd_clone() {
 
     print_step "2/8 Copying WordPress files..."
     docker compose exec -T "$php_svc" cp -a "/var/www/${source_name}" "/var/www/${new_name}" </dev/null
+    # cp -a keeps symlinks verbatim, and an absolute one into the source
+    # site would make the clone run the source's code. Query Monitor's
+    # wp-content/db.php drop-in is exactly that, and it loads before
+    # plugins, so the clone's own QM then fataled on a duplicate
+    # autoloader class: a 500 on every page. (#15) Re-point every such
+    # link at the same path inside the clone.
+    docker compose exec -T "$php_svc" sh -c '
+        src="/var/www/$1/"; dst="/var/www/$2/"
+        find "$dst" -type l | while IFS= read -r link; do
+            target="$(readlink "$link")"
+            case "$target" in
+                "$src"*) ln -sfn "${dst}${target#"$src"}" "$link" ;;
+            esac
+        done' sh "$source_name" "$new_name" </dev/null
     rm -f "sites/${new_name}/.admin-password" "sites/${new_name}/.db-password"
     [ -f "sites/${source_name}/.admin-password" ] && cp "sites/${source_name}/.admin-password" "sites/${new_name}/.admin-password"
     print_info "Files copied to sites/${new_name}"
@@ -2056,13 +2102,19 @@ cmd_clone() {
     print_info "Database '${source_db_name}' cloned to '${new_db_name}'"
 
     print_step "5/8 Rewriting wp-config.php for the clone..."
+    # The URL the source's content actually uses -- its own WP_HOME, which
+    # may carry a port (or a different one than nginx has now), rather than
+    # a guess. Replacing a guessed https://<source> instead would turn
+    # https://src.test:8444/... into https://new.test:8444:8444/...
+    source_url="$(docker compose exec -T "$php_svc" wp config get WP_HOME --path="/var/www/${source_name}" --allow-root </dev/null 2>/dev/null | tr -d '\r')" || true
+    [ -n "$source_url" ] || source_url="$(site_url "$source_domain")"
     # wp config set (not sed) so it works regardless of the source's file
     # layout/formatting, and correctly adds constants that aren't already there.
     docker compose exec -T "$php_svc" wp config set DB_NAME "${new_db_name}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     docker compose exec -T "$php_svc" wp config set DB_USER "${new_db_user}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     docker compose exec -T "$php_svc" wp config set DB_PASSWORD "${new_db_pass}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set WP_HOME "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set WP_SITEURL "https://${new_domain}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set WP_HOME "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    docker compose exec -T "$php_svc" wp config set WP_SITEURL "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     docker compose exec -T "$php_svc" wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     docker compose exec -T "$php_svc" wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     print_info "wp-config.php updated"
@@ -2080,7 +2132,7 @@ cmd_clone() {
     fi
 
     print_step "7/8 Re-pointing URLs and enabling object cache..."
-    docker compose exec -T "$php_svc" wp search-replace "https://${source_domain}" "https://${new_domain}" \
+    docker compose exec -T "$php_svc" wp search-replace "${source_url}" "${new_url}" \
         --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
     docker compose exec -T "$php_svc" wp search-replace "${source_domain}" "${new_domain}" \
         --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
@@ -2096,7 +2148,7 @@ cmd_clone() {
     echo -e "${GREEN}✓ ${new_domain} is ready (cloned from ${source_domain})${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo -e "  Site:        ${GREEN}https://${new_domain}${NC}"
+    echo -e "  Site:        ${GREEN}${new_url}${NC}"
     echo "  PHP version: $(cat "sites/${new_name}/.php-version" 2>/dev/null || echo "$DEFAULT_PHP_VERSION") (${php_svc})"
     echo "  Admin login: same as ${source_domain} (wpdev creds ${source_name})"
     echo "  Database:    ${new_db_name} / ${new_db_user} (password in sites/${new_name}/.db-password)"
@@ -2112,7 +2164,14 @@ cmd_clone() {
         # with it this late, discarding a fully-completed clone over a
         # cosmetic prompt. EOF leaves add_hosts empty, which the check
         # below already treats the same as answering "n".
-        read -p "Add '127.0.0.1 ${new_domain}' to /etc/hosts now? (y/n): " add_hosts || true
+        # Non-interactive (--yes) never asks: there may be no one to
+        # answer, and an open stdin that never sends EOF (a backgrounded
+        # shell, a service) would otherwise block here forever after the
+        # work is done. add_hosts stays empty, i.e. "n" -- just the hint.
+        add_hosts=""
+        if [ "$assume_yes" -ne 1 ]; then
+            read -p "Add '127.0.0.1 ${new_domain}' to /etc/hosts now? (y/n): " add_hosts || true
+        fi
         if [[ "$add_hosts" =~ ^[Yy]$ ]]; then
             echo "127.0.0.1    ${new_domain}" | sudo tee -a /etc/hosts >/dev/null
             print_info "Added ${new_domain} to /etc/hosts"
@@ -2403,7 +2462,7 @@ cmd_db_import() {
     echo ""
     print_info "${domain} database replaced from ${in_file}."
     echo "If this dump came from a different domain, re-point URLs with:"
-    echo "  wpdev wp ${site_name} search-replace https://OLDDOMAIN https://${domain} --all-tables"
+    echo "  wpdev wp ${site_name} search-replace https://OLDDOMAIN $(site_url "$domain") --all-tables"
 }
 
 cmd_add() {
@@ -2485,6 +2544,7 @@ cmd_add() {
         esac
     fi
     php_svc="$(php_slug "$php_version")"
+    url="$(site_url "$domain")"
 
     # WordPress version — optional, empty means "whatever wp-cli resolves
     # as latest" (passed straight through to `wp core download`, so there's
@@ -2619,8 +2679,8 @@ cmd_add() {
             --skip-check \
             --allow-root \
             --extra-php <<PHP
-define('WP_HOME', 'https://${domain}');
-define('WP_SITEURL', 'https://${domain}');
+define('WP_HOME', '${url}');
+define('WP_SITEURL', '${url}');
 define('WP_DEBUG', true);
 define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', false);
@@ -2667,7 +2727,7 @@ PHP
 
         docker compose exec -T "$php_svc" wp core install \
             --path="/var/www/${site_name}" \
-            --url="https://${domain}" \
+            --url="${url}" \
             --title="${domain}" \
             --admin_user="admin" \
             --admin_password="${admin_pass}" \
@@ -2765,9 +2825,9 @@ PHP
     echo -e "${GREEN}✓ ${domain} is ready${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo -e "  Site:        ${GREEN}https://${domain}${NC}"
+    echo -e "  Site:        ${GREEN}${url}${NC}"
     echo "  PHP version: ${php_version} (${php_svc})"
-    echo -e "  Admin login: ${GREEN}https://${domain}/wp-admin${NC}  (admin / ${admin_pass})"
+    echo -e "  Admin login: ${GREEN}${url}/wp-admin${NC}  (admin / ${admin_pass})"
     echo "  Database:    ${db_name} / ${db_user} (password in sites/${site_name}/.db-password)"
     echo "  Object cache: Redis (check with: wpdev wp ${site_name} redis status)"
     echo "  Outgoing mail: caught by Mailpit — wpdev mailpit"
@@ -2784,7 +2844,14 @@ PHP
         # site is already fully provisioned by this point, so EOF on this
         # trailing optional prompt (scripted/non-interactive use) shouldn't
         # take set -e down with it and discard an already-successful run.
-        read -p "Add '127.0.0.1 ${domain}' to /etc/hosts now? (y/n): " add_hosts || true
+        # Non-interactive (--domain) never asks: there may be no one to
+        # answer, and an open stdin that never sends EOF (a backgrounded
+        # shell, a service) would otherwise block here forever after the
+        # work is done. add_hosts stays empty, i.e. "n" -- just the hint.
+        add_hosts=""
+        if [ "$non_interactive" -ne 1 ]; then
+            read -p "Add '127.0.0.1 ${domain}' to /etc/hosts now? (y/n): " add_hosts || true
+        fi
         if [[ "$add_hosts" =~ ^[Yy]$ ]]; then
             echo "127.0.0.1    ${domain}" | sudo tee -a /etc/hosts >/dev/null
             print_info "Added ${domain} to /etc/hosts"

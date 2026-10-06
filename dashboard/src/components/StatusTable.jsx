@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import Terminal, { stripAnsiToLines } from './Terminal';
+import { siteUrl } from '../api';
 
 // Parses the per-site table `wpdev status` prints after "=== Sites ===":
 //   DOMAIN                       PHP    WP        MYSQL     HTTP   DATABASE   CACHE
@@ -69,7 +70,7 @@ export default function StatusTable({ rows, rawOutput }) {
             {rows.map((row) => (
               <tr key={row.domain}>
                 <td>
-                  <a className="site-domain" href={`https://${row.domain}`} target="_blank" rel="noreferrer">
+                  <a className="site-domain" href={siteUrl(row.domain)} target="_blank" rel="noreferrer">
                     {row.domain}
                   </a>
                 </td>

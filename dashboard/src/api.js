@@ -16,6 +16,15 @@ export function appVersion() {
   return window.__WPDEV_APP_VERSION__ || null;
 }
 
+// A site's base URL, with :<port> only when nginx isn't on 443 -- same
+// rule as wpdev's own site_url, from the NGINX_HTTPS_PORT config.js was
+// rendered with. A bare https://<domain> on a non-default port sends the
+// browser to :443, where nothing listens.
+export function siteUrl(domain) {
+  const port = (window.__WPDEV_HTTPS_PORT__ || '').trim();
+  return port && port !== '443' ? `https://${domain}:${port}` : `https://${domain}`;
+}
+
 export function getToken() {
   return localStorage.getItem('wpdev_api_token') || '';
 }

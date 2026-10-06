@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api';
+import { api, siteUrl } from '../api';
 import ConfirmDialog from './ConfirmDialog';
 
 const TABS = ['Overview', 'Cache', 'Snapshots', 'Clone', 'WP-CLI', 'Remove'];
@@ -58,11 +58,11 @@ function OverviewTab({ site }) {
   return (
     <div>
       <p>
-        <a href={`https://${site.domain}`} target="_blank" rel="noreferrer">
+        <a href={siteUrl(site.domain)} target="_blank" rel="noreferrer">
           https://{site.domain}
         </a>{' '}
         /{' '}
-        <a href={`https://${site.domain}/wp-admin`} target="_blank" rel="noreferrer">
+        <a href={`${siteUrl(site.domain)}/wp-admin`} target="_blank" rel="noreferrer">
           wp-admin
         </a>
       </p>
@@ -258,7 +258,7 @@ function CloneTab({ site, onRunAction }) {
       {confirmClone && (
         <ConfirmDialog
           title="Clone this site?"
-          message={`Creates sites/${newName.trim()} and https://${newName.trim()}.test as a full copy of ${site.domain} (files + database).`}
+          message={`Creates sites/${newName.trim()} and ${siteUrl(`${newName.trim()}.test`)} as a full copy of ${site.domain} (files + database).`}
           confirmLabel="Clone"
           onCancel={() => setConfirmClone(false)}
           onConfirm={clone}

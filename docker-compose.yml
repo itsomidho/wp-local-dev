@@ -301,6 +301,8 @@ services:
       # Set by `wpdev up` (git describe) on every start -- see wpdev's
       # cmd_up. Falls back here only if .env predates this var entirely.
       APP_VERSION: ${APP_VERSION:-unknown}
+      # So site links carry the port when nginx isn't on 443 (#5).
+      NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT:-443}
     ports:
       # 127.0.0.1-only, same reasoning as `api` -- this is just the UI, but
       # there's no reason to expose it further than the API it drives.
