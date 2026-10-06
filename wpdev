@@ -2513,7 +2513,11 @@ cmd_add() {
         # thing, same as the old curl call did.
         download_args=(core download --path="/var/www/${site_name}" --allow-root)
         [ -n "$wp_version" ] && download_args+=(--version="$wp_version")
-        docker compose exec -T "$php_svc" wp "${download_args[@]}" </dev/null >/dev/null
+        # memory_limit: wp-cli extracts the tarball with PharData, which
+        # holds it in memory -- current WordPress releases no longer fit in
+        # PHP's default 128M ("Allowed memory size ... exhausted" in
+        # Extractor.php). Raised for this one call only, not image-wide.
+        docker compose exec -T "$php_svc" php -d memory_limit=512M /usr/local/bin/wp "${download_args[@]}" </dev/null >/dev/null
         print_info "WordPress downloaded to sites/$site_name"
     fi
 
