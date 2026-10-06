@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api';
+import { api, siteUrl } from '../api';
 import ConfirmDialog from './ConfirmDialog';
 
 const TABS = ['Overview', 'Cache', 'Snapshots', 'Clone', 'WP-CLI', 'Remove'];
@@ -47,6 +47,23 @@ export default function SiteManageDialog({ site, onClose, onRunAction, onRemoved
 function OverviewTab({ site }) {
   const [creds, setCreds] = useState(null);
   const [error, setError] = useState(null);
+  const [certBusy, setCertBusy] = useState(false);
+  const [certResult, setCertResult] = useState(null);
+  const [confirmCert, setConfirmCert] = useState(false);
+
+  const reissueCert = async () => {
+    setConfirmCert(false);
+    setCertBusy(true);
+    setCertResult(null);
+    try {
+      const r = await api.cert(site.name);
+      setCertResult(r.stdout || r.stderr);
+    } catch (e) {
+      setCertResult(e.message);
+    } finally {
+      setCertBusy(false);
+    }
+  };
 
   useEffect(() => {
     api
@@ -58,16 +75,30 @@ function OverviewTab({ site }) {
   return (
     <div>
       <p>
-        <a href={`https://${site.domain}`} target="_blank" rel="noreferrer">
-          https://{site.domain}
+        <a href={siteUrl(site.domain)} target="_blank" rel="noreferrer">
+          {siteUrl(site.domain)}
         </a>{' '}
         /{' '}
-        <a href={`https://${site.domain}/wp-admin`} target="_blank" rel="noreferrer">
+        <a href={`${siteUrl(site.domain)}/wp-admin`} target="_blank" rel="noreferrer">
           wp-admin
         </a>
       </p>
       {error && <p className="error">{error}</p>}
       {creds && <pre className="terminal">{creds}</pre>}
+      <div className="button-row">
+        <button disabled={certBusy} className="secondary" onClick={() => setConfirmCert(true)}>
+          Reissue HTTPS certificate
+        </button>
+      </div>
+      {certResult && <pre className="terminal">{certResult}</pre>}
+      {confirmCert && (
+        <ConfirmDialog
+          title="Reissue this site's certificate?"
+          message={`Replaces ${site.domain}'s certificate with a new one from the current mkcert CA and reloads nginx. Use it when Doctor flags the cert, or the browser shows a certificate warning.`}
+          onCancel={() => setConfirmCert(false)}
+          onConfirm={reissueCert}
+        />
+      )}
     </div>
   );
 }
@@ -258,7 +289,7 @@ function CloneTab({ site, onRunAction }) {
       {confirmClone && (
         <ConfirmDialog
           title="Clone this site?"
-          message={`Creates sites/${newName.trim()} and https://${newName.trim()}.test as a full copy of ${site.domain} (files + database).`}
+          message={`Creates sites/${newName.trim()} and ${siteUrl(`${newName.trim()}.test`)} as a full copy of ${site.domain} (files + database).`}
           confirmLabel="Clone"
           onCancel={() => setConfirmClone(false)}
           onConfirm={clone}

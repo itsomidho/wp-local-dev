@@ -530,6 +530,110 @@ jobs:
           ./wpdev remove wpvertest --yes </dev/null
 
       - name: >
+          Regression test -- status run through the api reports real
+          reachability (#6). It used to curl the api container's own
+          loopback, which isn't nginx, so every site showed 000.
+        run: |
+          out=$(curl -s http://127.0.0.1:39006/api/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"])')
+          echo "$out"
+          echo "$out" | grep -E '^citest\.test ' | grep -qw 200
+
+      - name: >
+          Regression test -- a non-default NGINX_HTTPS_PORT works end to end
+          (#5). WP_HOME/WP_SITEURL, the install --url, clone, status and the
+          dashboard's links all used to assume :443, so WordPress redirected
+          every request to a port nothing listened on.
+        run: |
+          restore() {
+            sed -i 's/^NGINX_HTTPS_PORT=.*/NGINX_HTTPS_PORT=443/' .env
+            docker compose up -d nginx dashboard >/dev/null 2>&1
+          }
+          trap restore EXIT
+          sed -i 's/^NGINX_HTTPS_PORT=.*/NGINX_HTTPS_PORT=8444/' .env
+          docker compose up -d nginx dashboard
+
+          ./wpdev add --domain=porttest.test --php=8.2 </dev/null
+          ./wpdev clone porttest portclone --yes </dev/null
+          grep -q "'https://porttest.test:8444'" sites/porttest/wp-config.php
+
+          probe() {
+            curl -sk --noproxy '*' --connect-to "$1:8444:127.0.0.1:8444" \
+              -o /dev/null -w '%{http_code} %{redirect_url}' "https://$1:8444$2"
+          }
+          for site in porttest.test portclone.test; do
+            code=""
+            for i in $(seq 1 10); do
+              code=$(probe "$site" /) && [ "$code" = "200 " ] && break
+              sleep 1
+            done
+            echo "$site / -> $code"
+            [ "$code" = "200 " ]
+            r=$(probe "$site" /wp-admin/)
+            echo "$site /wp-admin/ -> $r"
+            echo "$r" | grep -q "https://${site}:8444/wp-login.php"
+          done
+          ! docker compose exec -T php82 wp --path=/var/www/portclone --allow-root \
+              post list --post_type=any --fields=guid --format=csv | grep -q '8444:8444'
+
+          ./wpdev status | grep -E '^porttest\.test ' | grep -qw 200
+          ./wpdev list | grep -q 'https://porttest.test:8444'
+          curl -s http://127.0.0.1:39007/config.js | grep -q '__WPDEV_HTTPS_PORT__ = "8444"'
+
+          ./wpdev remove portclone --yes </dev/null
+          ./wpdev remove porttest --yes </dev/null
+
+      - name: >
+          Regression test -- `wpdev up` shares the host's mkcert CA with the
+          api (#10). Without MKCERT_CAROOT, sites created from the dashboard
+          got certs from the api container's own private CA, which no browser
+          trusts. .env.example ships it commented out, so the "Start the
+          stack" step above must have filled it in.
+        run: |
+          grep -qx "MKCERT_CAROOT=$(mkcert -CAROOT)" .env
+          docker exec wp-api test -f /mkcert-ca/rootCA.pem
+          cmp <(docker exec wp-api cat /mkcert-ca/rootCA.pem) "$(mkcert -CAROOT)/rootCA.pem"
+
+      - name: >
+          Regression test -- `doctor` flags a cert from the wrong CA, and
+          `wpdev cert` (CLI and api) reissues it from the trusted one (#11).
+          Until now the only fix was deleting the files and running mkcert by
+          hand.
+        run: |
+          served_serial() {
+            echo | openssl s_client -connect 127.0.0.1:443 -servername citest.test 2>/dev/null \
+              | openssl x509 -noout -serial
+          }
+          bad=$(mktemp -d)
+          CAROOT="$bad" mkcert -cert-file nginx/ssl/certs/citest.test.pem \
+            -key-file nginx/ssl/private/citest.test-key.pem citest.test
+          docker exec wp-nginx nginx -s reload
+          ./wpdev doctor | grep -q "wasn't issued by the current mkcert CA"
+
+          ./wpdev cert citest
+          ! ./wpdev doctor | grep -q "wasn't issued by the current mkcert CA"
+          sleep 1
+          curl -sf --noproxy '*' --resolve citest.test:443:127.0.0.1 -o /dev/null https://citest.test/
+
+          before=$(served_serial)
+          curl -sf -X POST http://127.0.0.1:39006/api/sites/citest/cert | grep -q '"code":0'
+          sleep 1
+          [ "$(served_serial)" != "$before" ]
+          curl -sf --noproxy '*' --resolve citest.test:443:127.0.0.1 -o /dev/null https://citest.test/
+          [ "$(stat -c %u nginx/ssl/certs/citest.test.pem)" = "$(id -u)" ]
+          rm -rf "$bad"
+
+      - name: >
+          Regression test -- containers left by an interrupted recreate are
+          reported by doctor and removed by `wpdev up` (#12). Compose leaves a
+          never-started <id>_wp-<service> behind when the recreating process
+          dies mid-way, and nothing used to notice.
+        run: |
+          docker create --name abcdef123456_wp-ci "$(docker inspect -f '{{.Config.Image}}' wp-redis)"
+          ./wpdev doctor | grep -q 'abcdef123456_wp-ci'
+          ./wpdev up | grep -q 'interrupted recreate'
+          ! docker ps -a --format '{{.Names}}' | grep -q abcdef123456_wp-ci
+
+      - name: >
           Regression test -- declining a confirmation exits non-zero (#7).
           `add` used to print "Cancelled." and exit 0, which let a shifted
           piped answer silently skip provisioning in this very workflow.
