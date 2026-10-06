@@ -630,7 +630,10 @@ jobs:
         run: |
           docker create --name abcdef123456_wp-ci "$(docker inspect -f '{{.Config.Image}}' wp-redis)"
           ./wpdev doctor | grep -q 'abcdef123456_wp-ci'
-          ./wpdev up | grep -q 'interrupted recreate'
+          # Captured, not piped into grep -q: grep exiting at the first
+          # match would SIGPIPE `up` partway through its work.
+          out=$(./wpdev up 2>&1); echo "$out"
+          echo "$out" | grep -q 'interrupted recreate'
           ! docker ps -a --format '{{.Names}}' | grep -q abcdef123456_wp-ci
 
       - name: >
@@ -648,9 +651,13 @@ jobs:
             cat logs/api-updater.log || true
             return 1
           }
+          # The host `up` in the step above may itself have just recreated
+          # the api (earlier steps edit .env, which it loads).
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:39006/api/health && break; sleep 1; done
           before=$(docker inspect -f '{{.Id}}' wp-api)
           echo 'WPDEV_SELF_UPDATE_TEST=1' >> .env
-          curl -sf -X POST http://127.0.0.1:39006/api/stack/up | grep -q 'api restarts itself'
+          resp=$(curl -s -X POST http://127.0.0.1:39006/api/stack/up); echo "$resp"
+          echo "$resp" | grep -q 'api restarts itself'
           wait_for_new_api "$before"
           docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
           cat logs/api-updater.log
@@ -659,7 +666,8 @@ jobs:
 
           before=$(docker inspect -f '{{.Id}}' wp-api)
           sed -i '/^WPDEV_SELF_UPDATE_TEST=1$/d' .env
-          curl -sf -X POST http://127.0.0.1:39006/api/stack/up >/dev/null
+          resp=$(curl -s -X POST http://127.0.0.1:39006/api/stack/up); echo "$resp"
+          echo "$resp" | grep -q 'api restarts itself'
           wait_for_new_api "$before"
           ! docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
 
