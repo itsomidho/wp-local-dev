@@ -680,7 +680,20 @@ cmd_update() {
     git fetch origin
 
     local_rev="$(git rev-parse HEAD)"
-    remote_rev="$(git rev-parse '@{u}' 2>/dev/null)" || print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
+    if ! remote_rev="$(git rev-parse '@{u}' 2>/dev/null)"; then
+        # install.sh clones with --depth 1, which is single-branch too:
+        # remote.origin.fetch covers main alone, so no other branch has a
+        # remote-tracking ref for @{u} to resolve -- not even one `git push
+        # -u` has already written tracking config for. Git's own wording for
+        # this is "no upstream configured", which sends you to
+        # --set-upstream-to, and that doesn't help: the upstream is set, the
+        # remote-tracking ref is what's missing.
+        cur_branch="$(git rev-parse --abbrev-ref HEAD)"
+        if ! git config --get-all remote.origin.fetch | grep -q 'refs/heads/\*'; then
+            print_error "On branch '${cur_branch}', but this is a single-branch clone that only tracks main, so there's nothing here to update from. Either switch back: git checkout main && wpdev update — or widen the clone: git remote set-branches origin '*' && git fetch origin"
+        fi
+        print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
+    fi
 
     if [ "$local_rev" = "$remote_rev" ]; then
         print_info "Already up to date."
