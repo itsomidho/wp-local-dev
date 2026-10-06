@@ -77,6 +77,10 @@ print_step() { echo -e "${GREEN}[STEP]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
 print_header() { echo -e "${BLUE}$1${NC}"; }
 print_error() { echo -e "${RED}✗${NC} $1"; exit 1; }
+# A declined confirmation is not success: exit non-zero so a script (or
+# CI piping answers in) can tell "cancelled" from "done". Exiting 0 here
+# once hid a real provisioning failure behind a shifted piped answer.
+cancelled() { echo "Cancelled."; exit 1; }
 print_fail() { echo -e "${RED}✗${NC} $1"; }
 
 show_help() {
@@ -544,6 +548,7 @@ set_env_var() {
 }
 
 cmd_up() {
+    require_stack_services
     # Host config that would otherwise fail mid-pull or mid-build with a
     # message pointing nowhere near its cause. The credential one is
     # repaired in place (no sudo, nothing lost -- see
@@ -674,9 +679,18 @@ cmd_up() {
 # hash-prefixed name, never started. So from in there, every service but
 # api is named explicitly, and api is only ever (re)created by a `wpdev up`
 # run on the host. Empty output outside the api means "all services".
+#
+# Fails closed: inside the api, an empty list would make every caller fall
+# back to "all services" -- api included -- so it's an error instead. And
+# since callers use it unquoted inside $(...), where a failure can't stop
+# them under set -e, they must call require_stack_services first.
 stack_services() {
     [ -n "${WPDEV_IN_API:-}" ] || return 0
-    docker compose config --services | grep -vx api
+    docker compose config --services 2>/dev/null | grep -vx api || true
+}
+require_stack_services() {
+    [ -n "${WPDEV_IN_API:-}" ] || return 0
+    [ -n "$(stack_services)" ] || print_error "Couldn't list the compose services (docker compose config failed), so this can't safely leave the api container out. Run it on the host instead."
 }
 
 # After an in-api `up`/`update`, say so if api itself is now stale -- its
@@ -692,6 +706,7 @@ warn_if_api_stale() {
 }
 
 cmd_down() {
+    require_stack_services
     if [ -n "${WPDEV_IN_API:-}" ]; then
         # `down` takes no service list; stop+rm is its per-service form.
         # api stays up so the dashboard can still bring the stack back.
@@ -701,7 +716,7 @@ cmd_down() {
         docker compose down
     fi
 }
-cmd_restart() { docker compose restart $(stack_services); }
+cmd_restart() { require_stack_services; docker compose restart $(stack_services); }
 
 # Pull the latest wp-local-dev, then rebuild + fully recreate every
 # container. The rebuild picks up Dockerfile changes (anything baked into
@@ -713,6 +728,7 @@ cmd_restart() { docker compose restart $(stack_services); }
 # that container. Discovered the hard way this session with exactly that
 # class of bug (a stale bind mount after an in-place file edit).
 cmd_update() {
+    require_stack_services
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Not a git checkout -- can't update. Re-clone from https://github.com/itsomidho/wp-local-dev."
 
     if [ -n "$(git status --porcelain)" ]; then
@@ -1559,8 +1575,7 @@ cmd_restore_all() {
     else
         read -p "Type RESTORE to confirm: " confirm
         if [ "$confirm" != "RESTORE" ]; then
-            echo "Cancelled."
-            return 0
+            cancelled
         fi
     fi
 
@@ -1607,7 +1622,7 @@ cmd_clean_all() {
         rm -rf sites/*/
         echo "All data removed."
     else
-        echo "Cancelled."
+        cancelled
     fi
 }
 
@@ -1627,8 +1642,7 @@ cmd_uninstall() {
     echo "Site files on disk (sites/, backups/, snapshots/, logs/) are not touched by this step."
     read -p "Continue? (yes/no): " confirm
     if [ "$confirm" != "yes" ]; then
-        echo "Cancelled."
-        return
+        cancelled
     fi
     docker compose down -v --rmi local
     print_info "Containers, volumes, and images removed."
@@ -1868,8 +1882,7 @@ cmd_remove() {
     else
         read -p "Type the domain to confirm (${domain}): " confirm
         if [ "$confirm" != "$domain" ]; then
-            echo "Cancelled."
-            return 0
+            cancelled
         fi
     fi
 
@@ -1988,8 +2001,7 @@ cmd_clone() {
     else
         read -p "Continue? (y/n): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "Cancelled."
-            return 0
+            cancelled
         fi
     fi
 
@@ -2231,8 +2243,7 @@ cmd_restore() {
     else
         read -p "Type the domain to confirm (${domain}): " confirm
         if [ "$confirm" != "$domain" ]; then
-            echo "Cancelled."
-            return 0
+            cancelled
         fi
     fi
 
@@ -2356,8 +2367,7 @@ cmd_db_import() {
     else
         read -p "Type the domain to confirm (${domain}): " confirm
         if [ "$confirm" != "$domain" ]; then
-            echo "Cancelled."
-            return 0
+            cancelled
         fi
     fi
 
@@ -2501,8 +2511,7 @@ cmd_add() {
     else
         read -p "Continue? (y/n): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "Cancelled."
-            exit 0
+            cancelled
         fi
     fi
 
