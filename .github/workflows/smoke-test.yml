@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up .env
         run: cp .env.example .env
@@ -33,9 +33,9 @@ jobs:
         run: ./wpdev up
 
       - name: Provision a test site (domain, PHP version, WP version, continue, skip /etc/hosts)
-        # `add` exits 0 when it prints "Cancelled." (e.g. if a new prompt
-        # shifts the piped answers), so check for the success line instead
-        # of trusting the exit code.
+        # Checks for the success line, not just the exit code: a cancelled
+        # add now exits non-zero (#7), but a shifted piped answer could
+        # still land somewhere that doesn't cancel.
         run: |
           out=$(printf 'citest.test\n8.2\n\ny\nn\n' | ./wpdev add 2>&1) || { echo "$out"; exit 1; }
           echo "$out"
@@ -528,6 +528,39 @@ jobs:
           ./wpdev add --domain=wpvertest.test --php=8.2 --wp-version=6.4.3 </dev/null
           [ "$(./wpdev wp wpvertest core version)" = "6.4.3" ]
           ./wpdev remove wpvertest --yes </dev/null
+
+      - name: >
+          Regression test -- declining a confirmation exits non-zero (#7).
+          `add` used to print "Cancelled." and exit 0, which let a shifted
+          piped answer silently skip provisioning in this very workflow.
+        run: |
+          rc=0
+          out=$(printf 'canceltest.test\n8.2\n\nn\n' | ./wpdev add 2>&1) || rc=$?
+          echo "$out"
+          echo "$out" | grep -q "Cancelled."
+          [ "$rc" -ne 0 ]
+          [ ! -e sites/canceltest ]
+
+      - name: >
+          Regression test -- inside the api container, stack commands fail
+          closed when the service list can't be read (#8). An empty list
+          used to mean "every service", wp-api included -- the self-kill #4
+          fixed. Uses a scratch copy with a broken compose file, so nothing
+          real is touched.
+        run: |
+          d=$(mktemp -d)
+          cp wpdev "$d/"
+          echo 'services: [' > "$d/docker-compose.yml"
+          touch "$d/.env"
+          for cmd in up restart down update; do
+            rc=0
+            out=$(cd "$d" && WPDEV_IN_API=1 ./wpdev "$cmd" 2>&1) || rc=$?
+            echo "$cmd: rc=$rc $out"
+            [ "$rc" -ne 0 ]
+            echo "$out" | grep -q "can't safely leave the api container out"
+          done
+          rm -rf "$d"
+          docker inspect -f '{{.State.Running}}' wp-api | grep -qx true
 
       - name: Remove both sites and confirm doctor reports no failures
         run: |

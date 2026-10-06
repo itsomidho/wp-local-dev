@@ -296,6 +296,10 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
 | `wpdev wp <name> <args...>` | Run any WP-CLI command against a site, e.g. `wpdev wp mysite plugin list` |
 
+Answering "no" to any confirmation prompt prints `Cancelled.` and exits
+with status 1, not 0, so a script can tell a declined command from one
+that actually ran.
+
 `wpdev help` prints this same list from the terminal. There's nothing else to
 learn — it's a thin wrapper around `docker compose` (stack lifecycle) and
 WP-CLI (site provisioning), nothing hidden behind it.
@@ -832,6 +836,15 @@ this container has no browser to open it for you.
   when a site is perfectly reachable from your browser. `doctor`'s
   `/etc/hosts` check is accurate (the host's `/etc/hosts` is bind-mounted
   in read-only).
+- **Stack commands run from here leave the api container itself alone.**
+  `up`, `down`, `restart` and `update` sent through the API (the dashboard's
+  Up/Down/Restart/Update buttons) run inside `wp-api`, and stopping or
+  recreating `wp-api` would kill the very process doing the work, halfway
+  through. So from in there they name every service except `api`, and if
+  the api's own config has changed (e.g. `.env` after a `git pull`), `up`
+  prints a warning to run `./wpdev up` on the host to apply it. If the
+  service list can't be read, they refuse to run rather than fall back to
+  "every service".
 - **`PROJECT_DIR`, `API_UID`, `API_GID`, and `DOCKER_GID`** in `.env` are
   auto-managed by `wpdev up` — real facts about this machine (this
   directory's path, your uid/gid, the Docker socket's gid), re-detected on
