@@ -604,17 +604,24 @@ cmd_up() {
             if [ -n "$pending" ]; then
                 case "$(container_reachability)" in
                     offline)
-                        echo "These images still need building, and every build fetches packages from inside a container:"
-                        echo "$pending" | sed 's/^/    /'
-                        print_fail "Containers have no outbound connectivity — a bridge-network container can't even reach its own gateway, so these builds would fail."
-                        echo "  Not a DNS problem: look at the host firewall, or a VPN client enforcing tunnel-all against 172.16.0.0/12."
+                        # Warned about, not refused. Every build here uses
+                        # `network: host`, so a build is immune to this --
+                        # it resolves and fetches in the host's namespace,
+                        # not a bridge. Blocking would be the wrong call
+                        # twice over: it stops work that would have
+                        # succeeded, and the stack it refuses to start is
+                        # perfectly usable for serving sites locally, since
+                        # nginx, php and mysql only ever talk to each other.
+                        print_warning "Containers have no outbound connectivity — a bridge-network container can't reach its own gateway."
+                        echo "  Builds are unaffected (they use the host network namespace), and the stack will serve sites fine."
+                        echo "  What won't work is anything a running container fetches: wp plugin install, composer, plugin updates from wp-admin."
+                        echo "  Not a DNS problem: a host firewall, or a VPN enforcing tunnel-all against 172.16.0.0/12, is dropping it."
                         if pgrep -x vpnagentd >/dev/null 2>&1; then
-                            echo "  Cisco Secure Client (vpnagentd) is running — disconnecting it is the quickest way to confirm."
+                            echo "  Cisco Secure Client (vpnagentd) is running — its chains sit above ufw's in INPUT, so no local Docker or ufw setting overrides them. Disconnecting is the quickest confirmation."
                         fi
-                        print_error "Fix connectivity and re-run, or set WPDEV_SKIP_DNS_FIX=1 to try the build anyway."
                         ;;
                     dns)
-                        print_warning "Containers can reach the network but can't resolve names — these builds will likely fail. Check 'resolvectl status' and /etc/docker/daemon.json's \"dns\"."
+                        print_warning "Containers can reach the network but can't resolve names. Builds are unaffected (host network namespace), but anything a running container fetches will fail. Check 'resolvectl status' and /etc/docker/daemon.json's \"dns\"."
                         ;;
                 esac
             fi
