@@ -774,7 +774,9 @@ cmd_up() {
     fi
 
     docker compose up -d $(stack_services)
-    warn_if_api_stale
+    if [ -n "${WPDEV_IN_API:-}" ] && api_is_stale; then
+        recreate_api_detached "up -d"
+    fi
     echo "Containers started. Give MySQL 30 seconds to initialize if this is the first run."
 }
 
@@ -785,8 +787,9 @@ cmd_up() {
 # wp-api loads via env_file, so compose recreated it -- the old container
 # was SIGKILLed mid-recreate and the replacement was left "Created" under a
 # hash-prefixed name, never started. So from in there, every service but
-# api is named explicitly, and api is only ever (re)created by a `wpdev up`
-# run on the host. Empty output outside the api means "all services".
+# api is named explicitly, and api itself is recreated by a detached helper
+# container instead (recreate_api_detached). Empty output outside the api
+# means "all services".
 #
 # Fails closed: inside the api, an empty list would make every caller fall
 # back to "all services" -- api included -- so it's an error instead. And
@@ -801,16 +804,41 @@ require_stack_services() {
     [ -n "$(stack_services)" ] || print_error "Couldn't list the compose services (docker compose config failed), so this can't safely leave the api container out. Run it on the host instead."
 }
 
-# After an in-api `up`/`update`, say so if api itself is now stale -- its
-# compose config hash differs from the running container's, i.e. a host
-# `up` would recreate it -- rather than leaving it silently unapplied.
-warn_if_api_stale() {
-    [ -n "${WPDEV_IN_API:-}" ] || return 0
+# True when wp-api's compose config hash differs from the running
+# container's, i.e. a host `up` would recreate it.
+api_is_stale() {
+    local want have
     want="$(docker compose config --hash api 2>/dev/null | awk '{print $2}')"
     have="$(docker inspect wp-api --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' 2>/dev/null)"
-    if [ -n "$want" ] && [ "$want" != "$have" ]; then
-        print_warning "The api service's own config changed, but it can't recreate itself from the dashboard. Run ./wpdev up on the host to apply it."
+    [ -n "$want" ] && [ "$want" != "$have" ]
+}
+
+# The one thing the api can't do to itself -- recreate wp-api -- handed to
+# a short-lived container that isn't wp-api, so it survives the recreate.
+# It runs the api's own image (docker CLI + compose already in it) as this
+# same unprivileged user with the socket's group, against the same project
+# directory, so it's the same compose project and anything it writes is
+# owned by you. The short sleep lets this request's response reach the
+# dashboard first; the dashboard then reconnects on its own poll. It
+# writes its own output to logs/api-updater.log (--rm discards the
+# container, and anything following it from in here dies with wp-api).
+# Not named wp-*: doctor would report it as an orphan while it runs. (#13)
+recreate_api_detached() {
+    local compose_args="$1" img sock_gid
+    img="$(docker inspect -f '{{.Config.Image}}' wp-api 2>/dev/null)" || true
+    sock_gid="$(stat -c '%g' /var/run/docker.sock 2>/dev/null)" || true
+    if [ -z "$img" ] || [ -z "$sock_gid" ] || ! docker run -d --rm --name wpdev-api-updater \
+        --user "$(id -u):$(id -g)" --group-add "$sock_gid" -e HOME=/tmp \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "${SCRIPT_DIR}:${SCRIPT_DIR}" -w "${SCRIPT_DIR}" \
+        --entrypoint sh "$img" -c \
+        "sleep 3; { echo \"[\$(date -Is)] docker compose ${compose_args} api\"; docker compose ${compose_args} api; echo \"[\$(date -Is)] exit \$?\"; } >>logs/api-updater.log 2>&1" \
+        >/dev/null 2>"logs/api-updater.start.log"; then
+        print_warning "Couldn't start the helper that applies changes to the api itself (see logs/api-updater.start.log). Run ./wpdev up on the host to apply them."
+        return 0
     fi
+    [ -s logs/api-updater.start.log ] || rm -f logs/api-updater.start.log
+    print_info "The api restarts itself in a few seconds to apply its own changes — the dashboard reconnects on its own (log: logs/api-updater.log)."
 }
 
 cmd_down() {
@@ -881,7 +909,9 @@ cmd_update() {
     print_info "Rebuilding images and recreating containers to apply changes..."
     docker compose build $(stack_services)
     docker compose up -d --force-recreate $(stack_services)
-    warn_if_api_stale
+    # Always, not just when api_is_stale: the pull may have changed api's
+    # code, which only a rebuild picks up -- its config hash can't show it.
+    [ -n "${WPDEV_IN_API:-}" ] && recreate_api_detached "up -d --build --force-recreate"
     print_info "Update complete."
 }
 
