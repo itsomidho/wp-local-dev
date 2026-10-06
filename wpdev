@@ -660,12 +660,48 @@ cmd_up() {
         set_env_var APP_VERSION "$app_version"
     fi
 
-    docker compose up -d
+    docker compose up -d $(stack_services)
+    warn_if_api_stale
     echo "Containers started. Give MySQL 30 seconds to initialize if this is the first run."
 }
 
-cmd_down() { docker compose down; }
-cmd_restart() { docker compose restart; }
+# Run from the dashboard, these commands execute inside the api container
+# itself (docker-compose.yml sets WPDEV_IN_API there), and any compose
+# command that stops or recreates wp-api kills the very process running it.
+# Found live: `up` after a `git pull` changed APP_VERSION in .env, which
+# wp-api loads via env_file, so compose recreated it -- the old container
+# was SIGKILLed mid-recreate and the replacement was left "Created" under a
+# hash-prefixed name, never started. So from in there, every service but
+# api is named explicitly, and api is only ever (re)created by a `wpdev up`
+# run on the host. Empty output outside the api means "all services".
+stack_services() {
+    [ -n "${WPDEV_IN_API:-}" ] || return 0
+    docker compose config --services | grep -vx api
+}
+
+# After an in-api `up`/`update`, say so if api itself is now stale -- its
+# compose config hash differs from the running container's, i.e. a host
+# `up` would recreate it -- rather than leaving it silently unapplied.
+warn_if_api_stale() {
+    [ -n "${WPDEV_IN_API:-}" ] || return 0
+    want="$(docker compose config --hash api 2>/dev/null | awk '{print $2}')"
+    have="$(docker inspect wp-api --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' 2>/dev/null)"
+    if [ -n "$want" ] && [ "$want" != "$have" ]; then
+        print_warning "The api service's own config changed, but it can't recreate itself from the dashboard. Run ./wpdev up on the host to apply it."
+    fi
+}
+
+cmd_down() {
+    if [ -n "${WPDEV_IN_API:-}" ]; then
+        # `down` takes no service list; stop+rm is its per-service form.
+        # api stays up so the dashboard can still bring the stack back.
+        docker compose stop $(stack_services)
+        docker compose rm -f $(stack_services)
+    else
+        docker compose down
+    fi
+}
+cmd_restart() { docker compose restart $(stack_services); }
 
 # Pull the latest wp-local-dev, then rebuild + fully recreate every
 # container. The rebuild picks up Dockerfile changes (anything baked into
@@ -719,8 +755,9 @@ cmd_update() {
     echo
 
     print_info "Rebuilding images and recreating containers to apply changes..."
-    docker compose build
-    docker compose up -d --force-recreate
+    docker compose build $(stack_services)
+    docker compose up -d --force-recreate $(stack_services)
+    warn_if_api_stale
     print_info "Update complete."
 }
 
