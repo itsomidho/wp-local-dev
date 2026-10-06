@@ -32,8 +32,14 @@ jobs:
           PROJECT_DIR/API_UID/API_GID/DOCKER_GID into .env that it needs)
         run: ./wpdev up
 
-      - name: Provision a test site (domain, PHP version, continue, skip /etc/hosts)
-        run: printf 'citest.test\n8.2\ny\nn\n' | ./wpdev add
+      - name: Provision a test site (domain, PHP version, WP version, continue, skip /etc/hosts)
+        # `add` exits 0 when it prints "Cancelled." (e.g. if a new prompt
+        # shifts the piped answers), so check for the success line instead
+        # of trusting the exit code.
+        run: |
+          out=$(printf 'citest.test\n8.2\n\ny\nn\n' | ./wpdev add 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qi "citest.test is ready"
 
       - name: Site responds over HTTPS
         # Retries: curl can hit a transient SSL-connect error (exit 35) in
@@ -86,7 +92,7 @@ jobs:
           docker exec wp-php82 rm -rf /root/.wp-cli/cache/plugin/
           docker exec wp-php82 sh -c "echo '127.0.0.1 wordpress.org downloads.wordpress.org' >> /etc/hosts"
 
-          out=$(printf 'depfail.test\n8.2\ny\nn\n' | ./wpdev add 2>&1)
+          out=$(printf 'depfail.test\n8.2\n\ny\nn\n' | ./wpdev add 2>&1)
           echo "$out"
           echo "$out" | grep -qi "Could not install the redis-cache plugin"
           echo "$out" | grep -qi "Could not install query-monitor"
