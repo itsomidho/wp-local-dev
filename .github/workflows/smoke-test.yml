@@ -634,6 +634,36 @@ jobs:
           ! docker ps -a --format '{{.Names}}' | grep -q abcdef123456_wp-ci
 
       - name: >
+          Regression test -- an Up from the dashboard applies the api's own
+          config change through a detached helper container (#13). Since #4
+          the api can't recreate itself mid-request, and it used to only warn
+          and leave the change unapplied.
+        run: |
+          wait_for_new_api() {
+            for i in $(seq 1 90); do
+              sleep 1
+              id=$(docker inspect -f '{{.Id}}' wp-api 2>/dev/null) || continue
+              [ "$id" != "$1" ] && curl -sf -o /dev/null http://127.0.0.1:39006/api/health && return 0
+            done
+            cat logs/api-updater.log || true
+            return 1
+          }
+          before=$(docker inspect -f '{{.Id}}' wp-api)
+          echo 'WPDEV_SELF_UPDATE_TEST=1' >> .env
+          curl -sf -X POST http://127.0.0.1:39006/api/stack/up | grep -q 'api restarts itself'
+          wait_for_new_api "$before"
+          docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
+          cat logs/api-updater.log
+          grep -q 'exit 0' logs/api-updater.log
+          ! docker ps -a --format '{{.Names}}' | grep -qE 'wpdev-api-updater|^[0-9a-f]{12}_wp-'
+
+          before=$(docker inspect -f '{{.Id}}' wp-api)
+          sed -i '/^WPDEV_SELF_UPDATE_TEST=1$/d' .env
+          curl -sf -X POST http://127.0.0.1:39006/api/stack/up >/dev/null
+          wait_for_new_api "$before"
+          ! docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
+
+      - name: >
           Regression test -- declining a confirmation exits non-zero (#7).
           `add` used to print "Cancelled." and exit 0, which let a shifted
           piped answer silently skip provisioning in this very workflow.

@@ -187,6 +187,9 @@ wpdev update
   `php/xdebug.ini`, etc.), so a pulled fix could otherwise sit on disk
   unapplied until something else happened to restart that container.
   Site data isn't touched either way — only the stack's own containers.
+- Works the same from the dashboard's "Update available" badge, including
+  for the api service itself, which can't rebuild and recreate its own
+  container mid-request. See [API service](#api-service).
 
 ## Getting started
 
@@ -863,15 +866,21 @@ this container has no browser to open it for you.
   while still sending the site's real hostname. A site shows the same code
   in the dashboard as in a terminal. `doctor`'s `/etc/hosts` check is
   accurate too (the host's `/etc/hosts` is bind-mounted in read-only).
-- **Stack commands run from here leave the api container itself alone.**
-  `up`, `down`, `restart` and `update` sent through the API (the dashboard's
+- **The api never stops or recreates itself mid-request.** `up`, `down`,
+  `restart` and `update` sent through the API (the dashboard's
   Up/Down/Restart/Update buttons) run inside `wp-api`, and stopping or
-  recreating `wp-api` would kill the very process doing the work, halfway
-  through. So from in there they name every service except `api`, and if
-  the api's own config has changed (e.g. `.env` after a `git pull`), `up`
-  prints a warning to run `./wpdev up` on the host to apply it. If the
-  service list can't be read, they refuse to run rather than fall back to
-  "every service".
+  recreating `wp-api` from there would kill the very process doing the
+  work, halfway through. So from in there they act on every service
+  *except* `api`. If they can't read the service list, they refuse to run
+  rather than fall back to "every service". When the api itself needs
+  recreating, they hand just that step to a short-lived helper container,
+  `wpdev-api-updater`: after `up` if its config changed (e.g. `.env` after
+  a `git pull`), and always after `update`, which also rebuilds its image.
+  The helper runs as you, survives the recreate, and removes itself. The
+  dashboard shows "unreachable" for a few seconds and then reconnects on
+  its own. The helper's output goes to `logs/api-updater.log`. `down` and
+  `restart` still leave the api alone, so the dashboard stays usable to
+  bring the stack back.
 - **`PROJECT_DIR`, `API_UID`, `API_GID`, and `DOCKER_GID`** in `.env` are
   auto-managed by `wpdev up` — real facts about this machine (this
   directory's path, your uid/gid, the Docker socket's gid), re-detected on
@@ -956,7 +965,11 @@ link.
   update-check`, checked on load and on every manual refresh — not on the
   15s poll, since that would mean a `git fetch` every 15 seconds).
   Clicking it confirms, then streams `wpdev update` live the same way
-  adding a site does: pulls, rebuilds, and recreates every container.
+  adding a site does: pulls, rebuilds, and recreates every container. The
+  api is rebuilt and recreated last, a few seconds after the stream
+  finishes, so the dashboard briefly shows "unreachable" before it
+  reconnects. Reload the page afterwards to pick up a new dashboard build
+  and version badge.
 - **A "Reissue HTTPS certificate" button** in each site's Overview tab runs
   `wpdev cert` for that site (after a confirmation). Use it when Doctor
   flags the cert, or your browser shows a certificate warning.
