@@ -33,6 +33,7 @@
 #   wpdev creds <name>        Show a site's admin/DB credentials
 #   wpdev cert <name>         Reissue a site's HTTPS certificate from the current mkcert CA
 #   wpdev fix-perms <name>    Give a site's files back to you (owner + write); --all for every site
+#   wpdev media-proxy <name> [url|on|off]  Stream production media through the local site
 #   wpdev wp <name> <args...> Run any WP-CLI command against a site, e.g.:
 #                               wpdev wp mysite plugin list
 #
@@ -248,6 +249,7 @@ show_help() {
     echo "  creds <name>              Show a site's admin/DB credentials"
     echo "  cert <name>               Reissue a site's HTTPS certificate from the current mkcert CA"
     echo "  fix-perms <name>|--all    Give a site's files back to you (owner + write), e.g. after copying a site in"
+    echo "  media-proxy <name> [url|on|off]  Stream production media through the local site (no /etc/hosts conflicts)"
     echo "  wp <name> <args...>       Run a WP-CLI command against a site"
     echo ""
     echo "Examples:"
@@ -1507,6 +1509,201 @@ cmd_reload_nginx() {
     docker exec wp-nginx nginx -s reload
 }
 
+# ---------------------------------------------------------------------------
+# Production media proxy
+# ---------------------------------------------------------------------------
+# A local copy usually has the database but not the (huge) uploads folder,
+# so a plugin like wp-local-development-tools points media URLs at the
+# production site (its WP_PRODUCTION_DOMAIN constant). The browser then
+# fetches every image from production itself -- which breaks whenever
+# production's hostname resolves differently on this machine, e.g. pinned
+# in /etc/hosts to an internal address for wp-admin access.
+#
+# With the proxy on, WP_PRODUCTION_DOMAIN points at this site's own
+# /__production/ path, and nginx streams each request on to production.
+# Nothing is stored on disk: no proxy_cache, just a pass-through.
+#
+# nginx must NOT resolve production through the containers' usual DNS:
+# that's systemd-resolved on the docker bridge (see fix-dns), which answers
+# from the host's /etc/hosts -- the very override this exists to sidestep.
+# So the proxy location gets its own resolver: the real upstream servers.
+MEDIA_PROXY_PATH="/__production"
+
+media_proxy_conf() { echo "nginx/sites/media-proxy/$1.conf"; }
+
+# IPv4 upstream DNS servers that don't consult /etc/hosts: what
+# systemd-resolved forwards to, else a non-loopback /etc/resolv.conf, else
+# a public resolver. (Inside the api container neither file has them, so
+# it falls back -- `wpdev media-proxy <site> on` on the host re-renders.)
+media_proxy_resolvers() {
+    local f ns
+    for f in /run/systemd/resolve/resolv.conf /etc/resolv.conf; do
+        ns="$(awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ && $2 !~ /^127\./ {print $2}' "$f" 2>/dev/null | head -3 | tr '\n' ' ')"
+        [ -n "$ns" ] && { echo "${ns% }"; return 0; }
+    done
+    echo "1.1.1.1 8.8.8.8"
+}
+
+# Writes the location block for <domain> proxying to <production-url>
+# (scheme://host[:port][/path], already validated).
+render_media_proxy() {
+    local domain="$1" prod="$2" scheme rest hostport path conf
+    scheme="${prod%%://*}"
+    rest="${prod#*://}"
+    hostport="${rest%%/*}"
+    path=""
+    [ "$rest" != "$hostport" ] && path="/${rest#*/}"
+    path="${path%/}"
+    conf="$(media_proxy_conf "$domain")"
+    mkdir -p "$(dirname "$conf")"
+    cat > "$conf" <<EOF
+# Managed by \`wpdev media-proxy\` for ${domain} -- re-run it rather than
+# editing this file. Streams ${prod}/... through this site at
+# ${MEDIA_PROXY_PATH}/..., resolved via Docker's DNS (not /etc/hosts).
+location ^~ ${MEDIA_PROXY_PATH}/ {
+    # Real upstream DNS, not the containers' default, which answers from
+    # the host's /etc/hosts. A variable below, so nginx resolves per
+    # request and still starts when production is unreachable.
+    resolver $(media_proxy_resolvers) valid=300s ipv6=off;
+    resolver_timeout 5s;
+    set \$wpdev_media_upstream "${scheme}://${hostport}";
+    rewrite ^${MEDIA_PROXY_PATH}/(.*)\$ ${path}/\$1 break;
+    proxy_pass \$wpdev_media_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host "${hostport}";
+    proxy_ssl_server_name on;
+    proxy_ssl_name "${hostport%%:*}";
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 60s;
+
+    # Nothing local goes to production: not your session, not auth.
+    proxy_set_header Cookie "";
+    proxy_set_header Authorization "";
+    proxy_hide_header Set-Cookie;
+
+    # A production redirect stays on the proxy instead of sending the
+    # browser to production directly.
+    proxy_redirect ${scheme}://${hostport}${path}/ ${MEDIA_PROXY_PATH}/;
+
+    # Production's own HSTS/Alt-Svc would apply to this .test host, and its
+    # security headers would duplicate the ones this vhost already adds.
+    proxy_hide_header Strict-Transport-Security;
+    proxy_hide_header Alt-Svc;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-XSS-Protection;
+    proxy_hide_header Referrer-Policy;
+
+    access_log off;
+}
+EOF
+}
+
+# Vhosts generated before the media proxy existed lack its include line;
+# add it in front of the main location so a regenerated vhost and an old
+# one end up identical.
+ensure_media_proxy_include() {
+    local vhost="nginx/sites/$1.conf"
+    grep -q 'sites/media-proxy/' "$vhost" && return 0
+    awk -v d="$1" '
+        !done && /^    location \/ \{/ {
+            print "    # Production media proxy (`wpdev media-proxy`)."
+            print "    include /etc/nginx/sites/media-proxy/" d ".con[f];"
+            print ""
+            done = 1
+        }
+        { print }
+    ' "$vhost" > "${vhost}.new" && mv "${vhost}.new" "$vhost"
+}
+
+# Points WP_PRODUCTION_DOMAIN -- the constant wp-local-development-tools
+# reads -- at <value>.
+set_production_domain_constant() {
+    php_exec "$(site_php_service "$1")" wp config set WP_PRODUCTION_DOMAIN "$2" --type=constant \
+        --path="/var/www/$1" --allow-root </dev/null >/dev/null
+}
+
+reload_nginx_or_fail() {
+    if ! docker exec wp-nginx nginx -t >/dev/null 2>&1; then
+        return 1
+    fi
+    docker exec wp-nginx nginx -s reload >/dev/null 2>&1
+}
+
+cmd_media_proxy() {
+    arg="$1"
+    mode="$2"
+    if [ -z "$arg" ]; then
+        print_warning "Usage: wpdev media-proxy <site-name> [<production-url>|on|off]"
+        echo "  wpdev media-proxy mysite https://example.com/blog   # stream example.com/blog's media through this site"
+        echo "  wpdev media-proxy mysite on                         # same, with the URL from last time or WP_PRODUCTION_DOMAIN"
+        echo "  wpdev media-proxy mysite off                        # back to loading media from production directly"
+        echo "  wpdev media-proxy mysite                            # show the current state"
+        return 1
+    fi
+    site_name="${arg%.test}"
+    site_name="${site_name//./-}"
+    domain="${site_name}.test"
+    [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
+    url_file="sites/${site_name}/.production-url"
+    conf="$(media_proxy_conf "$domain")"
+    local_url="$(site_url "$domain")${MEDIA_PROXY_PATH}"
+
+    case "$mode" in
+        "")
+            if [ -f "$conf" ]; then
+                print_info "On: ${local_url}/…  →  $(cat "$url_file" 2>/dev/null)/…"
+            else
+                if [ -f "$url_file" ]; then
+                    print_info "Off (last production URL: $(cat "$url_file"))"
+                else
+                    print_info "Off"
+                fi
+            fi
+            return 0
+            ;;
+        off)
+            rm -f "$conf"
+            if [ -f "$url_file" ]; then
+                set_production_domain_constant "$site_name" "$(cat "$url_file")"
+                print_info "WP_PRODUCTION_DOMAIN is $(cat "$url_file") again — the browser loads media from production directly"
+            fi
+            reload_nginx_or_fail || print_warning "nginx didn't reload (is it running?) — takes effect on its next start: wpdev up"
+            print_info "Media proxy off for ${domain}."
+            return 0
+            ;;
+        on)
+            prod="$(cat "$url_file" 2>/dev/null)" || true
+            if [ -z "$prod" ]; then
+                prod="$(php_exec "$(site_php_service "$site_name")" wp config get WP_PRODUCTION_DOMAIN \
+                    --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | tr -d '\r')" || true
+                case "$prod" in *"${MEDIA_PROXY_PATH}"*) prod="" ;; esac
+            fi
+            [ -n "$prod" ] || print_error "No production URL known for ${site_name}. Give it once: wpdev media-proxy ${site_name} https://your-production-site"
+            ;;
+        *)
+            prod="$mode"
+            ;;
+    esac
+
+    prod="${prod%/}"
+    # Becomes part of an nginx config, so only a plain URL gets through.
+    [[ "$prod" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/%-]*)?$ ]] \
+        || print_error "Not a usable production URL: '${prod}' (expected e.g. https://example.com or https://example.com/blog)"
+
+    echo "$prod" > "$url_file"
+    render_media_proxy "$domain" "$prod"
+    ensure_media_proxy_include "$domain"
+    if ! reload_nginx_or_fail; then
+        rm -f "$conf"
+        reload_nginx_or_fail || true
+        print_error "nginx rejected the proxy config, so it was removed again. Check: docker exec wp-nginx nginx -t"
+    fi
+    set_production_domain_constant "$site_name" "$local_url"
+    print_info "Media proxy on: ${local_url}/…  →  ${prod}/…"
+    print_info "WP_PRODUCTION_DOMAIN now points at the proxy, so production media no longer depends on how this machine resolves $(echo "$prod" | sed -E 's#^https?://([^/:]+).*#\1#')"
+}
+
 # Hand a site's files back to you -- for sites from before #20, or copied
 # in from elsewhere (a different machine, another local tool), where files
 # can be owned by root, uid 33, or have no owner write bit. Those are what
@@ -2211,7 +2408,7 @@ cmd_remove() {
         [ -d "sites/${site_name}" ] || print_info "Removed sites/${site_name}"
     fi
 
-    rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem"
+    rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem" "$(media_proxy_conf "$domain")"
     print_info "Removed Nginx config and SSL certificate"
 
     # Nginx (running as root in-container) owns these on the host too, so a
@@ -2369,6 +2566,12 @@ cmd_clone() {
     php_exec "$php_svc" wp config set WP_SITEURL "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     php_exec "$php_svc" wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     php_exec "$php_svc" wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    # A source with the media proxy on has WP_PRODUCTION_DOMAIN pointing at
+    # its own /__production/; the clone gets the same proxy on its domain.
+    if [ -f "$(media_proxy_conf "$source_domain")" ] && [ -f "sites/${new_name}/.production-url" ]; then
+        render_media_proxy "$new_domain" "$(cat "sites/${new_name}/.production-url")"
+        set_production_domain_constant "$new_name" "$(site_url "$new_domain")${MEDIA_PROXY_PATH}"
+    fi
     print_info "wp-config.php updated"
 
     print_step "6/8 Generating SSL certificate..."
@@ -3146,6 +3349,7 @@ case "${1:-help}" in
     creds) cmd_creds "$2" ;;
     cert) cmd_cert "$2" ;;
     fix-perms) cmd_fix_perms "$2" ;;
+    media-proxy) cmd_media_proxy "$2" "$3" ;;
     wp) shift; cmd_wp "$@" ;;
     help|-h|--help) show_help ;;
     *)

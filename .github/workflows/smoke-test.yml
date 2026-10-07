@@ -731,6 +731,58 @@ jobs:
           ! docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
 
       - name: >
+          Feature test -- `wpdev media-proxy` streams production media through
+          the local site, survives a vhost regeneration, follows a clone, and
+          turns off cleanly. (s.w.org stands in for "production": this
+          workflow already depends on wordpress.org.)
+        run: |
+          get() {
+            curl -sk --noproxy '*' --resolve "$1:443:127.0.0.1" -D - -o /dev/null "https://$1$2"
+          }
+          const() { ./wpdev wp "$1" config get WP_PRODUCTION_DOMAIN; }
+
+          ./wpdev media-proxy citest | grep -q 'Off'
+          ! ./wpdev media-proxy citest 'https://s.w.org/a;b'
+          ! ./wpdev media-proxy citest 'ftp://s.w.org'
+
+          ./wpdev media-proxy citest https://s.w.org/
+          [ "$(const citest)" = "https://citest.test/__production" ]
+          [ "$(cat sites/citest/.production-url)" = "https://s.w.org" ]
+          h=$(get citest.test /__production/images/wmark.png); echo "$h"
+          echo "$h" | grep -q '^HTTP/1.1 200'
+          echo "$h" | grep -qi '^content-type: image/png'
+          ! echo "$h" | grep -qiE '^(set-cookie|strict-transport-security|alt-svc):'
+          # The proxy block must use its own resolver, not the containers'
+          # default (which can answer from the host's /etc/hosts).
+          grep -qE '^    resolver [0-9.]+' nginx/sites/media-proxy/citest.test.conf
+
+          # Regenerating the vhost (cache on/off) must keep it.
+          ./wpdev cache citest on
+          get citest.test /__production/images/wmark.png | grep -q '^HTTP/1.1 200'
+          ./wpdev cache citest off
+          get citest.test /__production/images/wmark.png | grep -q '^HTTP/1.1 200'
+
+          # A clone gets its own proxy on its own domain; remove cleans up.
+          ./wpdev clone citest proxyclone --yes </dev/null
+          [ "$(const proxyclone)" = "https://proxyclone.test/__production" ]
+          sleep 1
+          get proxyclone.test /__production/images/wmark.png | grep -q '^HTTP/1.1 200'
+          ./wpdev remove proxyclone --yes </dev/null
+          [ ! -e nginx/sites/media-proxy/proxyclone.test.conf ]
+
+          # off: back to production directly; on: remembers the URL.
+          ./wpdev media-proxy citest off
+          [ ! -e nginx/sites/media-proxy/citest.test.conf ]
+          [ "$(const citest)" = "https://s.w.org" ]
+          ! get citest.test /__production/images/wmark.png | grep -qi '^content-type: image/png'
+          ./wpdev media-proxy citest on
+          get citest.test /__production/images/wmark.png | grep -q '^HTTP/1.1 200'
+
+          ./wpdev media-proxy citest off
+          ./wpdev wp citest config delete WP_PRODUCTION_DOMAIN
+          rm -f sites/citest/.production-url
+
+      - name: >
           Regression test -- declining a confirmation exits non-zero (#7).
           `add` used to print "Cancelled." and exit 0, which let a shifted
           piped answer silently skip provisioning in this very workflow.

@@ -26,6 +26,11 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+    # Production media proxy (`wpdev media-proxy`): a location block in its
+    # own file, so regenerating this vhost never loses it. The [f] makes it
+    # a glob, which nginx skips silently when no file matches -- i.e. off.
+    include /etc/nginx/sites/media-proxy/DOMAIN.con[f];
+
     # Main WordPress rewrite logic
     location / {
         try_files $uri $uri/ /index.php?$args;

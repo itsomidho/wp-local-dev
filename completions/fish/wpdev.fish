@@ -60,7 +60,7 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update update-check status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms wp help
+set -l __wpdev_cmds up down restart update update-check status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy wp help
 
 complete -c wpdev -f
 
@@ -99,11 +99,12 @@ complete -c wpdev -n "$__wpdev_top" -a hosts -d "Print /etc/hosts entries needed
 complete -c wpdev -n "$__wpdev_top" -a creds -d "Show a site's admin/DB credentials"
 complete -c wpdev -n "$__wpdev_top" -a cert -d "Reissue a site's HTTPS certificate"
 complete -c wpdev -n "$__wpdev_top" -a fix-perms -d "Give a site's files back to you"
+complete -c wpdev -n "$__wpdev_top" -a media-proxy -d "Stream production media through the local site"
 complete -c wpdev -n "$__wpdev_top" -a wp -d "Run a WP-CLI command against a site"
 complete -c wpdev -n "$__wpdev_top" -a help -d "Show usage"
 
 # Site-name completion for commands taking <site>/<name> as their 2nd token
-for cmd in remove snapshot restore db-export db-import creds cert fix-perms wp clone db adminer cache
+for cmd in remove snapshot restore db-export db-import creds cert fix-perms media-proxy wp clone db adminer cache
     complete -c wpdev -f -n "__fish_seen_subcommand_from $cmd; and __wpdev_arg_n 2" -a "(__wpdev_sites)"
 end
 
