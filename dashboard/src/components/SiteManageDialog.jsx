@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, siteUrl } from '../api';
 import ConfirmDialog from './ConfirmDialog';
 
-const TABS = ['Overview', 'Cache', 'Media', 'Snapshots', 'Clone', 'WP-CLI', 'Remove'];
+const TABS = ['Overview', 'Cache', 'Media', 'Admin domain', 'Snapshots', 'Clone', 'WP-CLI', 'Remove'];
 
 export default function SiteManageDialog({ site, onClose, onRunAction, onRemoved }) {
   const [tab, setTab] = useState('Overview');
@@ -28,6 +28,7 @@ export default function SiteManageDialog({ site, onClose, onRunAction, onRemoved
           {tab === 'Overview' && <OverviewTab site={site} />}
           {tab === 'Cache' && <CacheTab site={site} />}
           {tab === 'Media' && <MediaTab site={site} />}
+          {tab === 'Admin domain' && <AdminDomainTab site={site} />}
           {tab === 'Snapshots' && <SnapshotsTab site={site} onRunAction={onRunAction} />}
           {tab === 'Clone' && <CloneTab site={site} onRunAction={onRunAction} />}
           {tab === 'WP-CLI' && <WpCliTab site={site} />}
@@ -289,6 +290,117 @@ function MediaTab({ site }) {
         <ConfirmDialog
           title="Turn the media proxy off?"
           message={`Uploads missing from ${site.domain}'s local folder will be 404s again. The production URL is kept for next time.`}
+          confirmLabel="Turn off"
+          onCancel={() => setConfirmOff(false)}
+          onConfirm={() => run({ mode: 'off' })}
+        />
+      )}
+    </div>
+  );
+}
+
+// `wpdev admin-domain <site>` prints one status line; these are its formats
+// (kept stable in wpdev for exactly this):
+//   On: https://admin.test  →  https://site.test
+//   Off (last admin domain: admin.test)
+//   Off
+export function parseAdminDomain(stdout) {
+  const text = (stdout || '').replace(/\x1b\[[0-9;]*m/g, '');
+  const on = /On:\s+(https:\/\/\S+)\s+→\s+(https:\/\/\S+)/.exec(text);
+  if (on) {
+    return { on: true, url: on[1], domain: on[1].replace(/^https:\/\//, '').replace(/:\d+$/, '') };
+  }
+  const off = /Off \(last admin domain: ([^)\s]+)\)/.exec(text);
+  return { on: false, url: null, domain: off ? off[1] : '' };
+}
+
+function AdminDomainTab({ site }) {
+  const [status, setStatus] = useState(null);
+  const [domain, setDomain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [confirmOff, setConfirmOff] = useState(false);
+
+  const load = () =>
+    api
+      .adminDomainStatus(site.name)
+      .then((r) => {
+        const s = parseAdminDomain(r.stdout);
+        setStatus(s);
+        setDomain((current) => current || s.domain);
+        setError(null);
+      })
+      .catch((e) => setError(e.message));
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
+
+  const run = async (body) => {
+    setConfirmOff(false);
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.adminDomain(site.name, body);
+      setResult(r.stdout || r.stderr);
+    } catch (e) {
+      setResult(e.message);
+    } finally {
+      setBusy(false);
+      load();
+    }
+  };
+
+  return (
+    <div>
+      <p className="muted">
+        Serves this site's wp-admin on a separate domain, like a production reverse proxy: requests
+        reach the site with its own Host and <code>X-Forwarded-Host</code> set to the admin domain.
+        Only wp-admin, wp-login.php, wp-includes, wp-content, wp-json and previews pass; everything
+        else is a 404. Rewriting wp-admin's links to the admin domain is up to the project (e.g. a
+        mu-plugin reading <code>WP_ADMIN_DOMAIN</code>); WordPress isn't changed.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {status && (
+        <p>
+          <span className={status.on ? 'badge badge-ok' : 'badge badge-muted'}>
+            {status.on ? 'On' : 'Off'}
+          </span>{' '}
+          {status.on ? (
+            <>
+              <a href={`${status.url}/wp-admin/`} target="_blank" rel="noreferrer">
+                {status.url}/wp-admin/
+              </a>{' '}
+              → {siteUrl(site.domain)}
+            </>
+          ) : (
+            'wp-admin is only served on the site domain.'
+          )}
+        </p>
+      )}
+      <div className="button-row">
+        <input
+          name="adminDomain"
+          placeholder={`admin-${site.name}.test`}
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+        />
+        <button disabled={busy || !domain.trim()} onClick={() => run({ domain: domain.trim() })}>
+          {status && status.on ? 'Update' : 'Turn on'}
+        </button>
+        {status && status.on && (
+          <button disabled={busy} className="secondary" onClick={() => setConfirmOff(true)}>
+            Turn off
+          </button>
+        )}
+      </div>
+      {result && <pre className="terminal">{result}</pre>}
+      {confirmOff && (
+        <ConfirmDialog
+          title="Turn the admin domain off?"
+          message={`${status.domain} stops being served. The domain is kept for next time, and ${site.domain} is unaffected.`}
           confirmLabel="Turn off"
           onCancel={() => setConfirmOff(false)}
           onConfirm={() => run({ mode: 'off' })}

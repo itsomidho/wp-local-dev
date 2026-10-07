@@ -163,6 +163,25 @@ app.post('/api/sites/:name/media-proxy', requireValidSiteName, async (req, res) 
   res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
 });
 
+// Admin domain (`wpdev admin-domain`). GET returns wpdev's own status line.
+// POST takes {mode: 'on'|'off'} or {domain}; the domain is checked here
+// with the same pattern wpdev enforces (it ends up in an nginx config).
+const ADMIN_DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+app.get('/api/sites/:name/admin-domain', requireValidSiteName, sync((req) => ['admin-domain', req.params.name]));
+app.post('/api/sites/:name/admin-domain', requireValidSiteName, async (req, res) => {
+  const { mode, domain } = req.body || {};
+  let arg;
+  if (mode === 'on' || mode === 'off') arg = mode;
+  else if (typeof domain === 'string' && ADMIN_DOMAIN_RE.test(domain.trim().toLowerCase())) arg = domain.trim().toLowerCase();
+  else {
+    return res.status(400).json({
+      error: "send {mode: 'on'|'off'} or {domain: 'admin-mysite.test'}",
+    });
+  }
+  const { code, stdout, stderr } = await runWpdev(['admin-domain', req.params.name, arg]);
+  res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
+});
+
 app.get('/api/sites/:name/snapshots', requireValidSiteName, sync((req) => ['snapshots', req.params.name]));
 
 app.post('/api/sites/:name/snapshots', requireValidSiteName, (req, res) => {

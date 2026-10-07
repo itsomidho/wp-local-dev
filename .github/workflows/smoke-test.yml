@@ -810,6 +810,95 @@ jobs:
           [ "$(sha256sum sites/citest/wp-config.php)" = "$wpconfig_before" ]
 
       - name: >
+          Feature test -- `wpdev admin-domain` serves a site's wp-admin on a
+          second domain through a reverse proxy (site Host + X-Forwarded-Host),
+          passes only admin paths, survives a vhost regeneration, isn't
+          cloned, is cleaned up by remove, and turns off cleanly.
+        run: |
+          get() {
+            curl -sk --noproxy '*' --resolve "$1:443:127.0.0.1" -o /dev/null \
+              -w '%{http_code} %{redirect_url}' "https://$1$2"
+          }
+          code() { get "$1" "$2" | cut -d' ' -f1; }
+
+          ./wpdev admin-domain citest | grep -q 'Off'
+          ! ./wpdev admin-domain citest 'a;b'
+          ! ./wpdev admin-domain citest citest.test
+
+          out=$(./wpdev admin-domain citest citest-admin.test); echo "$out"
+          echo "$out" | grep -q "WP_ADMIN_DOMAIN isn't defined"
+          [ -f nginx/ssl/certs/citest-admin.test.pem ]
+          ./wpdev admin-domain citest | grep -q 'On: https://citest-admin.test'
+
+          # Only admin paths pass; WordPress's redirects stay on the domain.
+          [ "$(get citest-admin.test /)" = "301 https://citest-admin.test/wp-admin/" ]
+          get citest-admin.test /wp-admin/ | grep -q '^302 https://citest-admin.test/wp-login.php'
+          [ "$(code citest-admin.test /wp-login.php)" = 200 ]
+          [ "$(code citest-admin.test /wp-json/)" = 200 ]
+          [ "$(code citest-admin.test '/?rest_route=/')" = 200 ]
+          [ "$(code citest-admin.test /wp-includes/js/jquery/jquery.min.js)" = 200 ]
+          [ "$(code citest-admin.test /sample-page/)" = 404 ]
+
+          # What PHP sees, through a throwaway mu-plugin that also defines
+          # WP_ADMIN_DOMAIN (so `on` stops warning).
+          mkdir -p sites/citest/wp-content/mu-plugins
+          cat > sites/citest/wp-content/mu-plugins/wpdev-ci-admin-domain.php <<'PHP'
+          <?php
+          define('WP_ADMIN_DOMAIN', 'citest-admin.test');
+          if (isset($_GET['wpdev_headers'])) {
+              header('X-Seen-Host: ' . $_SERVER['HTTP_HOST']);
+              header('X-Seen-Forwarded-Host: ' . ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? ''));
+              header('X-Seen-HTTPS: ' . (is_ssl() ? 'on' : 'off'));
+          }
+          PHP
+          h=$(curl -sk --noproxy '*' --resolve citest-admin.test:443:127.0.0.1 -D - -o /dev/null \
+            'https://citest-admin.test/wp-login.php?wpdev_headers=1'); echo "$h"
+          echo "$h" | grep -qi '^x-seen-host: citest.test'
+          echo "$h" | grep -qi '^x-seen-forwarded-host: citest-admin.test'
+          echo "$h" | grep -qi '^x-seen-https: on'
+          ! ./wpdev admin-domain citest on | grep -q 'WP_ADMIN_DOMAIN'
+
+          # hosts, cert and doctor know about it.
+          ./wpdev hosts | grep -q 'citest-admin.test'
+          ./wpdev cert citest | grep -q 'admin domain citest-admin.test'
+          d=$(./wpdev doctor 2>&1 || true)
+          echo "$d" | grep -q 'Admin domain citest-admin.test'
+
+          # Regenerating the site's vhost (cache on/off) must keep it.
+          ./wpdev cache citest on
+          [ "$(code citest-admin.test /wp-login.php)" = 200 ]
+          ./wpdev cache citest off
+          [ "$(code citest-admin.test /wp-login.php)" = 200 ]
+
+          # A clone starts without one (the domain is taken); remove cleans up.
+          ./wpdev clone citest adclone --yes </dev/null
+          [ ! -e sites/adclone/.admin-domain ]
+          ./wpdev admin-domain adclone | grep -qx '.*Off'
+          ! ./wpdev admin-domain adclone citest-admin.test
+          ./wpdev admin-domain adclone adclone-admin.test
+          [ "$(code adclone-admin.test /wp-login.php)" = 200 ]
+          ./wpdev remove adclone --yes </dev/null
+          [ ! -e nginx/sites/admin-domain/adclone.test.conf ]
+          [ ! -e nginx/ssl/certs/adclone-admin.test.pem ]
+
+          # Through the api (the dashboard's Admin domain tab).
+          api=http://127.0.0.1:39006/api/sites/citest/admin-domain
+          post() { curl -s -o /tmp/ad.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$1" "$api"; }
+          curl -sf "$api" | grep -q 'On: https://citest-admin.test'
+          [ "$(post '{"mode":"off"}')" = 200 ]
+          curl -sf "$api" | grep -q 'Off (last admin domain: citest-admin.test)'
+          ! docker exec wp-nginx nginx -T 2>/dev/null | grep -q 'server_name citest-admin.test'
+          [ "$(post '{"domain":"citest-admin.test"}')" = 200 ]
+          [ "$(code citest-admin.test /wp-login.php)" = 200 ]
+          [ "$(post '{"domain":"a;b"}')" = 400 ]
+          [ "$(post '{"mode":"maybe"}')" = 400 ]
+
+          ./wpdev admin-domain citest off
+          [ ! -e nginx/sites/admin-domain/citest.test.conf ]
+          rm -f sites/citest/wp-content/mu-plugins/wpdev-ci-admin-domain.php sites/citest/.admin-domain \
+            nginx/ssl/certs/citest-admin.test.pem nginx/ssl/private/citest-admin.test-key.pem
+
+      - name: >
           Regression test -- declining a confirmation exits non-zero (#7).
           `add` used to print "Cancelled." and exit 0, which let a shifted
           piped answer silently skip provisioning in this very workflow.
