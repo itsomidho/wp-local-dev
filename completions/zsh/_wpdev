@@ -64,6 +64,7 @@ _wpdev() {
         'hosts:Print /etc/hosts entries needed for all sites'
         "creds:Show a site's admin/DB credentials"
         "cert:Reissue a site's HTTPS certificate"
+        "fix-perms:Give a site's files back to you"
         'wp:Run a WP-CLI command against a site'
         'help:Show usage'
     )
@@ -75,7 +76,7 @@ _wpdev() {
 
     local subcmd="${words[2]}"
     case "$subcmd" in
-        remove|snapshot|restore|db-export|db-import|creds|cert|wp|clone|db|adminer)
+        remove|snapshot|restore|db-export|db-import|creds|cert|fix-perms|wp|clone|db|adminer)
             if (( CURRENT == 3 )); then
                 compadd -- $(_wpdev_sites)
             fi

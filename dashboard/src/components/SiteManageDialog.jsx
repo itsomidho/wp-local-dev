@@ -51,6 +51,19 @@ function OverviewTab({ site }) {
   const [certResult, setCertResult] = useState(null);
   const [confirmCert, setConfirmCert] = useState(false);
 
+  const fixPerms = async () => {
+    setCertBusy(true);
+    setCertResult(null);
+    try {
+      const r = await api.fixPerms(site.name);
+      setCertResult(r.stdout || r.stderr);
+    } catch (e) {
+      setCertResult(e.message);
+    } finally {
+      setCertBusy(false);
+    }
+  };
+
   const reissueCert = async () => {
     setConfirmCert(false);
     setCertBusy(true);
@@ -88,6 +101,14 @@ function OverviewTab({ site }) {
       <div className="button-row">
         <button disabled={certBusy} className="secondary" onClick={() => setConfirmCert(true)}>
           Reissue HTTPS certificate
+        </button>
+        <button
+          disabled={certBusy}
+          className="secondary"
+          title="Make every file in this site yours and writable again, e.g. after copying a site in from elsewhere"
+          onClick={fixPerms}
+        >
+          Fix file permissions
         </button>
       </div>
       {certResult && <pre className="terminal">{certResult}</pre>}

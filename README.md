@@ -271,7 +271,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev fix-dns` | Repair container DNS when the host's resolver lives behind a VPN tunnel (needs sudo). `wpdev up` already does this for you — this is for running it on its own |
 | `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
-| `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` |
+| `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` (as you, not root) |
 | `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
 | `wpdev adminer [name]` | Open Adminer in the browser — root by default, or deep-linked to one site's DB |
 | `wpdev portainer` | Open Portainer in the browser (Docker container/image management) |
@@ -298,6 +298,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
 | `wpdev cert <name>` | Reissue a site's HTTPS certificate from the current mkcert CA, then reload nginx |
+| `wpdev fix-perms <name>\|--all` | Give a site's files back to you (owner + write), e.g. after copying a site in from elsewhere |
 | `wpdev wp <name> <args...>` | Run any WP-CLI command against a site, e.g. `wpdev wp mysite plugin list` |
 
 Answering "no" to any confirmation prompt prints `Cancelled.` and exits
@@ -391,7 +392,9 @@ for you, just tells you the command to run:
   credential helper, and a VPN resolver containers can't reach. `wpdev up`
   repairs both by itself; `doctor` just reports them (see "Host environment")
 - Disk usage of `sites/`
-- Per site: `/etc/hosts` entry present, SSL cert present and still good
+- Every running php container runs PHP as you (see [File permissions](#file-permissions))
+- Per site: every file owned by you and writable (if not, `wpdev fix-perms
+  <site>`), `/etc/hosts` entry present, SSL cert present and still good
   (not expired or expiring within 30 days, and issued by the mkcert CA
   your browser trusts; if not, run `wpdev cert <site>`), and — the one
   this was built for — **whether the database `wp-config.php` actually
@@ -597,42 +600,57 @@ optional.
 
 ## File permissions
 
-Every site's files end up written by two different users, and that
-mismatch used to make wp-admin plugin/theme installs fail outright:
+Every file in `sites/` is owned by **you**, whoever writes it. That includes
+WordPress updating a plugin from wp-admin, a media upload, `wpdev wp …`,
+WP-Cron, a `wpdev clone`, or a snapshot restore. So your editor can change
+anything WordPress wrote, and WordPress can change anything you wrote, with
+no sudo, no shared group, and no `chmod` dance.
 
-- `wpdev` itself (`wp core install`, `wp plugin install`, `wp config set`,
-  the real WP-Cron loop, ...) runs wp-cli via `docker compose exec`, which
-  defaults to **root** inside the container.
-- The actual website — including a plugin install you trigger from
-  wp-admin in your browser — is served by PHP-FPM, which runs as
-  **www-data**.
+How: every process that writes site files runs as your own uid/gid.
 
-Without a fix, everything `wpdev` touches ends up owned `root:root`, and
-www-data has no write access to it at all — so installing a plugin from
-wp-admin failed with WP-CLI/WordPress's own
-`Installation failed: Could not create directory.` error, because
-www-data couldn't create its temp extraction folder under
-`wp-content/upgrade/`.
+- **PHP-FPM, wp-cli and cron** all run as `www-data` inside the php
+  containers. At startup, `php/entrypoint.sh` renumbers `www-data` to your
+  uid/gid (`API_UID`/`API_GID` in `.env`, which `wpdev up` detects from
+  `id -u`/`id -g`). `wpdev` runs wp-cli as `www-data` rather than as root,
+  and the crontab runs its job as `www-data` too.
+- **nginx's worker processes** are renumbered the same way
+  (`nginx/host-user.sh`). They share the full-page cache with PHP, and
+  nginx-helper purges a page on save by deleting nginx's cache file for it.
+  That only works when both run as the same user.
+- **`wpdev shell php`** opens a shell as `www-data` too, so a `composer
+  install` run in there produces files you own. For root, use `docker exec
+  -it wp-phpXX sh`.
 
-`wpdev add` now fixes this as the last step of provisioning: every file
-and directory under a new site is `chgrp`'d to `www-data`, and every
-directory additionally gets the setgid bit (`chmod g+ws`). Setgid means
-any *new* file or directory created later — by wp-cli running as root,
-by the real WP-Cron loop, or by www-data itself — inherits the `www-data`
-group from its parent instead of its creator's own group, so this keeps
-holding up as a site grows, not just at creation time.
+Before this, wp-cli wrote as **root** and PHP-FPM as **uid 33**. Each
+side's files were read-only to the other and to you, which produced
+`Could not create directory` and `Could not create the upgrade-temp-backup
+directory` errors in wp-admin, and permission errors in your editor.
 
-If you hit this error on a site created before this fix (or see any
-other "Could not create directory" / "Permission denied" style error
-from wp-admin), fix it the same way by hand:
+### Sites created before this, or copied in from elsewhere
 
-```bash
-docker compose exec <phpXX> chgrp -R www-data /var/www/<site>
-docker compose exec <phpXX> sh -c "find /var/www/<site> -type d -exec chmod g+ws {} +"
-docker compose exec <phpXX> sh -c "find /var/www/<site> -type f -exec chmod g+w {} +"
+Files from an older version of this project, or from another machine or
+local tool, can be owned by root, by uid 33, or by another user, or can lack
+the owner write bit. `wpdev doctor` checks every site and tells you when:
+
+```
+⚠   1000+ path(s) under sites/mysite aren't owned by you or aren't writable — … Run: wpdev fix-perms mysite
 ```
 
-(`<phpXX>` is whichever PHP version the site uses — see `wpdev list`.)
+```bash
+wpdev fix-perms mysite    # one site
+wpdev fix-perms --all     # every site
+```
+
+This `chown`s the site to you and makes everything owner-writable. It
+doesn't follow symlinks, and it doesn't touch the mode bits of files you
+already own. The dashboard has the same thing as a **Fix file permissions**
+button in each site's Overview tab. `add`, `clone` and `restore` all finish
+by doing this for the site they just wrote, so a site that came out of any
+of them never needs it.
+
+`wpdev doctor` also warns if a php container is still running PHP as a
+different user than you (one started from an older checkout). `wpdev up`
+recreates it.
 
 ## Full-page cache (nginx FastCGI)
 

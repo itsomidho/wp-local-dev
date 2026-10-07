@@ -9,6 +9,9 @@
 # doesn't include /usr/local/bin, so without this, not just `wp` but even
 # the wp phar's own `#!/usr/bin/env php` shebang fails to resolve — php
 # itself lives in /usr/local/bin in this image.
+# Runs as www-data -- which the entrypoint renumbers to your own uid -- so
+# anything a cron event writes is owned by you, same as PHP-FPM's files.
+#
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-* * * * * root /usr/local/bin/wp-cron-runner.sh >> /var/log/wpdev/cron.log 2>&1
+* * * * * www-data /usr/local/bin/wp-cron-runner.sh >> /var/log/wpdev/cron.log 2>&1
 

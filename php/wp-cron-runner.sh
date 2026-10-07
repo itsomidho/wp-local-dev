@@ -14,7 +14,9 @@
 # just a slow plugin hook) can take longer than a minute, and without this,
 # overlapping instances pile up — observed for real while building this: a
 # 125-second event caused 3 concurrent runs stacked on top of each other.
-exec 200>/var/run/wp-cron-runner.lock
+# In /tmp, not /var/run: this runs as www-data (see php/crontab), which
+# can't write /var/run.
+exec 200>/tmp/wp-cron-runner.lock
 flock -n 200 || { echo "[wp-cron] $(date '+%Y-%m-%d %H:%M:%S') previous run still in progress, skipping"; exit 0; }
 
 # Multiple PHP versions each run their own copy of this script in their own

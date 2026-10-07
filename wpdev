@@ -32,6 +32,7 @@
 #   wpdev hosts               Print /etc/hosts entries needed for all sites
 #   wpdev creds <name>        Show a site's admin/DB credentials
 #   wpdev cert <name>         Reissue a site's HTTPS certificate from the current mkcert CA
+#   wpdev fix-perms <name>    Give a site's files back to you (owner + write); --all for every site
 #   wpdev wp <name> <args...> Run any WP-CLI command against a site, e.g.:
 #                               wpdev wp mysite plugin list
 #
@@ -161,6 +162,43 @@ cert_problem() {
 recreate_leftovers() {
     docker ps -a --format '{{.Names}} {{.State}}' 2>/dev/null | grep -E '^[0-9a-f]{12}_wp-' || true
 }
+
+# Commands in a php container run as www-data, which php/entrypoint.sh
+# renumbers to your own uid -- so whatever wp-cli writes is owned by you,
+# exactly like what PHP-FPM writes for wp-admin. (Not root, docker compose
+# exec's default: root-owned files were read-only to both you and
+# WordPress.) php_exec_root is for the few steps that must handle files a
+# pre-#20 site left owned by root. (#20)
+php_exec() {
+    local svc="$1"; shift
+    docker compose exec -T -u www-data "$svc" "$@"
+}
+php_exec_root() {
+    local svc="$1"; shift
+    docker compose exec -T "$svc" "$@"
+}
+
+# True when the php container's www-data really is you -- i.e. it was
+# started with php/entrypoint.sh's uid mapping. Containers started before
+# that (an older checkout) still run as uid 33.
+php_runs_as_you() {
+    [ "$(docker compose exec -T "$1" id -u www-data </dev/null 2>/dev/null | tr -d '\r')" = "$(id -u)" ]
+}
+
+# Hand a whole site to you: owner = your uid/gid (www-data inside the
+# container), and owner-writable. Root, since that's the point -- fixing
+# files someone else owns. chown -R doesn't follow symlinks.
+fix_site_ownership() {
+    local svc="$1" site="$2"
+    php_runs_as_you "$svc" || return 1
+    php_exec_root "$svc" sh -c 'chown -R www-data:www-data "/var/www/$1" && chmod -R u+rwX "/var/www/$1"' sh "$site" </dev/null >/dev/null 2>&1
+}
+
+# Paths under sites/<site> that aren't yours, or that you can't write.
+# Capped: it's for "is there a problem", not an inventory.
+foreign_files() {
+    find "sites/$1" \( ! -user "$(id -u)" -o ! -perm -u+w \) -print 2>/dev/null | head -n "${2:-1000}" || true
+}
 print_fail() { echo -e "${RED}✗${NC} $1"; }
 
 show_help() {
@@ -209,6 +247,7 @@ show_help() {
     echo "  hosts                     Print /etc/hosts entries needed for all sites"
     echo "  creds <name>              Show a site's admin/DB credentials"
     echo "  cert <name>               Reissue a site's HTTPS certificate from the current mkcert CA"
+    echo "  fix-perms <name>|--all    Give a site's files back to you (owner + write), e.g. after copying a site in"
     echo "  wp <name> <args...>       Run a WP-CLI command against a site"
     echo ""
     echo "Examples:"
@@ -1007,19 +1046,19 @@ cmd_status() {
         fi
 
         php_reachable=0
-        if [ -f "$config" ] && docker compose exec -T "$php_svc" true </dev/null >/dev/null 2>&1; then
+        if [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
             php_reachable=1
         fi
 
         cache_status="n/a"
         if [ "$php_reachable" -eq 1 ]; then
-            cache_status="$(docker compose exec -T "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
+            cache_status="$(php_exec "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
             [ -z "$cache_status" ] && cache_status="off"
         fi
 
         wp_version="n/a"
         if [ "$php_reachable" -eq 1 ]; then
-            wp_version="$(docker compose exec -T "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
+            wp_version="$(php_exec "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
             [ -z "$wp_version" ] && wp_version="n/a"
         fi
 
@@ -1088,6 +1127,15 @@ cmd_doctor() {
     else
         print_info "No orphaned containers"
     fi
+
+    for v in $SUPPORTED_PHP_VERSIONS; do
+        svc="$(php_slug "$v")"
+        [ "$(docker inspect -f '{{.State.Status}}' "wp-${svc}" 2>/dev/null)" = "running" ] || continue
+        if ! php_runs_as_you "$svc"; then
+            print_warning "wp-${svc} runs PHP as a different user than you ($(id -u)) — files WordPress writes won't be yours. Run: wpdev up"
+            warnings=$((warnings + 1))
+        fi
+    done
 
     leftovers="$(recreate_leftovers)"
     if [ -n "$leftovers" ]; then
@@ -1201,6 +1249,17 @@ cmd_doctor() {
                 warnings=$((warnings + 1))
             fi
 
+            if [ -d "sites/${site_name}" ]; then
+                foreign="$(foreign_files "$site_name" | wc -l)"
+                if [ "$foreign" -eq 0 ]; then
+                    print_info "  Files are all yours and writable"
+                else
+                    [ "$foreign" -ge 1000 ] && foreign="1000+"
+                    print_warning "  ${foreign} path(s) under sites/${site_name} aren't owned by you or aren't writable — wp-admin updates and your editor can fail. Run: wpdev fix-perms ${site_name}"
+                    warnings=$((warnings + 1))
+                fi
+            fi
+
             if [ -f "nginx/ssl/certs/${domain}.pem" ] && [ -f "nginx/ssl/private/${domain}-key.pem" ]; then
                 problem="$(cert_problem "$domain")"
                 if [ -z "$problem" ]; then
@@ -1274,7 +1333,10 @@ cmd_shell() {
                 *" $version "*) ;;
                 *) print_error "Unknown PHP version '${version}'. Supported: $SUPPORTED_PHP_VERSIONS" ;;
             esac
-            docker exec -it "wp-$(php_slug "$version")" sh
+            # As www-data (= you, see php/entrypoint.sh), so a composer
+            # install or a file you create in here is yours on the host. For
+            # root: docker exec -it wp-phpXX sh
+            docker exec -it -u www-data -w /var/www "wp-$(php_slug "$version")" sh
             ;;
         db) docker exec -it wp-mysql bash ;;
         nginx) docker exec -it wp-nginx sh ;;
@@ -1443,6 +1505,41 @@ cmd_dashboard() {
 cmd_reload_nginx() {
     docker exec wp-nginx nginx -t
     docker exec wp-nginx nginx -s reload
+}
+
+# Hand a site's files back to you -- for sites from before #20, or copied
+# in from elsewhere (a different machine, another local tool), where files
+# can be owned by root, uid 33, or have no owner write bit. Those are what
+# make wp-admin fail with "Could not create directory" / "Could not create
+# the upgrade-temp-backup directory", and your editor with EACCES.
+cmd_fix_perms() {
+    arg="$1"
+    if [ -z "$arg" ]; then
+        print_warning "Usage: wpdev fix-perms <site-name>|--all"
+        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        return 1
+    fi
+    if [ "$arg" = "--all" ]; then
+        sites="$(site_domains | sed 's/\.test$//; s/\./-/g')"
+    else
+        sites="${arg%.test}"
+        sites="${sites//./-}"
+        [ -f "nginx/sites/${sites}.test.conf" ] || print_error "No such site: ${sites} (checked nginx/sites/${sites}.test.conf)"
+    fi
+
+    for site_name in $sites; do
+        php_svc="$(site_php_service "$site_name")"
+        docker compose up -d "$php_svc" >/dev/null 2>&1 || true
+        if ! php_runs_as_you "$php_svc"; then
+            print_error "${php_svc} still runs PHP as uid $(docker compose exec -T "$php_svc" id -u www-data </dev/null 2>/dev/null | tr -d '\r'), not you ($(id -u)). Run 'wpdev up' first so it restarts with the new user mapping."
+        fi
+        before="$(foreign_files "$site_name" 100000 | wc -l)"
+        if fix_site_ownership "$php_svc" "$site_name"; then
+            print_info "sites/${site_name}: ${before} path(s) handed back to you (uid $(id -u))"
+        else
+            print_error "Couldn't fix ownership of sites/${site_name}."
+        fi
+    done
 }
 
 # Reissue a site's certificate from the current mkcert CA and reload
@@ -1643,13 +1740,13 @@ cmd_cache() {
         # with caching enabled, but nginx never actually reloaded to pick
         # it up, so the site silently got no caching at all.
         nh_ok=1
-        if docker compose exec -T "$php_svc" wp plugin is-installed nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
-            docker compose exec -T "$php_svc" wp plugin activate nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
+        if php_exec "$php_svc" wp plugin is-installed nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+            php_exec "$php_svc" wp plugin activate nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
         else
-            docker compose exec -T "$php_svc" wp plugin install nginx-helper --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
+            php_exec "$php_svc" wp plugin install nginx-helper --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
         fi
         if [ "$nh_ok" -eq 1 ]; then
-            docker compose exec -T "$php_svc" wp config set RT_WP_NGINX_HELPER_CACHE_PATH '/var/cache/nginx/fastcgi' --type=constant --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
+            php_exec "$php_svc" wp config set RT_WP_NGINX_HELPER_CACHE_PATH '/var/cache/nginx/fastcgi' --type=constant --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
         fi
         if [ "$nh_ok" -eq 1 ]; then
             # Full options array, not just the two keys that matter
@@ -1659,7 +1756,7 @@ cmd_cache() {
             # context, so its store_default_options() call never runs).
             # Values taken directly from the plugin's own
             # nginx_helper_default_settings(), not guessed.
-            docker compose exec -T "$php_svc" wp option update rt_wp_nginx_helper_options '{"enable_purge":1,"cache_method":"enable_fastcgi","purge_method":"unlink_files","enable_map":0,"enable_log":0,"log_level":"INFO","log_filesize":"5","enable_stamp":0,"purge_homepage_on_edit":1,"purge_homepage_on_del":1,"purge_archive_on_edit":1,"purge_archive_on_del":1,"purge_archive_on_new_comment":0,"purge_archive_on_deleted_comment":0,"purge_page_on_mod":1,"purge_page_on_new_comment":1,"purge_page_on_deleted_comment":1,"purge_feeds":1,"redis_hostname":"127.0.0.1","redis_port":"6379","redis_prefix":"nginx-cache:","redis_unix_socket":"","redis_database":0,"redis_username":"","redis_password":"","purge_url":"","redis_enabled_by_constant":0,"purge_amp_urls":1,"redis_socket_enabled_by_constant":0,"redis_acl_enabled_by_constant":0,"preload_cache":0,"is_cache_preloaded":0,"roles_with_purge_cap":[],"purge_woo_products":0}' --format=json --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
+            php_exec "$php_svc" wp option update rt_wp_nginx_helper_options '{"enable_purge":1,"cache_method":"enable_fastcgi","purge_method":"unlink_files","enable_map":0,"enable_log":0,"log_level":"INFO","log_filesize":"5","enable_stamp":0,"purge_homepage_on_edit":1,"purge_homepage_on_del":1,"purge_archive_on_edit":1,"purge_archive_on_del":1,"purge_archive_on_new_comment":0,"purge_archive_on_deleted_comment":0,"purge_page_on_mod":1,"purge_page_on_new_comment":1,"purge_page_on_deleted_comment":1,"purge_feeds":1,"redis_hostname":"127.0.0.1","redis_port":"6379","redis_prefix":"nginx-cache:","redis_unix_socket":"","redis_database":0,"redis_username":"","redis_password":"","purge_url":"","redis_enabled_by_constant":0,"purge_amp_urls":1,"redis_socket_enabled_by_constant":0,"redis_acl_enabled_by_constant":0,"preload_cache":0,"is_cache_preloaded":0,"roles_with_purge_cap":[],"purge_woo_products":0}' --format=json --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || nh_ok=0
         fi
         if [ "$nh_ok" -eq 1 ]; then
             print_info "nginx-helper installed and configured for auto-purge on save"
@@ -1668,7 +1765,7 @@ cmd_cache() {
         fi
     else
         rm -f "sites/${site_name}/.cache"
-        docker compose exec -T "$php_svc" wp plugin deactivate nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+        php_exec "$php_svc" wp plugin deactivate nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
     fi
 
     if docker exec wp-nginx nginx -t >/dev/null 2>&1; then
@@ -1999,7 +2096,7 @@ cmd_wp() {
         return 1
     fi
     shift
-    docker compose exec -T "$(site_php_service "$site")" wp --path="/var/www/${site}" --allow-root "$@"
+    php_exec "$(site_php_service "$site")" wp --path="/var/www/${site}" --allow-root "$@"
 }
 
 cmd_remove() {
@@ -2105,8 +2202,9 @@ cmd_remove() {
     # WordPress files — written by the container (often as www-data/root), so
     # delete via the php container to sidestep host permission mismatches.
     if [ -d "sites/${site_name}" ]; then
-        if docker compose exec -T "$php_svc" true </dev/null >/dev/null 2>&1; then
-            docker compose exec -T "$php_svc" rm -rf "/var/www/${site_name}" </dev/null
+        if php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
+            # Root: a site from before #20 can hold root-owned files.
+            php_exec_root "$php_svc" rm -rf "/var/www/${site_name}" </dev/null
         elif ! rm -rf "sites/${site_name}" 2>/dev/null; then
             print_warning "Could not remove sites/${site_name} (permission denied and ${php_svc} container isn't running). Run 'wpdev up' and retry, or: sudo rm -rf sites/${site_name}"
         fi
@@ -2212,14 +2310,16 @@ cmd_clone() {
     print_info "MySQL and PHP are up"
 
     print_step "2/8 Copying WordPress files..."
-    docker compose exec -T "$php_svc" cp -a "/var/www/${source_name}" "/var/www/${new_name}" </dev/null
+    # Root, then handed to you below: the source may predate #20 and hold
+    # root-owned, owner-only files www-data couldn't read.
+    php_exec_root "$php_svc" cp -a "/var/www/${source_name}" "/var/www/${new_name}" </dev/null
     # cp -a keeps symlinks verbatim, and an absolute one into the source
     # site would make the clone run the source's code. Query Monitor's
     # wp-content/db.php drop-in is exactly that, and it loads before
     # plugins, so the clone's own QM then fataled on a duplicate
     # autoloader class: a 500 on every page. (#15) Re-point every such
     # link at the same path inside the clone.
-    docker compose exec -T "$php_svc" sh -c '
+    php_exec_root "$php_svc" sh -c '
         src="/var/www/$1/"; dst="/var/www/$2/"
         find "$dst" -type l | while IFS= read -r link; do
             target="$(readlink "$link")"
@@ -2227,6 +2327,7 @@ cmd_clone() {
                 "$src"*) ln -sfn "${dst}${target#"$src"}" "$link" ;;
             esac
         done' sh "$source_name" "$new_name" </dev/null
+    fix_site_ownership "$php_svc" "$new_name" || print_warning "Couldn't hand sites/${new_name} over to you — run: wpdev fix-perms ${new_name}"
     rm -f "sites/${new_name}/.admin-password" "sites/${new_name}/.db-password"
     [ -f "sites/${source_name}/.admin-password" ] && cp "sites/${source_name}/.admin-password" "sites/${new_name}/.admin-password"
     print_info "Files copied to sites/${new_name}"
@@ -2257,17 +2358,17 @@ cmd_clone() {
     # may carry a port (or a different one than nginx has now), rather than
     # a guess. Replacing a guessed https://<source> instead would turn
     # https://src.test:8444/... into https://new.test:8444:8444/...
-    source_url="$(docker compose exec -T "$php_svc" wp config get WP_HOME --path="/var/www/${source_name}" --allow-root </dev/null 2>/dev/null | tr -d '\r')" || true
+    source_url="$(php_exec "$php_svc" wp config get WP_HOME --path="/var/www/${source_name}" --allow-root </dev/null 2>/dev/null | tr -d '\r')" || true
     [ -n "$source_url" ] || source_url="$(site_url "$source_domain")"
     # wp config set (not sed) so it works regardless of the source's file
     # layout/formatting, and correctly adds constants that aren't already there.
-    docker compose exec -T "$php_svc" wp config set DB_NAME "${new_db_name}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set DB_USER "${new_db_user}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set DB_PASSWORD "${new_db_pass}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set WP_HOME "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set WP_SITEURL "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    php_exec "$php_svc" wp config set DB_NAME "${new_db_name}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    php_exec "$php_svc" wp config set DB_USER "${new_db_user}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    php_exec "$php_svc" wp config set DB_PASSWORD "${new_db_pass}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    php_exec "$php_svc" wp config set WP_HOME "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    php_exec "$php_svc" wp config set WP_SITEURL "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    php_exec "$php_svc" wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
+    php_exec "$php_svc" wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     print_info "wp-config.php updated"
 
     print_step "6/8 Generating SSL certificate..."
@@ -2283,11 +2384,11 @@ cmd_clone() {
     fi
 
     print_step "7/8 Re-pointing URLs and enabling object cache..."
-    docker compose exec -T "$php_svc" wp search-replace "${source_url}" "${new_url}" \
+    php_exec "$php_svc" wp search-replace "${source_url}" "${new_url}" \
         --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp search-replace "${source_domain}" "${new_domain}" \
+    php_exec "$php_svc" wp search-replace "${source_domain}" "${new_domain}" \
         --path="/var/www/${new_name}" --all-tables --allow-root </dev/null >/dev/null
-    docker compose exec -T "$php_svc" wp redis enable --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+    php_exec "$php_svc" wp redis enable --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null 2>&1 || true
     print_info "URLs re-pointed, object cache enabled"
 
     print_step "8/8 Reloading Nginx..."
@@ -2375,7 +2476,9 @@ cmd_snapshot() {
     print_info "Database dumped ($(du -h "$snap_dir/db.sql.gz" | cut -f1))"
 
     print_step "2/2 Archiving files..."
-    docker compose exec -T "$(site_php_service "$site_name")" tar -czf - -C /var/www "${site_name}" </dev/null > "$snap_dir/files.tar.gz"
+    # Root: read-only here, and a site from before #20 can hold root-owned,
+    # owner-only files that www-data couldn't read.
+    php_exec_root "$(site_php_service "$site_name")" tar -czf - -C /var/www "${site_name}" </dev/null > "$snap_dir/files.tar.gz"
     print_info "Files archived ($(du -h "$snap_dir/files.tar.gz" | cut -f1))"
 
     echo ""
@@ -2484,8 +2587,10 @@ cmd_restore() {
 
     print_step "2/3 Restoring files..."
     php_svc="$(site_php_service "$site_name")"
-    docker compose exec -T "$php_svc" sh -c "rm -rf /var/www/${site_name}" </dev/null
-    docker compose exec -T "$php_svc" tar -xzf - -C /var/www < "$snap_dir/files.tar.gz"
+    php_exec_root "$php_svc" sh -c "rm -rf /var/www/${site_name}" </dev/null
+    php_exec_root "$php_svc" tar -xzf - -C /var/www < "$snap_dir/files.tar.gz"
+    # An older snapshot carries whatever owners its files had back then.
+    fix_site_ownership "$php_svc" "$site_name" || print_warning "Couldn't hand sites/${site_name} over to you — run: wpdev fix-perms ${site_name}"
     print_info "Files restored"
 
     print_step "3/3 Flushing this site's cache..."
@@ -2774,7 +2879,7 @@ cmd_add() {
         # holds it in memory -- current WordPress releases no longer fit in
         # PHP's default 128M ("Allowed memory size ... exhausted" in
         # Extractor.php). Raised for this one call only, not image-wide.
-        docker compose exec -T "$php_svc" php -d memory_limit=512M /usr/local/bin/wp "${download_args[@]}" </dev/null >/dev/null
+        php_exec "$php_svc" php -d memory_limit=512M /usr/local/bin/wp "${download_args[@]}" </dev/null >/dev/null
         print_info "WordPress downloaded to sites/$site_name"
     fi
 
@@ -2821,7 +2926,7 @@ cmd_add() {
     if [ -f "sites/${site_name}/wp-config.php" ]; then
         print_info "wp-config.php already exists. Skipping."
     else
-        docker compose exec -T "$php_svc" wp config create \
+        php_exec "$php_svc" wp config create \
             --path="/var/www/${site_name}" \
             --dbname="${db_name}" \
             --dbuser="${db_user}" \
@@ -2866,7 +2971,7 @@ PHP
     # 7. WordPress install (skip the browser installer entirely)
     print_step "7/9 Installing WordPress..."
     admin_pass_file="sites/${site_name}/.admin-password"
-    if docker compose exec -T "$php_svc" wp core is-installed --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+    if php_exec "$php_svc" wp core is-installed --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "WordPress already installed. Skipping."
     else
         if [ -f "$admin_pass_file" ]; then
@@ -2876,7 +2981,7 @@ PHP
             echo "$admin_pass" > "$admin_pass_file"
         fi
 
-        docker compose exec -T "$php_svc" wp core install \
+        php_exec "$php_svc" wp core install \
             --path="/var/www/${site_name}" \
             --url="${url}" \
             --title="${domain}" \
@@ -2901,9 +3006,9 @@ PHP
     # object caching, just slower on repeat queries. Same reasoning and
     # same bug class as nginx-helper's install further down.
     redis_plugin_ok=1
-    if docker compose exec -T "$php_svc" wp plugin is-installed redis-cache --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+    if php_exec "$php_svc" wp plugin is-installed redis-cache --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "redis-cache plugin already installed"
-    elif docker compose exec -T "$php_svc" wp plugin install redis-cache --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+    elif php_exec "$php_svc" wp plugin install redis-cache --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "redis-cache plugin installed and activated"
     else
         redis_plugin_ok=0
@@ -2912,9 +3017,9 @@ PHP
     fi
 
     if [ "$redis_plugin_ok" -eq 1 ]; then
-        if docker compose exec -T "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep -q "Connected"; then
+        if php_exec "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep -q "Connected"; then
             print_info "Object cache already enabled"
-        elif docker compose exec -T "$php_svc" wp redis enable --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+        elif php_exec "$php_svc" wp redis enable --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
             print_info "Object cache enabled"
         else
             print_warning "Could not enable the Redis object cache — site works fine without it."
@@ -2928,42 +3033,28 @@ PHP
     # (unlike redis-cache above, these are just a better default for every
     # site regardless of what else is turned on).
     print_step "9/9 Removing default plugins, installing dev plugins..."
-    docker compose exec -T "$php_svc" wp plugin delete hello akismet --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
+    php_exec "$php_svc" wp plugin delete hello akismet --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
     print_info "Removed Hello Dolly + Akismet (if present)"
 
     # Best-effort, not required, same reasoning as redis-cache/nginx-helper:
     # a failed download must not take the rest of provisioning down with it.
     for plugin in query-monitor wp-crontrol; do
-        if docker compose exec -T "$php_svc" wp plugin is-installed "$plugin" --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+        if php_exec "$php_svc" wp plugin is-installed "$plugin" --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
             print_info "${plugin} already installed"
-        elif docker compose exec -T "$php_svc" wp plugin install "$plugin" --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
+        elif php_exec "$php_svc" wp plugin install "$plugin" --activate --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
             print_info "${plugin} installed and activated"
         else
             print_warning "Could not install ${plugin} -- skipping (not required for the site to work)."
         fi
     done
 
-    # Fix file permissions so WordPress's own browser-driven actions (plugin
-    # installs/updates from wp-admin, media uploads) can actually write.
-    # Everything up to this point was written by wp-cli running as root
-    # (`docker compose exec` defaults to root in this image) -- but PHP-FPM
-    # itself runs the real web requests as www-data, so without this,
-    # www-data can read those files but can't create new ones next to them
-    # (root:root, 755 -- group is root, and www-data isn't a member of it).
-    # Setting the group to www-data plus the setgid bit on every directory
-    # means any NEW file or directory -- no matter who creates it afterwards
-    # -- inherits group www-data instead of its creator's own group, so a
-    # plugin install from wp-admin (www-data) can create its own
-    # subdirectories under wp-content/upgrade and wp-content/plugins too.
-    if docker compose exec -T "$php_svc" sh -c "
-        chgrp -R www-data /var/www/${site_name} &&
-        find /var/www/${site_name} -type d -exec chmod g+ws {} + &&
-        find /var/www/${site_name} -type f -exec chmod g+w {} +
-    " </dev/null >/dev/null 2>&1; then
-        print_info "File permissions set so wp-admin can install plugins/themes and uploads"
+    # Everything above already ran as you (php_exec), so this is a safety
+    # net: an existing site directory `add` adopted, files a step created
+    # as root, an older php image. (#20)
+    if fix_site_ownership "$php_svc" "$site_name"; then
+        print_info "Site files are owned by you — editable from your editor, and writable by WordPress itself"
     else
-        print_warning "Could not normalize file permissions for ${site_name} -- plugin/theme installs from wp-admin may fail with 'Could not create directory'."
-        print_warning "Fix manually: docker compose exec ${php_svc} chgrp -R www-data /var/www/${site_name} && docker compose exec ${php_svc} chmod -R g+w /var/www/${site_name}"
+        print_warning "Couldn't hand sites/${site_name} over to you — wp-admin plugin updates may fail. Run: wpdev fix-perms ${site_name}"
     fi
 
     # Bring up Nginx (and reload, in case it was already running) so the new
@@ -3054,6 +3145,7 @@ case "${1:-help}" in
     hosts) cmd_hosts ;;
     creds) cmd_creds "$2" ;;
     cert) cmd_cert "$2" ;;
+    fix-perms) cmd_fix_perms "$2" ;;
     wp) shift; cmd_wp "$@" ;;
     help|-h|--help) show_help ;;
     *)
