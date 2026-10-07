@@ -778,6 +778,18 @@ jobs:
           ./wpdev media-proxy citest on
           get citest.test /__production/images/wmark.png | grep -q '^HTTP/1.1 200'
 
+          # Through the api (the dashboard's Media tab): status, on with a
+          # URL, off, and a 400 for anything that isn't a plain URL or on/off.
+          api=http://127.0.0.1:39006/api/sites/citest/media-proxy
+          post() { curl -s -o /tmp/mp.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$1" "$api"; }
+          curl -sf "$api" | grep -q 'On:'
+          [ "$(post '{"mode":"off"}')" = 200 ]
+          curl -sf "$api" | grep -q 'Off (last production URL: https://s.w.org)'
+          [ "$(post '{"url":"https://s.w.org"}')" = 200 ]
+          get citest.test /__production/images/wmark.png | grep -q '^HTTP/1.1 200'
+          [ "$(post '{"url":"https://s.w.org/a;b"}')" = 400 ]
+          [ "$(post '{"mode":"maybe"}')" = 400 ]
+
           ./wpdev media-proxy citest off
           ./wpdev wp citest config delete WP_PRODUCTION_DOMAIN
           rm -f sites/citest/.production-url

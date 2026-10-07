@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, siteUrl } from '../api';
 import ConfirmDialog from './ConfirmDialog';
 
-const TABS = ['Overview', 'Cache', 'Snapshots', 'Clone', 'WP-CLI', 'Remove'];
+const TABS = ['Overview', 'Cache', 'Media', 'Snapshots', 'Clone', 'WP-CLI', 'Remove'];
 
 export default function SiteManageDialog({ site, onClose, onRunAction, onRemoved }) {
   const [tab, setTab] = useState('Overview');
@@ -27,6 +27,7 @@ export default function SiteManageDialog({ site, onClose, onRunAction, onRemoved
         <div className="modal-body">
           {tab === 'Overview' && <OverviewTab site={site} />}
           {tab === 'Cache' && <CacheTab site={site} />}
+          {tab === 'Media' && <MediaTab site={site} />}
           {tab === 'Snapshots' && <SnapshotsTab site={site} onRunAction={onRunAction} />}
           {tab === 'Clone' && <CloneTab site={site} onRunAction={onRunAction} />}
           {tab === 'WP-CLI' && <WpCliTab site={site} />}
@@ -180,6 +181,109 @@ function CacheTab({ site }) {
           message="Clears cached pages for every site that has caching enabled, not just this one."
           onCancel={() => setConfirmPurge(false)}
           onConfirm={purge}
+        />
+      )}
+    </div>
+  );
+}
+
+// `wpdev media-proxy <site>` prints one status line; these are its formats
+// (kept stable in wpdev for exactly this):
+//   On: https://site.test/__production/…  →  https://prod.example/path/…
+//   Off (last production URL: https://prod.example/path)
+//   Off (WP_PRODUCTION_DOMAIN: https://prod.example/path)
+//   Off
+export function parseMediaProxy(stdout) {
+  const text = (stdout || '').replace(/\x1b\[[0-9;]*m/g, '');
+  const on = /On:\s+(\S+?)\/…\s+→\s+(\S+?)\/…/.exec(text);
+  if (on) return { on: true, local: on[1], production: on[2] };
+  const off = /Off \((?:last production URL|WP_PRODUCTION_DOMAIN): ([^)\s]+)\)/.exec(text);
+  return { on: false, local: null, production: off ? off[1] : '' };
+}
+
+function MediaTab({ site }) {
+  const [status, setStatus] = useState(null);
+  const [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [confirmOff, setConfirmOff] = useState(false);
+
+  const load = () =>
+    api
+      .mediaProxyStatus(site.name)
+      .then((r) => {
+        const s = parseMediaProxy(r.stdout);
+        setStatus(s);
+        setUrl((current) => current || s.production);
+        setError(null);
+      })
+      .catch((e) => setError(e.message));
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
+
+  const run = async (body) => {
+    setConfirmOff(false);
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.mediaProxy(site.name, body);
+      setResult(r.stdout || r.stderr);
+    } catch (e) {
+      setResult(e.message);
+    } finally {
+      setBusy(false);
+      load();
+    }
+  };
+
+  return (
+    <div>
+      <p className="muted">
+        For a local copy whose media lives on production (via a plugin reading{' '}
+        <code>WP_PRODUCTION_DOMAIN</code>, like wp-local-development-tools). When on, this site
+        streams production media through its own <code>/__production/</code> path, so images load
+        no matter how this machine resolves production, e.g. with an /etc/hosts entry for
+        production wp-admin. Nothing is downloaded or stored.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {status && (
+        <p>
+          <span className={status.on ? 'badge badge-ok' : 'badge badge-muted'}>
+            {status.on ? 'On' : 'Off'}
+          </span>{' '}
+          {status.on
+            ? `${status.local}/… → ${status.production}/…`
+            : 'Media loads from production directly in the browser.'}
+        </p>
+      )}
+      <div className="button-row">
+        <input
+          name="productionUrl"
+          placeholder="https://production.example/path"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <button disabled={busy || !url.trim()} onClick={() => run({ url: url.trim() })}>
+          {status && status.on ? 'Update' : 'Turn on'}
+        </button>
+        {status && status.on && (
+          <button disabled={busy} className="secondary" onClick={() => setConfirmOff(true)}>
+            Turn off
+          </button>
+        )}
+      </div>
+      {result && <pre className="terminal">{result}</pre>}
+      {confirmOff && (
+        <ConfirmDialog
+          title="Turn the media proxy off?"
+          message={`Sets WP_PRODUCTION_DOMAIN in ${site.domain}'s wp-config.php back to ${status.production}, so the browser loads production media directly again.`}
+          confirmLabel="Turn off"
+          onCancel={() => setConfirmOff(false)}
+          onConfirm={() => run({ mode: 'off' })}
         />
       )}
     </div>

@@ -1654,10 +1654,17 @@ cmd_media_proxy() {
             if [ -f "$conf" ]; then
                 print_info "On: ${local_url}/…  →  $(cat "$url_file" 2>/dev/null)/…"
             else
+                # Formats the dashboard parses too -- keep them stable.
                 if [ -f "$url_file" ]; then
                     print_info "Off (last production URL: $(cat "$url_file"))"
                 else
-                    print_info "Off"
+                    current="$(php_exec "$(site_php_service "$site_name")" wp config get WP_PRODUCTION_DOMAIN \
+                        --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | tr -d '\r')" || true
+                    if [ -n "$current" ]; then
+                        print_info "Off (WP_PRODUCTION_DOMAIN: ${current})"
+                    else
+                        print_info "Off"
+                    fi
                 fi
             fi
             return 0

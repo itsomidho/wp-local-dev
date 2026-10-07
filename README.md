@@ -694,6 +694,12 @@ stays free for production's wp-admin, and media stays same-origin.
 - **`off` restores `WP_PRODUCTION_DOMAIN` to the production URL** (it's
   defined either way after the first `on`).
 
+The dashboard has the same controls in each site's **Media** tab: the
+current state, the production URL (prefilled from `WP_PRODUCTION_DOMAIN`),
+and Turn on / Update / Turn off. They're backed by
+`GET`/`POST /api/sites/<site>/media-proxy`, which takes `{"url": "…"}` or
+`{"mode": "on"|"off"}`.
+
 The production URL is saved in `sites/<site>/.production-url`. If your
 network's DNS servers change, re-run `wpdev media-proxy <site> on` to pick
 up the new ones.
