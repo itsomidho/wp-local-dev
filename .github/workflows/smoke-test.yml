@@ -367,6 +367,61 @@ jobs:
           "
 
       - name: >
+          Regression test -- every file in a site is owned by the developer,
+          whoever writes it (#20), and a page save in PHP-FPM purges the
+          full-page cache (#21). wp-cli used to write as root and PHP-FPM as
+          uid 33, each read-only to the other: wp-admin updates failed with
+          "Could not create the upgrade-temp-backup directory", and
+          nginx-helper couldn't delete nginx's cache files.
+        run: |
+          me=$(id -u)
+          for svc in php81 php82 php83 php84; do
+            [ "$(docker exec wp-$svc id -u www-data)" = "$me" ]
+          done
+          [ "$(docker exec wp-nginx id -u nginx)" = "$me" ]
+          grep -q ' www-data /usr/local/bin/wp-cron-runner.sh' <(docker exec wp-php82 cat /etc/cron.d/wp-cron)
+          [ "$(stat -c %u logs/cron.log)" = "$me" ]
+
+          # A freshly provisioned site has nothing you don't own.
+          [ -z "$(find sites/citest \( ! -user "$me" -o ! -perm -u+w \) -print -quit)" ]
+
+          # What PHP-FPM writes in a real request is yours, and deletable.
+          echo '<?php @mkdir(__DIR__."/wp-content/uploads", 0755, true); file_put_contents(__DIR__."/wp-content/uploads/fpm-probe.txt", "x"); echo posix_getuid();' > sites/citest/fpm-probe.php
+          [ "$(curl -sk --noproxy '*' --resolve citest.test:443:127.0.0.1 https://citest.test/fpm-probe.php)" = "$me" ]
+          [ "$(stat -c %u sites/citest/wp-content/uploads/fpm-probe.txt)" = "$me" ]
+          rm sites/citest/fpm-probe.php sites/citest/wp-content/uploads/fpm-probe.txt
+
+          # A site copied in from elsewhere: a root-owned 755 directory, like
+          # the upgrade-temp-backup that triggered #20. doctor flags it, PHP
+          # can't write into it, fix-perms hands it back.
+          docker exec wp-php82 sh -c 'mkdir -m 755 /var/www/citest/wp-content/upgrade-temp-backup && touch /var/www/citest/wp-content/upgrade-temp-backup/old'
+          ./wpdev doctor | grep -q "Run: wpdev fix-perms citest"
+          ! docker exec -u www-data wp-php82 mkdir /var/www/citest/wp-content/upgrade-temp-backup/plugins 2>/dev/null
+          ./wpdev fix-perms citest
+          docker exec -u www-data wp-php82 mkdir /var/www/citest/wp-content/upgrade-temp-backup/plugins
+          ! ./wpdev doctor | grep -q "Run: wpdev fix-perms citest"
+          rm -rf sites/citest/wp-content/upgrade-temp-backup
+
+          # Through the api too (dashboard button).
+          curl -sf -X POST http://127.0.0.1:39006/api/sites/citest/fix-perms | grep -q '"code":0'
+
+          # Save a post inside PHP-FPM, the way wp-admin does: nginx-helper
+          # must delete the cached page.
+          ./wpdev cache citest on
+          r() { curl -sk --noproxy '*' -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/ | grep -i x-fastcgi-cache; }
+          post_id=$(./wpdev wp citest post create --post_title="FPM purge test" --post_status=publish --porcelain)
+          sleep 1
+          r | grep -qi "MISS"
+          r | grep -qi "HIT"
+          echo "<?php require __DIR__.'/wp-load.php'; wp_update_post(['ID'=>${post_id},'post_title'=>'FPM purge test updated']); echo 'ok';" > sites/citest/purge-probe.php
+          curl -sk --noproxy '*' --resolve citest.test:443:127.0.0.1 https://citest.test/purge-probe.php | grep -qx ok
+          rm sites/citest/purge-probe.php
+          sleep 1
+          r | grep -qi "MISS"
+          ./wpdev wp citest post delete "$post_id" --force
+          ./wpdev cache citest off
+
+      - name: >
           Regression test -- add/remove/restore/clone/db-import/snapshots
           accept --domain=/--php=/--yes for non-interactive (API-driven) use.
           Every one of these previously called a bare `read -p` with no
