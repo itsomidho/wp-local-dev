@@ -731,6 +731,85 @@ jobs:
           ! docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
 
       - name: >
+          Feature test -- `wpdev media-proxy` serves uploads missing locally
+          from production (no plugin, no wp-config change), keeps local files
+          first, survives a vhost regeneration, follows a clone, and turns off
+          cleanly. (A big public WordPress site stands in for "production".)
+        run: |
+          get() {
+            curl -sk --noproxy '*' --resolve "$1:443:127.0.0.1" -D - -o /dev/null "https://$1$2"
+          }
+          # A real file in a public site's own uploads, looked up rather
+          # than hard-coded so the test doesn't depend on one that may move.
+          remote=$(for site in https://wptavern.com https://jetpack.com https://woocommerce.com; do
+            curl -s -m 20 "$site/" | grep -oE "$site/wp-content/uploads/[^\"?) ]+\.(png|jpg|jpeg|webp)" | head -1
+          done | head -1)
+          echo "remote: $remote"
+          [ -n "$remote" ]
+          prod="${remote%%/wp-content/uploads/*}"
+          path="/wp-content/uploads/${remote#*/wp-content/uploads/}"
+          wpconfig_before=$(sha256sum sites/citest/wp-config.php)
+
+          ./wpdev media-proxy citest | grep -q 'Off'
+          ! ./wpdev media-proxy citest 'https://s.w.org/a;b'
+          ! ./wpdev media-proxy citest 'ftp://s.w.org'
+          get citest.test "$path" | grep -q '^HTTP/1.1 404'
+
+          ./wpdev media-proxy citest "$prod/"
+          [ "$(cat sites/citest/.production-url)" = "$prod" ]
+          [ "$(sha256sum sites/citest/wp-config.php)" = "$wpconfig_before" ]
+          h=$(get citest.test "$path"); echo "$h"
+          echo "$h" | grep -q '^HTTP/1.1 200'
+          echo "$h" | grep -qi '^content-type: image/'
+          ! echo "$h" | grep -qiE '^(set-cookie|strict-transport-security|alt-svc):'
+          # Local files win; PHP in uploads stays blocked.
+          mkdir -p sites/citest/wp-content/uploads/wpdev-test
+          printf 'local' > sites/citest/wp-content/uploads/wpdev-test/local.txt
+          [ "$(curl -sk --noproxy '*' --resolve citest.test:443:127.0.0.1 https://citest.test/wp-content/uploads/wpdev-test/local.txt)" = local ]
+          printf '<?php echo 1;' > sites/citest/wp-content/uploads/wpdev-test/x.php
+          get citest.test /wp-content/uploads/wpdev-test/x.php | grep -q '^HTTP/1.1 403'
+          rm -rf sites/citest/wp-content/uploads/wpdev-test
+          # The proxy must use its own resolver, not the containers' default
+          # (which can answer from the host's /etc/hosts).
+          grep -qE '^    resolver [0-9.]+' nginx/sites/media-proxy/citest.test.conf
+
+          # Regenerating the vhost (cache on/off) must keep it.
+          ./wpdev cache citest on
+          get citest.test "$path" | grep -q '^HTTP/1.1 200'
+          ./wpdev cache citest off
+          get citest.test "$path" | grep -q '^HTTP/1.1 200'
+
+          # A clone gets it on its own domain; remove cleans up.
+          ./wpdev clone citest proxyclone --yes </dev/null
+          sleep 1
+          get proxyclone.test "$path" | grep -q '^HTTP/1.1 200'
+          ./wpdev remove proxyclone --yes </dev/null
+          [ ! -e nginx/sites/media-proxy/proxyclone.test.conf ]
+
+          # off: missing uploads are 404s; on: remembers the URL.
+          ./wpdev media-proxy citest off
+          [ ! -e nginx/sites/media-proxy/citest.test.conf ]
+          get citest.test "$path" | grep -q '^HTTP/1.1 404'
+          ./wpdev media-proxy citest on
+          get citest.test "$path" | grep -q '^HTTP/1.1 200'
+
+          # Through the api (the dashboard's Media tab): status, on with a
+          # URL, off, and a 400 for anything that isn't a plain URL or on/off.
+          api=http://127.0.0.1:39006/api/sites/citest/media-proxy
+          post() { curl -s -o /tmp/mp.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$1" "$api"; }
+          curl -sf "$api" | grep -q 'On:'
+          [ "$(post '{"mode":"off"}')" = 200 ]
+          curl -sf "$api" | grep -qF "Off (last production URL: $prod)"
+          [ "$(post "{\"url\":\"$prod\"}")" = 200 ]
+          get citest.test "$path" | grep -q '^HTTP/1.1 200'
+          [ "$(post '{"url":"https://s.w.org/a;b"}')" = 400 ]
+          [ "$(post '{"mode":"maybe"}')" = 400 ]
+
+          ./wpdev media-proxy citest off
+          rm -f sites/citest/.production-url
+          [ "$(sha256sum sites/citest/wp-config.php)" = "$wpconfig_before" ]
+
+      - name: >
           Regression test -- declining a confirmation exits non-zero (#7).
           `add` used to print "Cancelled." and exit 0, which let a shifted
           piped answer silently skip provisioning in this very workflow.

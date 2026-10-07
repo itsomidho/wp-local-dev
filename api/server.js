@@ -143,6 +143,26 @@ app.post('/api/sites/:name/cache', requireValidSiteName, async (req, res) => {
 });
 app.post('/api/cache/purge', sync(() => ['cache-purge']));
 
+// Production media proxy (`wpdev media-proxy`). GET returns wpdev's own
+// status line. POST takes {mode: 'on'|'off'} or {url}; the URL is checked
+// here with the same pattern wpdev enforces (it ends up in an nginx config),
+// so a bad one is a 400 rather than a 500 from wpdev.
+const PRODUCTION_URL_RE = /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/[A-Za-z0-9._~/%-]*)?$/;
+app.get('/api/sites/:name/media-proxy', requireValidSiteName, sync((req) => ['media-proxy', req.params.name]));
+app.post('/api/sites/:name/media-proxy', requireValidSiteName, async (req, res) => {
+  const { mode, url } = req.body || {};
+  let arg;
+  if (mode === 'on' || mode === 'off') arg = mode;
+  else if (typeof url === 'string' && PRODUCTION_URL_RE.test(url.trim())) arg = url.trim();
+  else {
+    return res.status(400).json({
+      error: "send {mode: 'on'|'off'} or {url: 'https://production.example/path'}",
+    });
+  }
+  const { code, stdout, stderr } = await runWpdev(['media-proxy', req.params.name, arg]);
+  res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
+});
+
 app.get('/api/sites/:name/snapshots', requireValidSiteName, sync((req) => ['snapshots', req.params.name]));
 
 app.post('/api/sites/:name/snapshots', requireValidSiteName, (req, res) => {
