@@ -87,6 +87,11 @@ services:
       context: .
       dockerfile: php/Dockerfile
       network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
       args:
         PHP_VERSION: "8.1"
         # Only set if your network needs a proxy to reach the internet during
@@ -133,6 +138,11 @@ services:
       context: .
       dockerfile: php/Dockerfile
       network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
       args:
         PHP_VERSION: "8.2"
         HTTP_PROXY: ${HTTP_PROXY:-}
@@ -150,6 +160,11 @@ services:
       context: .
       dockerfile: php/Dockerfile
       network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
       args:
         PHP_VERSION: "8.3"
         HTTP_PROXY: ${HTTP_PROXY:-}
@@ -163,6 +178,11 @@ services:
       context: .
       dockerfile: php/Dockerfile
       network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
       args:
         PHP_VERSION: "8.4"
         HTTP_PROXY: ${HTTP_PROXY:-}
@@ -236,6 +256,11 @@ services:
       # is what .env.example suggests: on a bridge network that address is the
       # build container itself, not the host's proxy.
       network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
       args:
         # Same build-time proxy the php images get (see .env). Docker treats
         # these four names as predefined build args, so apt and npm inside
@@ -301,6 +326,11 @@ services:
       # is what .env.example suggests: on a bridge network that address is the
       # build container itself, not the host's proxy.
       network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
       args:
         # Same build-time proxy the php images get (see .env). Docker treats
         # these four names as predefined build args, so apt and npm inside
