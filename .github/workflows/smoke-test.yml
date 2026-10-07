@@ -89,7 +89,9 @@ jobs:
           A separate throwaway site, not citest -- its own plugin state
           is checked by other steps and shouldn't be disturbed.
         run: |
-          docker exec wp-php82 rm -rf /root/.wp-cli/cache/plugin/
+          # wp-cli runs as www-data (#20), whose cache is under its home,
+          # /var/www; root's is cleared too for older images.
+          docker exec wp-php82 sh -c 'rm -rf /root/.wp-cli/cache/plugin/ "$(getent passwd www-data | cut -d: -f6)/.wp-cli/cache/plugin/"'
           docker exec wp-php82 sh -c "echo '127.0.0.1 wordpress.org downloads.wordpress.org' >> /etc/hosts"
 
           out=$(printf 'depfail.test\n8.2\n\ny\nn\n' | ./wpdev add 2>&1)
@@ -309,7 +311,9 @@ jobs:
           # succeeds from a previously-downloaded copy regardless of the
           # network being down. Both confirmed the hard way.
           ./wpdev wp citest plugin delete nginx-helper 2>/dev/null || true
-          docker exec wp-php82 rm -rf /root/.wp-cli/cache/plugin/
+          # wp-cli runs as www-data (#20), whose cache is under its home,
+          # /var/www; root's is cleared too for older images.
+          docker exec wp-php82 sh -c 'rm -rf /root/.wp-cli/cache/plugin/ "$(getent passwd www-data | cut -d: -f6)/.wp-cli/cache/plugin/"'
           docker exec wp-php82 sh -c "echo '127.0.0.1 wordpress.org downloads.wordpress.org' >> /etc/hosts"
 
           out=$(./wpdev cache citest on 2>&1)
