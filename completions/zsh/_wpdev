@@ -65,7 +65,7 @@ _wpdev() {
         "creds:Show a site's admin/DB credentials"
         "cert:Reissue a site's HTTPS certificate"
         "fix-perms:Give a site's files back to you"
-        "media-proxy:Stream production media through the local site"
+        "media-proxy:Load uploads missing locally from production"
         'wp:Run a WP-CLI command against a site'
         'help:Show usage'
     )

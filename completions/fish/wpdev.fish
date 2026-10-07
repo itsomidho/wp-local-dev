@@ -99,7 +99,7 @@ complete -c wpdev -n "$__wpdev_top" -a hosts -d "Print /etc/hosts entries needed
 complete -c wpdev -n "$__wpdev_top" -a creds -d "Show a site's admin/DB credentials"
 complete -c wpdev -n "$__wpdev_top" -a cert -d "Reissue a site's HTTPS certificate"
 complete -c wpdev -n "$__wpdev_top" -a fix-perms -d "Give a site's files back to you"
-complete -c wpdev -n "$__wpdev_top" -a media-proxy -d "Stream production media through the local site"
+complete -c wpdev -n "$__wpdev_top" -a media-proxy -d "Load uploads missing locally from production"
 complete -c wpdev -n "$__wpdev_top" -a wp -d "Run a WP-CLI command against a site"
 complete -c wpdev -n "$__wpdev_top" -a help -d "Show usage"
 

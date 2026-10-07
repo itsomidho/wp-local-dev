@@ -40,6 +40,11 @@ touches `docker-compose.yml`.
 - **Correct file permissions out of the box** — wp-admin plugin/theme
   installs and media uploads just work; no manual `chown`/`chmod` needed
   after creating a site. See [File permissions](#file-permissions).
+- **Production media without the uploads folder** — uploads missing
+  locally are streamed from production through the local site by nginx,
+  with no plugin and no `wp-config.php` change, regardless of how your
+  `/etc/hosts` resolves production. See
+  [Production media proxy](#production-media-proxy).
 - **Cloning, snapshots, and backups** — duplicate a site under a new
   domain, snapshot/restore before a risky change, full-stack or per-site
   database backup and restore. See [Cloning a site](#cloning-a-site),
