@@ -298,7 +298,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
 | `wpdev cert <name>` | Reissue a site's HTTPS certificate from the current mkcert CA, then reload nginx |
-| `wpdev media-proxy <name> [url\|on\|off]` | Stream production media through the local site, so it loads regardless of how this machine resolves production (see [Production media proxy](#production-media-proxy)) |
+| `wpdev media-proxy <name> [url\|on\|off]` | Load uploads missing locally from production, through the local site, with no plugin (see [Production media proxy](#production-media-proxy)) |
 | `wpdev fix-perms <name>\|--all` | Give a site's files back to you (owner + write), e.g. after copying a site in from elsewhere |
 | `wpdev wp <name> <args...>` | Run any WP-CLI command against a site, e.g. `wpdev wp mysite plugin list` |
 
@@ -657,48 +657,52 @@ recreates it.
 
 A local copy of a real site usually has the database but not the uploads
 folder (often many gigabytes). Plugins like `wp-local-development-tools`
-deal with that by rewriting media URLs to production, using a
-`WP_PRODUCTION_DOMAIN` constant in `wp-config.php`. The *browser* then
-fetches every image, favicon and PDF from production itself, which breaks
-when this machine resolves production's hostname differently. A common
-example is an `/etc/hosts` line pinning `example.com` to an internal
-address so you can reach production's wp-admin. The local site's media then
-times out (`NS_ERROR_NET_TIMEOUT`), and removing the line loses wp-admin.
+deal with that by rewriting media URLs to production, so the *browser*
+fetches every image from production itself. That needs a plugin in the
+site, and breaks when this machine resolves production's hostname
+differently. A common example is an `/etc/hosts` line pinning
+`example.com` to an internal address so you can reach production's
+wp-admin: the local site's media then times out (`NS_ERROR_NET_TIMEOUT`).
+
+The media proxy does it in nginx instead, with no plugin and no change to
+WordPress:
 
 ```bash
 wpdev media-proxy mysite https://example.com/blog   # turn on, with production's URL
-wpdev media-proxy mysite on                         # turn on again (URL remembered, or read from WP_PRODUCTION_DOMAIN)
-wpdev media-proxy mysite off                        # back to loading media from production directly
+wpdev media-proxy mysite on                         # turn on again (URL remembered)
+wpdev media-proxy mysite off                        # missing uploads are 404s again
 wpdev media-proxy mysite                            # show the current state
 ```
 
-With it on, `WP_PRODUCTION_DOMAIN` points at the site itself
-(`https://mysite.test/__production`), and nginx streams each request on to
-production. Your browser only talks to the local site, so your `/etc/hosts`
-stays free for production's wp-admin, and media stays same-origin.
+With it on, `/wp-content/uploads/` is served from the local folder as
+usual. Only a file that's **missing locally** is streamed from the same path
+on production (`https://example.com/blog/wp-content/uploads/…`). Media URLs
+stay the site's own, so the browser only talks to the local site, and your
+`/etc/hosts` stays free for production's wp-admin.
 
+- **No plugin, no `wp-config.php` change.** Deactivate plugins that rewrite
+  media URLs to production (they'd send the browser to production again);
+  `on` warns when `WP_PRODUCTION_DOMAIN` is defined.
 - **Nothing is downloaded or stored.** It's a pass-through with no cache on
-  disk, in keeping with why these plugins exist.
+  disk. Files you add locally (new uploads, a partial copy) are served
+  first.
 - **Your hosts file doesn't affect it.** The containers' normal DNS
   (`systemd-resolved` on the Docker bridge, see "Host environment") answers
-  from `/etc/hosts`. So the proxy location has its own `resolver`: your
-  machine's real upstream DNS servers, read from `systemd-resolved`, falling
-  back to `1.1.1.1`.
+  from `/etc/hosts`. So the proxy has its own `resolver`: your machine's
+  real upstream DNS servers, read from `systemd-resolved`, falling back to
+  `1.1.1.1`.
 - **Nothing local reaches production.** Cookies and `Authorization` aren't
   forwarded. Production's `Set-Cookie`, HSTS and `Alt-Svc` headers are
-  dropped, and its redirects are rewritten to stay on the proxy.
-- **It survives everything else.** The location block lives in
+  dropped, and its redirects are rewritten to stay on the local site.
+- **It survives everything else.** The location blocks live in
   `nginx/sites/media-proxy/<domain>.conf`, which the site's vhost includes,
   so `wpdev cache on/off` regenerating the vhost keeps it. `clone` carries
   it over to the new domain, and `remove` deletes it.
-- **`off` restores `WP_PRODUCTION_DOMAIN` to the production URL** (it's
-  defined either way after the first `on`).
 
 The dashboard has the same controls in each site's **Media** tab: the
-current state, the production URL (prefilled from `WP_PRODUCTION_DOMAIN`),
-and Turn on / Update / Turn off. They're backed by
-`GET`/`POST /api/sites/<site>/media-proxy`, which takes `{"url": "…"}` or
-`{"mode": "on"|"off"}`.
+current state, the production URL, and Turn on / Update / Turn off. They're
+backed by `GET`/`POST /api/sites/<site>/media-proxy`, which takes
+`{"url": "…"}` or `{"mode": "on"|"off"}`.
 
 The production URL is saved in `sites/<site>/.production-url`. If your
 network's DNS servers change, re-run `wpdev media-proxy <site> on` to pick

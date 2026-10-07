@@ -189,16 +189,24 @@ function CacheTab({ site }) {
 
 // `wpdev media-proxy <site>` prints one status line; these are its formats
 // (kept stable in wpdev for exactly this):
-//   On: https://site.test/__production/…  →  https://prod.example/path/…
+//   On: https://site.test/wp-content/uploads/…  →  https://prod.example/path/wp-content/uploads/…
 //   Off (last production URL: https://prod.example/path)
-//   Off (WP_PRODUCTION_DOMAIN: https://prod.example/path)
 //   Off
+// `production` is the site URL (what the input takes), `remote` the
+// uploads URL it maps to.
 export function parseMediaProxy(stdout) {
   const text = (stdout || '').replace(/\x1b\[[0-9;]*m/g, '');
   const on = /On:\s+(\S+?)\/…\s+→\s+(\S+?)\/…/.exec(text);
-  if (on) return { on: true, local: on[1], production: on[2] };
-  const off = /Off \((?:last production URL|WP_PRODUCTION_DOMAIN): ([^)\s]+)\)/.exec(text);
-  return { on: false, local: null, production: off ? off[1] : '' };
+  if (on) {
+    return {
+      on: true,
+      local: on[1],
+      remote: on[2],
+      production: on[2].replace(/\/wp-content\/uploads$/, ''),
+    };
+  }
+  const off = /Off \(last production URL: ([^)\s]+)\)/.exec(text);
+  return { on: false, local: null, remote: null, production: off ? off[1] : '' };
 }
 
 function MediaTab({ site }) {
@@ -243,11 +251,11 @@ function MediaTab({ site }) {
   return (
     <div>
       <p className="muted">
-        For a local copy whose media lives on production (via a plugin reading{' '}
-        <code>WP_PRODUCTION_DOMAIN</code>, like wp-local-development-tools). When on, this site
-        streams production media through its own <code>/__production/</code> path, so images load
-        no matter how this machine resolves production, e.g. with an /etc/hosts entry for
-        production wp-admin. Nothing is downloaded or stored.
+        For a local copy without production's uploads folder. When on, any file under{' '}
+        <code>/wp-content/uploads/</code> that's missing locally is streamed from the same path on
+        production, through this site, so images load without a plugin, and no matter how this
+        machine resolves production (e.g. an /etc/hosts entry for production wp-admin). Local
+        files still win. Nothing is downloaded or stored.
       </p>
       {error && <p className="error">{error}</p>}
       {status && (
@@ -256,8 +264,8 @@ function MediaTab({ site }) {
             {status.on ? 'On' : 'Off'}
           </span>{' '}
           {status.on
-            ? `${status.local}/… → ${status.production}/…`
-            : 'Media loads from production directly in the browser.'}
+            ? `missing ${status.local}/… → ${status.remote}/…`
+            : 'Uploads missing locally are 404s.'}
         </p>
       )}
       <div className="button-row">
@@ -280,7 +288,7 @@ function MediaTab({ site }) {
       {confirmOff && (
         <ConfirmDialog
           title="Turn the media proxy off?"
-          message={`Sets WP_PRODUCTION_DOMAIN in ${site.domain}'s wp-config.php back to ${status.production}, so the browser loads production media directly again.`}
+          message={`Uploads missing from ${site.domain}'s local folder will be 404s again. The production URL is kept for next time.`}
           confirmLabel="Turn off"
           onCancel={() => setConfirmOff(false)}
           onConfirm={() => run({ mode: 'off' })}
