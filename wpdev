@@ -56,6 +56,14 @@
 
 set -e
 
+# Every image here builds with `network: host`. Compose 2.x builds via
+# `buildx bake` by default, which refuses that unless --allow=network.host
+# is passed -- and Compose doesn't pass it, even with the entitlement
+# declared in docker-compose.yml. Its own builder doesn't have that check.
+# (Compose 5 ignores this variable, always bakes, and honors the declared
+# entitlement instead -- hence both.) (#24)
+export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
+
 # readlink -f resolves the ~/.local/bin symlink to the real file first —
 # ${BASH_SOURCE[0]} alone would point at the symlink's own directory, not
 # this project, when invoked as the bare `wpdev` command.
