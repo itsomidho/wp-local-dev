@@ -213,20 +213,28 @@ site_url() {
     if [ "$p" = "443" ]; then echo "https://$1"; else echo "https://$1:$p"; fi
 }
 
-# HTTP status of https://<domain><path>, or "down". --connect-to keeps the
-# URL (so Host and SNI) exactly what a browser sends while choosing where
-# to actually connect: the host's published port, or -- inside the api
-# container, whose loopback isn't nginx at all -- nginx's own :443 on the
-# compose network (#6). --noproxy: a shell-level http_proxy would
-# otherwise misroute it; no /etc/hosts entry needed either way. `|| true`:
-# a failed probe must report "down", not abort the caller under set -e.
+# HTTP status of https://<domain><path>, "down" (nothing answered) or
+# "timeout" (no answer within 10s). --connect-to keeps the URL (so Host
+# and SNI) exactly what a browser sends while choosing where to actually
+# connect: the host's published port, or -- inside the api container,
+# whose loopback isn't nginx at all -- nginx's own :443 on the compose
+# network (#6). --noproxy: a shell-level http_proxy would
+# otherwise misroute it; no /etc/hosts entry needed either way. A page
+# that's merely slow (a real site's uncached front page can take seconds)
+# is "timeout", not "down" -- those are different problems, and a 3s limit
+# once reported a working site as down. The `|| rc=$?`: a failed probe
+# must report, not abort the caller under set -e.
 site_http_code() {
-    local domain="$1" path="${2:-/}" port target code
+    local domain="$1" path="${2:-/}" port target code rc=0
     port="$(nginx_https_port)"
     if [ -n "${WPDEV_IN_API:-}" ]; then target="nginx:443"; else target="127.0.0.1:${port}"; fi
-    code="$(curl -sk --noproxy '*' --max-time 3 --connect-to "${domain}:${port}:${target}" \
-        -o /dev/null -w "%{http_code}" "https://${domain}:${port}${path}" 2>/dev/null || true)"
-    [ -z "$code" ] || [ "$code" = "000" ] && code="down"
+    code="$(curl -sk --noproxy '*' --connect-timeout 3 --max-time 10 --connect-to "${domain}:${port}:${target}" \
+        -o /dev/null -w "%{http_code}" "https://${domain}:${port}${path}" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 28 ] && [ "${code:-000}" = "000" ]; then
+        code="timeout"
+    elif [ -z "$code" ] || [ "$code" = "000" ]; then
+        code="down"
+    fi
     echo "$code"
 }
 
@@ -1120,6 +1128,63 @@ cmd_update_check() {
     echo "Update available: ${latest_version} (currently ${current_version}, ${behind} commit(s) behind)."
     exit 2
 }
+# One row of `status`'s site table. Run once per site, in parallel (see
+# cmd_status) -- each row's checks are independent, and the slow one, `wp
+# redis status`, boots WordPress, so doing sites one after another made
+# status take seconds per site.
+status_site_row() {
+    local domain="$1" mysql_up="$2" mysql_version="$3"
+    local site_name config php_version php_svc http_code db_status db_name php_reachable cache_status wp_version
+    site_name="${domain%.test}"
+    site_name="${site_name//./-}"
+    config="sites/${site_name}/wp-config.php"
+    php_version="$(site_get "$site_name" PHP_VERSION)"
+    [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
+    php_svc="$(php_slug "$php_version")"
+
+    http_code="$(site_http_code "$domain")"
+
+    db_status="n/a"
+    if [ -f "$config" ] && [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
+        db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+        if docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "USE \`${db_name}\`;" </dev/null >/dev/null 2>&1; then
+            db_status="OK"
+        else
+            db_status="FAIL"
+        fi
+    elif [ "$mysql_up" -ne 1 ]; then
+        db_status="down"
+    fi
+
+    php_reachable=0
+    if [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
+        php_reachable=1
+    fi
+
+    cache_status="n/a"
+    if [ "$php_reachable" -eq 1 ]; then
+        cache_status="$(php_exec "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
+        [ -z "$cache_status" ] && cache_status="off"
+    fi
+
+    # Straight from the core's own version.php when it's where WordPress
+    # keeps it -- the same answer `wp core version` gives (it reads this
+    # file), without starting a container process for it. WP-CLI only for
+    # a layout where it isn't.
+    wp_version="n/a"
+    if [ -f "sites/${site_name}/wp-includes/version.php" ]; then
+        wp_version="$(sed -n "s/^\$wp_version = '\([^']*\)';.*/\1/p" "sites/${site_name}/wp-includes/version.php" | head -1)"
+    fi
+    if [ -z "$wp_version" ] || [ "$wp_version" = "n/a" ]; then
+        wp_version="n/a"
+        if [ "$php_reachable" -eq 1 ]; then
+            wp_version="$(php_exec "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
+            [ -z "$wp_version" ] && wp_version="n/a"
+        fi
+    fi
+    printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "$domain" "$php_version" "$wp_version" "$mysql_version" "$http_code" "$db_status" "$cache_status"
+}
+
 cmd_status() {
     docker compose ps
     echo ""
@@ -1153,47 +1218,27 @@ cmd_status() {
     fi
 
     printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "DOMAIN" "PHP" "WP" "MYSQL" "HTTP" "DATABASE" "CACHE"
+    # Rows are checked in parallel, at most 6 sites at a time, each into its
+    # own file, then printed in the usual order.
+    # A row whose checks died part way (set -e in its subshell) still shows
+    # up, as unknowns, rather than silently dropping out of the table.
+    local rows i=0 j row_domains=()
+    rows="$(mktemp -d)"
     for domain in $domains; do
-        site_name="${domain%.test}"
-        site_name="${site_name//./-}"
-        config="sites/${site_name}/wp-config.php"
-        php_version="$(site_get "$site_name" PHP_VERSION)"
-        [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
-        php_svc="$(php_slug "$php_version")"
-
-        http_code="$(site_http_code "$domain")"
-
-        db_status="n/a"
-        if [ -f "$config" ] && [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
-            db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
-            if docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "USE \`${db_name}\`;" </dev/null >/dev/null 2>&1; then
-                db_status="OK"
-            else
-                db_status="FAIL"
-            fi
-        elif [ "$mysql_up" -ne 1 ]; then
-            db_status="down"
-        fi
-
-        php_reachable=0
-        if [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
-            php_reachable=1
-        fi
-
-        cache_status="n/a"
-        if [ "$php_reachable" -eq 1 ]; then
-            cache_status="$(php_exec "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
-            [ -z "$cache_status" ] && cache_status="off"
-        fi
-
-        wp_version="n/a"
-        if [ "$php_reachable" -eq 1 ]; then
-            wp_version="$(php_exec "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
-            [ -z "$wp_version" ] && wp_version="n/a"
-        fi
-
-        printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "$domain" "$php_version" "$wp_version" "$mysql_version" "$http_code" "$db_status" "$cache_status"
+        row_domains+=("$domain")
+        status_site_row "$domain" "$mysql_up" "$mysql_version" >"${rows}/${i}" 2>/dev/null &
+        i=$((i + 1))
+        if [ $((i % 6)) -eq 0 ]; then wait; fi
     done
+    wait
+    for ((j = 0; j < i; j++)); do
+        if [ -s "${rows}/${j}" ]; then
+            cat "${rows}/${j}"
+        else
+            printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "${row_domains[$j]}" "?" "?" "$mysql_version" "?" "?" "?"
+        fi
+    done
+    rm -rf "$rows"
 }
 
 cmd_doctor() {
@@ -1610,6 +1655,25 @@ cmd_portainer() {
     fi
     port="${PORTAINER_PORT:-39003}"
     url="http://localhost:${port}/"
+
+    # A Portainer nobody has created the admin account on locks itself 5
+    # minutes after it starts ("timed out for security purposes") until
+    # it's restarted -- which any stack restart can leave you looking at.
+    # Its API says so plainly, so restart it here instead of opening a
+    # dead page. From inside the api, localhost is the api container, so
+    # it's reached by its compose name instead.
+    local probe="http://localhost:${port}"
+    [ -n "${WPDEV_IN_API:-}" ] && probe="http://portainer:9000"
+    if curl -s -m 5 "${probe}/api/users/admin/check" 2>/dev/null | grep -q "initialization timeout"; then
+        print_warning "Portainer locked itself: nobody created the admin account within 5 minutes of it starting. Restarting it..."
+        docker compose restart portainer >/dev/null 2>&1 || print_error "Couldn't restart Portainer: docker compose restart portainer"
+        local i
+        for i in $(seq 1 20); do
+            curl -s -m 2 -o /dev/null "${probe}/api/system/status" 2>/dev/null && break
+            sleep 1
+        done
+        print_warning "Create the admin account within 5 minutes, or it locks again."
+    fi
 
     echo "Opening ${url}"
     echo "First visit: it'll ask for a setup token — get it with: docker logs wp-portainer"

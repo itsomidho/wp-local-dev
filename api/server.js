@@ -74,6 +74,9 @@ app.get('/api/system/stats', async (req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/api/status', sync(() => ['status']));
 app.get('/api/doctor', sync(() => ['doctor']));
+// Same checks, streamed line by line -- the dashboard shows each check as
+// it finishes instead of a blank page for the whole run.
+app.get('/api/doctor/stream', stream(() => ['doctor']));
 app.post('/api/stack/up', sync(() => ['up']));
 app.post('/api/stack/down', sync(() => ['down']));
 app.post('/api/stack/restart', sync(() => ['restart']));

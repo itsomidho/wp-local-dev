@@ -406,6 +406,9 @@ update their `WP_HOME`/`WP_SITEURL` in `wp-config.php` (plus a `wpdev wp
 wpdev status
 ```
 
+Sites are checked in parallel (up to 6 at once), so it takes about as long
+as the slowest site rather than the sum of all of them.
+
 Shows container health (`docker compose ps`) plus a per-site table — the
 WordPress-specific view Portainer's generic container UI can't give you:
 
@@ -416,13 +419,16 @@ otherlab.test                8.3    6.7.2     8.0.44    200    OK         off
 ```
 
 - **PHP**/**WP** — the site's PHP version (`PHP_VERSION`) and
-  its real WordPress core version (`wp core version`) — different sites can
-  genuinely be on different versions of each
+  its real WordPress core version (read from its `wp-includes/version.php`,
+  the file `wp core version` reads) — different sites can genuinely be on
+  different versions of each
 - **MYSQL** — the one shared server's version; the same on every row, since
   there's only one `mysql` container for the whole stack
 - **HTTP** — the site's actual response code, checked directly against
   `127.0.0.1` (works even before you've added the `/etc/hosts` entry, and
-  ignores any proxy your shell has set)
+  ignores any proxy your shell has set). `down` means nothing answered;
+  `timeout` means the page didn't finish within 10 seconds — the site is
+  up, just slow
 - **DATABASE** — `OK`/`FAIL`/`down`, checked against that site's real
   `DB_NAME` from its own `wp-config.php`
 - **CACHE** — `Connected`/`off`/`n/a` — `off` just means that site predates

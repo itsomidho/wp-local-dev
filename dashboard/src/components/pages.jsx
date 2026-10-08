@@ -215,7 +215,7 @@ function SiteRow({ site, status, onManage }) {
         </a>
         <SiteChips site={site} status={status} />
       </div>
-      <StatusDot tone={reach.tone} pulse={reach.tone === 'success'} label={reach.label} />
+      <StatusDot tone={reach.tone} label={reach.label} />
       <button type="button" className="btn btn-soft btn-sm" onClick={() => onManage(site)} aria-label={`Manage ${site.domain}`}>
         <Settings2 size={14} /> <span className="hide-sm">Manage</span>
       </button>
@@ -369,7 +369,7 @@ export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefre
                   <Skeleton width={64} height={20} radius={999} />
                 ) : (
                   <Chip tone={tone}>
-                    <StatusDot tone={tone} pulse={busy || svc.state === 'running'} />
+                    <StatusDot tone={tone} pulse={busy} />
                     {busy ? 'restarting' : svc.state}
                   </Chip>
                 )}
@@ -447,7 +447,7 @@ const CHECK_ICON = { ok: CheckCircle2, warn: AlertTriangle, error: XCircle, info
 export function DoctorPage({ doctor, onRun }) {
   const { loading, result, raw, error, ranAt } = doctor;
   const counts = result?.counts;
-  const verdict = !counts
+  const verdict = !counts || loading
     ? null
     : counts.error > 0
       ? { tone: 'danger', icon: XCircle, title: `${counts.error} thing${counts.error > 1 ? 's' : ''} need fixing`, text: 'Each failed check below says what is wrong.' }
@@ -462,7 +462,7 @@ export function DoctorPage({ doctor, onRun }) {
           {verdict ? <verdict.icon size={26} /> : <Stethoscope size={26} />}
         </span>
         <div className="doctor-hero-text">
-          <h2>{loading && !verdict ? 'Running checks…' : verdict ? verdict.title : 'Health check'}</h2>
+          <h2>{loading ? `Running checks… ${counts ? counts.ok + counts.warn + counts.error : 0} done` : verdict ? verdict.title : 'Health check'}</h2>
           <p>
             {verdict ? verdict.text : 'Checks Docker, the containers, certificates, /etc/hosts, file permissions and every site database.'}
             {ranAt && <span className="dim"> · ran {ranAt.toLocaleTimeString()}</span>}
@@ -482,7 +482,7 @@ export function DoctorPage({ doctor, onRun }) {
 
       {error && <p className="error">{error}</p>}
 
-      {!result && loading && (
+      {(!result || result.sections.length === 0) && loading && (
         <section className="card">
           {[0, 1, 2, 3, 4].map((i) => (
             <div className="check" key={i}>

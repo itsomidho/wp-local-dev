@@ -144,11 +144,7 @@ body,
 
 body {
   margin: 0;
-  background:
-    radial-gradient(1200px 600px at 12% -10%, var(--bg-glow-1), transparent 60%),
-    radial-gradient(900px 500px at 100% 0%, var(--bg-glow-2), transparent 60%),
-    var(--bg);
-  background-attachment: fixed;
+  background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
   font-size: 14px;
@@ -156,6 +152,19 @@ body {
   font-feature-settings: 'cv11', 'ss01', 'ss03';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* The glow sits on its own fixed layer: a `background-attachment: fixed`
+   gradient on body would make every scroll repaint the whole page. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(1200px 600px at 12% -10%, var(--bg-glow-1), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, var(--bg-glow-2), transparent 60%);
 }
 
 body.has-layer {
@@ -284,13 +293,17 @@ code {
   }
 }
 
+/* transform + opacity only, so it runs on the compositor -- the old
+   box-shadow version repainted every frame, for every dot on the page. */
 @keyframes pulse {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--pulse-color) 55%, transparent);
+    transform: scale(1);
+    opacity: 0.6;
   }
   70%,
   100% {
-    box-shadow: 0 0 0 6px transparent;
+    transform: scale(2.6);
+    opacity: 0;
   }
 }
 
@@ -668,7 +681,17 @@ input::placeholder {
 }
 
 .dot-pulse {
+  position: relative;
+}
+
+.dot-pulse::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--pulse-color);
   animation: pulse 2.2s ease-out infinite;
+  will-change: transform, opacity;
 }
 
 .avatar {
@@ -766,8 +789,7 @@ input::placeholder {
   flex-direction: column;
   padding: 18px 14px 14px;
   border-right: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  backdrop-filter: blur(18px);
+  background: var(--surface);
   z-index: 30;
 }
 
@@ -989,8 +1011,7 @@ input::placeholder {
   min-height: 72px;
   padding: 12px 32px;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
-  backdrop-filter: blur(18px) saturate(1.4);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
 }
 
 .topbar-menu {
@@ -2006,7 +2027,7 @@ input::placeholder {
   justify-content: center;
   padding: 24px;
   background: var(--overlay);
-  backdrop-filter: blur(6px);
+  backdrop-filter: blur(3px);
   animation: fade-in 0.18s var(--ease);
 }
 

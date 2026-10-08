@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Globe,
   Settings2,
@@ -14,7 +14,7 @@ import {
   Sparkles,
   ScrollText,
 } from 'lucide-react';
-import { api, getToken, setToken, siteUrl } from './api';
+import { api, getToken, setToken, siteUrl, streamSSE } from './api';
 import { parseDoctor, parseServices, parseSites, parseStatusSites, stripAnsi } from './lib/parse';
 import Sidebar, { PAGES, TOOLS } from './components/Sidebar';
 import Topbar from './components/Topbar';
@@ -51,6 +51,26 @@ const STACK_CONFIRM = {
   },
 };
 
+// The last `wpdev status` this browser saw, so a reload shows real data
+// (with its "checked at" time) straight away while a fresh one runs --
+// status takes seconds, and the Overview and Services pages are built
+// from it.
+const STATUS_CACHE_KEY = 'wpdev_status_cache';
+
+function statusFrom(raw, checkedAt, loading = false) {
+  return { raw, sites: parseStatusSites(raw) || [], services: parseServices(raw), checkedAt, loading };
+}
+
+function cachedStatus() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(STATUS_CACHE_KEY) || 'null');
+    if (cached?.raw) return statusFrom(cached.raw, new Date(cached.at), true);
+  } catch {
+    /* missing or unreadable -- start empty */
+  }
+  return { raw: null, sites: [], services: null, checkedAt: null, loading: false };
+}
+
 function pageFromHash() {
   const id = window.location.hash.replace(/^#\/?/, '');
   return PAGE_META[id] ? id : 'overview';
@@ -69,7 +89,7 @@ export default function App() {
   // versions, HTTP, database, cache). Heavier than `list` -- it runs a
   // real `wp core version` per site -- so it isn't on the 15s poll; it
   // refreshes on load, on an explicit refresh, and after every action.
-  const [status, setStatus] = useState({ raw: null, sites: [], services: null, checkedAt: null, loading: false });
+  const [status, setStatus] = useState(cachedStatus);
   const [doctor, setDoctor] = useState({ loading: false, result: null, raw: null, error: null, ranAt: null });
   const [updateInfo, setUpdateInfo] = useState(null);
 
@@ -132,29 +152,39 @@ export default function App() {
       .catch((e) => e.data || { stdout: '' }) // status exits non-zero when something's down; its table is still the answer
       .then((r) => {
         const out = r.stdout || '';
-        setStatus({
-          raw: out,
-          sites: parseStatusSites(out) || [],
-          services: parseServices(out),
-          checkedAt: new Date(),
-          loading: false,
-        });
+        setStatus(statusFrom(out, new Date()));
+        try {
+          localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify({ raw: out, at: Date.now() }));
+        } catch {
+          /* per-viewer convenience only */
+        }
       });
   }, []);
 
+  // Streamed, so each check shows up as doctor prints it rather than a
+  // blank page for the whole run. Doctor exits non-zero when it finds
+  // problems -- that output is still the result, not an error.
+  const doctorAbort = useRef(null);
   const runDoctor = useCallback(() => {
-    setDoctor((d) => ({ ...d, loading: true, error: null }));
-    api
-      .doctor()
-      .catch((e) => {
-        // Doctor exits non-zero when it finds problems -- that output is
-        // the result, not an error. Only no output at all is a failure.
-        if (e.data?.stdout) return e.data;
-        throw e;
-      })
-      .then((r) => setDoctor({ loading: false, result: parseDoctor(r.stdout), raw: r.stdout, error: null, ranAt: new Date() }))
-      .catch((e) => setDoctor((d) => ({ ...d, loading: false, error: e.message })));
+    doctorAbort.current?.();
+    const lines = [];
+    setDoctor((d) => ({ ...d, loading: true, error: null, result: null, raw: null }));
+    doctorAbort.current = streamSSE('GET', '/api/doctor/stream', undefined, {
+      onLine: ({ stream, line }) => {
+        if (stream !== 'stdout') return;
+        lines.push(line);
+        const raw = lines.join('\n');
+        setDoctor((d) => ({ ...d, raw, result: parseDoctor(raw) }));
+      },
+      onDone: () => {
+        const raw = lines.join('\n');
+        setDoctor({ loading: false, result: parseDoctor(raw), raw, error: null, ranAt: new Date() });
+      },
+      onError: (e) => setDoctor((d) => ({ ...d, loading: false, error: e.message })),
+    });
   }, []);
+
+  useEffect(() => () => doctorAbort.current?.(), []);
 
   // Checks git's upstream, not GitHub's release API -- the right signal
   // for "does `wpdev update` have anything to do". Best-effort.
@@ -198,11 +228,16 @@ export default function App() {
       const win = window.open('about:blank', '_blank');
       try {
         const r = await api.links[which](site);
-        const match = /Opening (\S+)/.exec(r.stdout || '');
+        const out = stripAnsi(r.stdout);
+        const match = /Opening (\S+)/.exec(out);
         if (match && win) {
           win.location.href = match[1];
-          const note = /Login: (.+)/.exec(r.stdout || '');
-          if (note) toast({ tone: 'info', title: `Opened ${which}`, description: note[1] });
+          // wpdev's own warnings (e.g. it had to restart a locked
+          // Portainer first) matter more than the login hint.
+          const warnings = out.split('\n').filter((l) => l.startsWith('⚠')).map((l) => l.slice(1).trim());
+          const note = /Login: (.+)/.exec(out);
+          if (warnings.length) toast({ tone: 'warning', title: `Opened ${which}`, description: warnings.join(' '), duration: 9000 });
+          else if (note) toast({ tone: 'info', title: `Opened ${which}`, description: note[1] });
         } else {
           win?.close();
           toast({ tone: 'warning', title: `Couldn't open ${which}`, description: (r.stdout || '').trim() });

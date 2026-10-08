@@ -8,6 +8,7 @@ import { Avatar, Chip, StatusDot } from './ui';
 export function httpTone(code) {
   if (!code) return { tone: 'muted', label: 'Not checked yet' };
   if (code === 'down' || code === '000') return { tone: 'danger', label: 'Unreachable (no response)' };
+  if (code === 'timeout') return { tone: 'warning', label: 'Slow (no answer within 10s)' };
   if (/^[23]/.test(code)) return { tone: 'success', label: `Reachable (HTTP ${code})` };
   return { tone: 'warning', label: `HTTP ${code}` };
 }
@@ -57,7 +58,7 @@ export default function SiteCard({ site, status, onManage }) {
             {site.domain}
           </a>
           <span className="site-note">
-            <StatusDot tone={reach.tone} pulse={reach.tone === 'success'} label={reach.label} />
+            <StatusDot tone={reach.tone} label={reach.label} />
             {reach.tone === 'muted' ? site.note : reach.label}
           </span>
         </div>
