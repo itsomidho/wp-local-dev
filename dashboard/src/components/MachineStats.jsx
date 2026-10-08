@@ -55,13 +55,14 @@ function Gauge({ icon: Icon, label, percent, detail, extra }) {
 // Windows) that's the Linux VM's resources, not the raw laptop hardware,
 // which is the right number anyway since that VM is the real ceiling on
 // what this stack can use.
-export default function MachineStats({ stats, error }) {
+export default function MachineStats({ stats, error, layout = 'column' }) {
+  const cls = layout === 'row' ? 'gauges gauges-row' : 'gauges';
   if (error) {
     return <p className="muted small">Machine stats are unavailable right now.</p>;
   }
   if (!stats) {
     return (
-      <div className="gauges">
+      <div className={cls}>
         {[0, 1, 2].map((i) => (
           <div className="gauge" key={i}>
             <Skeleton width={64} height={64} radius={999} />
@@ -78,7 +79,7 @@ export default function MachineStats({ stats, error }) {
   const { cpu, memory, disk } = stats;
 
   return (
-    <div className="gauges">
+    <div className={cls}>
       <Gauge icon={Cpu} label={`CPU · ${cpu.cores} cores`} percent={cpu.percent} detail={`load ${cpu.loadAvg1.toFixed(2)}`} />
       <Gauge
         icon={MemoryStick}

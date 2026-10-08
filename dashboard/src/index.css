@@ -1388,7 +1388,7 @@ input::placeholder {
 /* Sites and Machine side by side, stretched to the same height. */
 .overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
   align-items: stretch;
 }
@@ -3706,6 +3706,7 @@ input::placeholder {
   display: flex;
   align-items: center;
   gap: 8px;
+}
 
 /* Tabular command output (WP-CLI lists) -- see Output in ui.jsx. */
 .output-block {
@@ -3754,4 +3755,89 @@ input::placeholder {
 .output-table td.strong {
   color: var(--text);
   font-weight: 500;
+}
+
+
+/* Overview: Machine's gauges across the card, Services' tiles as many per
+   row as fit, and Sites in two columns once there's room for them. */
+.gauges-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.gauges-row .gauge {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.service-strip.service-strip-compact {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+.site-rows-2col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 20px;
+}
+
+/* In a grid, "+ row" borders would land on the wrong rows: every row gets
+   a bottom border instead, minus the last row of each column. */
+.site-rows-2col .site-row + .site-row {
+  border-top: none;
+}
+
+.site-rows-2col .site-row {
+  border-bottom: 1px solid var(--border);
+}
+
+.site-rows-2col .site-row:nth-last-child(1),
+.site-rows-2col .site-row:nth-last-child(2):nth-child(odd) {
+  border-bottom: none;
+}
+
+.more-sites {
+  margin-top: 10px;
+}
+
+@media (max-width: 1180px) {
+  .site-rows-2col {
+    grid-template-columns: 1fr;
+  }
+
+  .site-rows-2col .site-row:nth-last-child(2):nth-child(odd) {
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 560px) {
+  .gauges-row {
+    grid-template-columns: 1fr;
+  }
+
+  .gauges-row .gauge {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+/* The grouped PHP tile on the Overview: its versions after the label. */
+.service-mini-versions {
+  margin-left: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* If the Services card ever ends up taller than Machine (an unknown extra
+   service), Machine's gauges sit centred rather than leaving a gap below. */
+.overview-grid > .card {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-grid > .card > .gauges-row {
+  flex: 1;
+  align-content: center;
 }

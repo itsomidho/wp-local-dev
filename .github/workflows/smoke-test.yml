@@ -24,6 +24,12 @@ jobs:
       - name: Set up .env
         run: cp .env.example .env
 
+      - name: >
+          Dashboard CSS has no accidentally nested rule -- a lost closing
+          brace nests every rule after it, which is valid CSS (so the build
+          passes) but leaves all of them dead in the browser.
+        run: python3 dashboard/scripts/check-css-nesting.py dashboard/src/index.css
+
       - name: Install mkcert and trust the local CA
         run: ./wpdev install-mkcert
 
