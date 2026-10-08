@@ -15,6 +15,10 @@
 # confirmed the hard way, it silently broke wpdev status's cache check.
 sites/*/
 
+# Per-site settings and credentials (wpdev's config/sites/<name>.env --
+# see "Per-site settings" in the README)
+config/sites/
+
 # Database data
 *.sql
 *.sql.gz

@@ -187,11 +187,14 @@ jobs:
       - name: >
           Regression test -- per-site cache TTL and extra bypass cookies
           (a dotted cookie name must come out escaped in the generated
-          config, and a site with no .cache-ttl file at all must not
-          silently die under set -e -- both found live while building this)
+          config, and a site with no CACHE_TTL at all must not silently
+          die under set -e -- both found live while building this)
         run: |
-          echo "5m" > sites/citest/.cache-ttl
-          printf 'woocommerce_items_in_cart\nwp_woocommerce_session_*\nmy.custom.cookie\n' > sites/citest/.cache-bypass-cookies
+          cfg() { sed -n "s/^$2=//p" "config/sites/$1.env"; }
+          setcfg() { f="config/sites/$1.env"; { grep -v "^$2=" "$f" || true; echo "$2=$3"; } > "$f.t"; chmod 600 "$f.t"; mv "$f.t" "$f"; }
+          unsetcfg() { f="config/sites/$1.env"; { grep -v "^$2=" "$f" || true; } > "$f.t"; chmod 600 "$f.t"; mv "$f.t" "$f"; }
+          setcfg citest CACHE_TTL 5m
+          setcfg citest CACHE_BYPASS_COOKIES 'woocommerce_items_in_cart wp_woocommerce_session_* my.custom.cookie'
           ./wpdev cache citest on
           docker exec wp-nginx nginx -t
 
@@ -209,21 +212,22 @@ jobs:
           not_a_match=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 -b "myXcustomXcookie=1" https://citest.test/ | grep -i x-fastcgi-cache)
           echo "$not_a_match" | grep -qi "HIT\|MISS"
 
-          rm -f sites/citest/.cache-ttl sites/citest/.cache-bypass-cookies
+          unsetcfg citest CACHE_TTL
+          unsetcfg citest CACHE_BYPASS_COOKIES
 
           # Invalid input must fail loudly with a real message, not silently.
           # print_error writes to stdout (plain echo), not stderr -- redirect
           # accordingly, confirmed the hard way when 2> alone left this log
           # empty and the next line died on it under set -e.
-          echo "bogus" > sites/citest/.cache-ttl
+          setcfg citest CACHE_TTL bogus
           if ./wpdev cache citest on >/tmp/cache_err.log 2>&1; then
-            echo "expected 'wpdev cache citest on' to fail on an invalid .cache-ttl, but it succeeded"
+            echo "expected 'wpdev cache citest on' to fail on an invalid CACHE_TTL, but it succeeded"
             exit 1
           fi
-          grep -qi "invalid .cache-ttl" /tmp/cache_err.log
-          rm -f sites/citest/.cache-ttl
+          grep -qi "invalid CACHE_TTL" /tmp/cache_err.log
+          unsetcfg citest CACHE_TTL
 
-          # The actual regression: no .cache-ttl file at all (the normal
+          # The actual regression: no CACHE_TTL at all (the normal
           # case for every site that hasn't set one) must enable cleanly.
           ./wpdev cache citest on
           docker exec wp-nginx nginx -t
@@ -238,7 +242,10 @@ jobs:
           /shop/cart/), and the sed delimiter must survive a path value
           that itself contains '/' (both found live while building this)
         run: |
-          printf '/cart/\n/checkout/*\n' > sites/citest/.cache-bypass-paths
+          cfg() { sed -n "s/^$2=//p" "config/sites/$1.env"; }
+          setcfg() { f="config/sites/$1.env"; { grep -v "^$2=" "$f" || true; echo "$2=$3"; } > "$f.t"; chmod 600 "$f.t"; mv "$f.t" "$f"; }
+          unsetcfg() { f="config/sites/$1.env"; { grep -v "^$2=" "$f" || true; } > "$f.t"; chmod 600 "$f.t"; mv "$f.t" "$f"; }
+          setcfg citest CACHE_BYPASS_PATHS '/cart/ /checkout/*'
           ./wpdev cache citest on
           docker exec wp-nginx nginx -t
 
@@ -258,7 +265,7 @@ jobs:
           not_prefix=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/my-cart-page/ | grep -i x-fastcgi-cache)
           echo "$not_prefix" | grep -qi "MISS\|HIT"
 
-          rm -f sites/citest/.cache-bypass-paths
+          unsetcfg citest CACHE_BYPASS_PATHS
           ./wpdev cache citest off
           docker exec wp-nginx nginx -t
 
@@ -336,11 +343,11 @@ jobs:
           docker exec wp-nginx nginx -t
 
       - name: >
-          Regression test -- a site missing .php-version (predates
+          Regression test -- a site with no PHP_VERSION saved (predates
           multi-PHP support) must not silently break status/list/creds
           for every OTHER site too (found live: it died mid-loop)
         run: |
-          echo "# fake site, no .php-version on purpose" > nginx/sites/phptest.test.conf
+          echo "# fake site, no PHP_VERSION on purpose" > nginx/sites/phptest.test.conf
           mkdir -p sites/phptest
           ./wpdev status | tee /tmp/status.log
           grep -q "citest.test" /tmp/status.log
@@ -439,7 +446,7 @@ jobs:
           echo "$out"
           echo "$out" | grep -qi "Skipping confirmation (--domain given"
           echo "$out" | grep -qi "flagtest.test is ready"
-          [ "$(cat sites/flagtest/.php-version)" = "8.1" ]
+          [ "$(sed -n 's/^PHP_VERSION=//p' config/sites/flagtest.env)" = "8.1" ]
 
           ./wpdev snapshot flagtest headless </dev/null
           ./wpdev snapshots flagtest </dev/null | grep -q "headless"
@@ -756,7 +763,7 @@ jobs:
           get citest.test "$path" | grep -q '^HTTP/1.1 404'
 
           ./wpdev media-proxy citest "$prod/"
-          [ "$(cat sites/citest/.production-url)" = "$prod" ]
+          [ "$(sed -n 's/^PRODUCTION_URL=//p' config/sites/citest.env)" = "$prod" ]
           [ "$(sha256sum sites/citest/wp-config.php)" = "$wpconfig_before" ]
           h=$(get citest.test "$path"); echo "$h"
           echo "$h" | grep -q '^HTTP/1.1 200'
@@ -806,7 +813,7 @@ jobs:
           [ "$(post '{"mode":"maybe"}')" = 400 ]
 
           ./wpdev media-proxy citest off
-          rm -f sites/citest/.production-url
+          sed -i '/^PRODUCTION_URL=/d' config/sites/citest.env
           [ "$(sha256sum sites/citest/wp-config.php)" = "$wpconfig_before" ]
 
       - name: >
@@ -939,7 +946,7 @@ jobs:
 
           # A clone starts without one (or wpdev's plugin); remove cleans up.
           ./wpdev clone citest adclone --yes </dev/null
-          [ ! -e sites/adclone/.admin-domain ]
+          ! grep -q '^ADMIN_DOMAIN=' config/sites/adclone.env
           [ ! -e sites/adclone/wp-content/mu-plugins/wpdev-admin-domain.php ]
           ./wpdev admin-domain adclone | grep -qx '.*Off'
           ! get adclone.test /wp-admin/ | grep -q 'admin.test'
@@ -978,8 +985,74 @@ jobs:
           [ ! -e nginx/sites/admin-domain/frontend/citest.test.conf ]
           [ ! -e "$plugin" ]
           ! get citest.test /wp-admin/ | grep -q 'citest-admin.test'
-          rm -f sites/citest/wp-content/mu-plugins/wpdev-ci-probe.php sites/citest/.admin-domain \
+          sed -i '/^ADMIN_DOMAIN=/d' config/sites/citest.env
+          rm -f sites/citest/wp-content/mu-plugins/wpdev-ci-probe.php \
             nginx/ssl/certs/citest-admin.test.pem nginx/ssl/private/citest-admin.test-key.pem
+
+      - name: >
+          Feature test -- per-site settings live in config/sites/<name>.env
+          (mode 600, outside the site's own folder), sites from before are
+          migrated without losing or overriding anything, clone copies the
+          right settings, and remove deletes the file.
+        run: |
+          f=config/sites/citest.env
+          [ "$(stat -c %a "$f")" = 600 ]
+          grep -q '^PHP_VERSION=' "$f"
+          grep -q '^DB_PASSWORD=' "$f"
+          grep -q '^ADMIN_PASSWORD=' "$f"
+          [ -z "$(ls -A sites/citest | grep -E '^\.(php-version|db-password|admin-password|production-url|admin-domain|cache)')" ]
+          ./wpdev creds citest | grep -q "$(sed -n 's/^ADMIN_PASSWORD=//p' "$f")"
+
+          # Migration: a site with the old dotfiles (and no settings file).
+          cp "$f" /tmp/citest.env.bak
+          db_pw=$(sed -n 's/^DB_PASSWORD=//p' "$f")
+          admin_pw=$(sed -n 's/^ADMIN_PASSWORD=//p' "$f")
+          rm "$f"
+          echo "8.2" > sites/citest/.php-version
+          echo "$db_pw" > sites/citest/.db-password
+          echo "$admin_pw" > sites/citest/.admin-password
+          echo "https://example.org/blog" > sites/citest/.production-url
+          echo "old-admin.test" > sites/citest/.admin-domain
+          echo "5m" > sites/citest/.cache-ttl
+          printf '# a comment\nwoo_cart\n\nwp_session_*\n' > sites/citest/.cache-bypass-cookies
+          printf '/cart/\n/checkout/*\n' > sites/citest/.cache-bypass-paths
+          ./wpdev list >/dev/null
+          [ "$(stat -c %a "$f")" = 600 ]
+          [ "$(sed -n 's/^PHP_VERSION=//p' "$f")" = 8.2 ]
+          [ "$(sed -n 's/^DB_PASSWORD=//p' "$f")" = "$db_pw" ]
+          [ "$(sed -n 's/^ADMIN_PASSWORD=//p' "$f")" = "$admin_pw" ]
+          [ "$(sed -n 's/^PRODUCTION_URL=//p' "$f")" = "https://example.org/blog" ]
+          [ "$(sed -n 's/^ADMIN_DOMAIN=//p' "$f")" = "old-admin.test" ]
+          [ "$(sed -n 's/^CACHE_TTL=//p' "$f")" = 5m ]
+          [ "$(sed -n 's/^CACHE_BYPASS_COOKIES=//p' "$f")" = 'woo_cart wp_session_*' ]
+          [ "$(sed -n 's/^CACHE_BYPASS_PATHS=//p' "$f")" = '/cart/ /checkout/*' ]
+          [ -z "$(ls -A sites/citest | grep -E '^\.(php-version|db-password|admin-password|production-url|admin-domain|cache)')" ]
+          ./wpdev wp citest option get siteurl | grep -q citest.test
+
+          # A stale dotfile (e.g. from an old snapshot) never overrides a
+          # saved setting; it's just cleaned up.
+          echo "9.9" > sites/citest/.php-version
+          ./wpdev list >/dev/null
+          [ "$(sed -n 's/^PHP_VERSION=//p' "$f")" = 8.2 ]
+          [ ! -e sites/citest/.php-version ]
+          cp /tmp/citest.env.bak "$f"
+
+          # clone: same PHP/admin password/cache rules, its own DB password,
+          # no admin domain; remove deletes the file.
+          echo "ADMIN_DOMAIN=old-admin.test" >> "$f"
+          echo "CACHE_TTL=5m" >> "$f"
+          ./wpdev clone citest cfgclone --yes </dev/null
+          c=config/sites/cfgclone.env
+          [ "$(stat -c %a "$c")" = 600 ]
+          [ "$(sed -n 's/^PHP_VERSION=//p' "$c")" = "$(sed -n 's/^PHP_VERSION=//p' "$f")" ]
+          [ "$(sed -n 's/^ADMIN_PASSWORD=//p' "$c")" = "$(sed -n 's/^ADMIN_PASSWORD=//p' "$f")" ]
+          [ "$(sed -n 's/^CACHE_TTL=//p' "$c")" = 5m ]
+          [ "$(sed -n 's/^DB_PASSWORD=//p' "$c")" != "$(sed -n 's/^DB_PASSWORD=//p' "$f")" ]
+          ! grep -q '^ADMIN_DOMAIN=' "$c"
+          ./wpdev wp cfgclone option get siteurl | grep -q cfgclone.test
+          ./wpdev remove cfgclone --yes </dev/null
+          [ ! -e "$c" ]
+          cp /tmp/citest.env.bak "$f"
 
       - name: >
           Regression test -- declining a confirmation exits non-zero (#7).
