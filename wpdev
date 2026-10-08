@@ -1029,6 +1029,10 @@ wanted_services() {
     echo $core $(php_services_in_use)
 }
 require_wanted_services() {
+    # Inside the api, the same fail-closed check (and message) as every
+    # other stack command: an unreadable service list must never fall back
+    # to anything that could include the api itself.
+    require_stack_services
     wanted_services >/dev/null || print_error "Couldn't list the compose services (docker compose config failed)."
 }
 
