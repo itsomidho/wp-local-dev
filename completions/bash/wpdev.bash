@@ -62,12 +62,12 @@ _wpdev_complete() {
             if [ "$COMP_CWORD" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "php db nginx redis" -- "$cur"))
             elif [ "$COMP_CWORD" -eq 3 ] && [ "$prev" = "php" ]; then
-                COMPREPLY=($(compgen -W "8.1 8.2 8.3 8.4" -- "$cur"))
+                COMPREPLY=($(compgen -W "7.4 8.0 8.1 8.2 8.3 8.4 8.5" -- "$cur"))
             fi
             ;;
         inspect)
             if [ "$COMP_CWORD" -eq 2 ]; then
-                COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard" -- "$cur"))
+                COMPREPLY=($(compgen -W "mysql php74 php80 php81 php82 php83 php84 php85 redis mailpit nginx adminer api dashboard" -- "$cur"))
             fi
             ;;
         images)
@@ -84,11 +84,11 @@ _wpdev_complete() {
             COMPREPLY=($(compgen -W "--json" -- "$cur"))
             ;;
         restart)
-            COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard" -- "$cur"))
+            COMPREPLY=($(compgen -W "mysql php74 php80 php81 php82 php83 php84 php85 redis mailpit nginx adminer api dashboard" -- "$cur"))
             ;;
         logs)
             if [ "$COMP_CWORD" -eq 2 ]; then
-                COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer" -- "$cur"))
+                COMPREPLY=($(compgen -W "mysql php74 php80 php81 php82 php83 php84 php85 redis mailpit nginx adminer" -- "$cur"))
             fi
             ;;
         restore-all)

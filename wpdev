@@ -81,7 +81,7 @@ NC='\033[0m'
 # PHP_VERSION in config/sites/<name>.env. DEFAULT_PHP_VERSION is what a site
 # gets if it predates multi-PHP support (none saved) or the prompt is left
 # blank.
-SUPPORTED_PHP_VERSIONS="8.1 8.2 8.3 8.4"
+SUPPORTED_PHP_VERSIONS="7.4 8.0 8.1 8.2 8.3 8.4 8.5"
 DEFAULT_PHP_VERSION="8.2"
 
 print_info() { echo -e "${GREEN}✓${NC} $1"; }
@@ -474,6 +474,9 @@ vpn_dns_unreachable_from_containers() {
 # <project>-<service>, which is what's reconstructed here. Needs python3 to
 # read compose's own resolved config; without it this stays silent and the
 # caller falls back to warning rather than guessing.
+#
+# Only the services `up` will actually start (wanted_services): a PHP
+# version no site uses isn't built until a site needs it.
 pending_image_builds() {
     command -v python3 >/dev/null 2>&1 || return 0
     docker compose config --format json 2>/dev/null | python3 -c '
@@ -483,8 +486,9 @@ try:
 except Exception:
     sys.exit(0)
 project = c.get("name") or ""
+wanted = set(sys.argv[1:])
 for name, svc in sorted(c.get("services", {}).items()):
-    if "build" not in svc:
+    if "build" not in svc or (wanted and name not in wanted):
         continue
     image = svc.get("image") or (f"{project}-{name}" if project else None)
     if not image:
@@ -493,7 +497,7 @@ for name, svc in sorted(c.get("services", {}).items()):
                       stdout=subprocess.DEVNULL,
                       stderr=subprocess.DEVNULL).returncode != 0:
         print(image)
-' 2>/dev/null
+' $(wanted_services 2>/dev/null) 2>/dev/null
 }
 
 # Echoes "<url>" when a build-time proxy is configured but nothing is
@@ -933,7 +937,9 @@ cmd_up() {
     fi
 
     retire_services
-    docker compose up -d $(stack_services)
+    require_wanted_services
+    docker compose up -d $(wanted_services)
+    stop_unused_php
     if [ -n "${WPDEV_IN_API:-}" ] && api_is_stale; then
         recreate_api_detached "up -d"
     fi
@@ -992,6 +998,68 @@ require_stack_services() {
     [ -n "$(stack_services)" ] || print_error "Couldn't list the compose services (docker compose config failed), so this can't safely leave the api container out. Run it on the host instead."
 }
 
+# PHP on demand: a container per supported version exists in
+# docker-compose.yml, but only the versions some site uses run. These are
+# the pieces `up`, `update`, `restart`, `remove` and doctor share.
+
+# PHP versions that some site uses -- its PHP_VERSION, or the default for a
+# site saved without one. Sorted, one per line; empty with no sites.
+php_versions_in_use() {
+    local name v
+    for name in $(site_domains | sed 's/\.test$//; s/\./-/g'); do
+        v="$(site_get "$name" PHP_VERSION)"
+        echo "${v:-$DEFAULT_PHP_VERSION}"
+    done | sort -uV
+}
+
+php_services_in_use() {
+    local v
+    for v in $(php_versions_in_use); do php_slug "$v"; done
+}
+
+# What `up`/`update`/`restart` act on: every non-PHP service (minus the
+# api when run from inside it, see stack_services) plus only the PHP
+# versions in use. Never empty, so it's always an explicit list -- unlike
+# stack_services' "empty means all", which would start every PHP version.
+wanted_services() {
+    local core
+    core="$(docker compose config --services 2>/dev/null | grep -vxE 'php[0-9]+' || true)"
+    [ -n "${WPDEV_IN_API:-}" ] && core="$(echo "$core" | grep -vx api || true)"
+    [ -n "$core" ] || return 1
+    echo $core $(php_services_in_use)
+}
+require_wanted_services() {
+    wanted_services >/dev/null || print_error "Couldn't list the compose services (docker compose config failed)."
+}
+
+# Removes the container of every PHP version no site uses any more (the
+# image stays, so a later site on that version starts in seconds). PHP-FPM
+# keeps no state of its own, so there's nothing to lose.
+stop_unused_php() {
+    local v svc in_use
+    in_use=" $(php_services_in_use | tr '\n' ' ') "
+    for v in $SUPPORTED_PHP_VERSIONS; do
+        svc="$(php_slug "$v")"
+        case "$in_use" in *" ${svc} "*) continue ;; esac
+        docker inspect "wp-${svc}" >/dev/null 2>&1 || continue
+        docker compose rm -sf "$svc" >/dev/null 2>&1 && print_info "Stopped wp-${svc} (no site uses PHP ${v})"
+    done
+    return 0
+}
+
+# Starts one PHP version's container, building its image first if this is
+# its first use -- which takes a few minutes, so say so up front.
+ensure_php_running() {
+    local svc="$1" image
+    [ "$(docker inspect -f '{{.State.Running}}' "wp-${svc}" 2>/dev/null)" = "true" ] && return 0
+    image="$(compose_project)-${svc}"
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        print_info "Building the ${svc} image (first site on this PHP version; takes a few minutes)..."
+        docker compose build "$svc"
+    fi
+    docker compose up -d "$svc" >/dev/null
+}
+
 # True when wp-api's compose config hash differs from the running
 # container's, i.e. a host `up` would recreate it.
 api_is_stale() {
@@ -1048,8 +1116,8 @@ cmd_down() {
 # that asked for it.
 cmd_restart() {
     if [ $# -eq 0 ]; then
-        require_stack_services
-        docker compose restart $(stack_services)
+        require_wanted_services
+        docker compose restart $(wanted_services)
         return
     fi
 
@@ -1121,9 +1189,11 @@ cmd_update() {
     echo
 
     print_info "Rebuilding images and recreating containers to apply changes..."
-    docker compose build $(stack_services)
+    require_wanted_services
+    docker compose build $(wanted_services)
     retire_services
-    docker compose up -d --force-recreate $(stack_services)
+    docker compose up -d --force-recreate $(wanted_services)
+    stop_unused_php
     # Always, not just when api_is_stale: the pull may have changed api's
     # code, which only a rebuild picks up -- its config hash can't show it.
     [ -n "${WPDEV_IN_API:-}" ] && recreate_api_detached "up -d --build --force-recreate"
@@ -1302,8 +1372,10 @@ cmd_doctor() {
         warnings=$((warnings + 1))
     fi
 
+    # PHP: only the versions some site uses are expected to run (see
+    # php_versions_in_use); the rest are started on demand.
     expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-api wp-dashboard"
-    for v in $SUPPORTED_PHP_VERSIONS; do
+    for v in $(php_versions_in_use); do
         expected_containers="$expected_containers wp-$(php_slug "$v")"
     done
     for c in $expected_containers; do
@@ -1325,7 +1397,12 @@ cmd_doctor() {
         fi
     done
 
-    orphans="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^wp-' | grep -vFx -f <(echo "$expected_containers" | tr ' ' '\n') || true)"
+    # Another PHP version's container isn't an orphan -- just not needed.
+    known_containers="$expected_containers"
+    for v in $SUPPORTED_PHP_VERSIONS; do
+        known_containers="$known_containers wp-$(php_slug "$v")"
+    done
+    orphans="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^wp-' | grep -vFx -f <(echo "$known_containers" | tr ' ' '\n') || true)"
     if [ -n "$orphans" ]; then
         print_warning "Orphaned wp-* containers not in the current stack (leftover from a renamed/removed service):"
         echo "$orphans" | sed 's/^/    /'
@@ -1334,6 +1411,21 @@ cmd_doctor() {
     else
         print_info "No orphaned containers"
     fi
+
+    idle_php=""
+    for v in $SUPPORTED_PHP_VERSIONS; do
+        case " $expected_containers " in *" wp-$(php_slug "$v") "*) continue ;; esac
+        docker inspect "wp-$(php_slug "$v")" >/dev/null 2>&1 && idle_php="${idle_php} ${v}"
+    done
+    if [ -n "$idle_php" ]; then
+        idle_php="$(echo $idle_php | sed 's/ /, /g')"
+        case "$idle_php" in
+            *,*) print_warning "PHP ${idle_php} are running, but no site uses them — 'wpdev up' stops them" ;;
+            *) print_warning "PHP ${idle_php} is running, but no site uses it — 'wpdev up' stops it" ;;
+        esac
+        warnings=$((warnings + 1))
+    fi
+    print_info "PHP in use: $(php_versions_in_use | tr '\n' ' ' | sed 's/ $//; s/^$/none (no sites yet)/')"
 
     for v in $SUPPORTED_PHP_VERSIONS; do
         svc="$(php_slug "$v")"
@@ -1763,9 +1855,11 @@ cmd_shell() {
                 *" $version "*) ;;
                 *) print_error "Unknown PHP version '${version}'. Supported: $SUPPORTED_PHP_VERSIONS" ;;
             esac
-            # As www-data (= you, see php/entrypoint.sh), so a composer
-            # install or a file you create in here is yours on the host. For
-            # root: docker exec -it wp-phpXX sh
+            # Started if no site uses this version yet (the next `wpdev up`
+            # stops it again). As www-data (= you, see php/entrypoint.sh), so
+            # a composer install or a file you create in here is yours on the
+            # host. For root: docker exec -it wp-phpXX sh
+            ensure_php_running "$(php_slug "$version")"
             docker exec -it -u www-data -w /var/www "wp-$(php_slug "$version")" sh
             ;;
         db) docker exec -it wp-mysql bash ;;
@@ -2861,7 +2955,7 @@ cmd_clean_all() {
 # leaves a confusing half-removed state:
 #   1. containers + volumes + the images built from this repo (same as
 #      clean-all, plus --rmi local, since clean-all alone leaves the
-#      wp-local-dev-php8x images behind)
+#      wp-local-dev-phpXX images behind)
 #   2. the `wpdev` symlink on PATH (only if it actually points at this
 #      checkout -- never touches a symlink belonging to some other project)
 #   3. this directory itself, including every site's files, logs,
@@ -3184,6 +3278,8 @@ cmd_remove() {
         print_warning "Nginx isn't running — logs/nginx/${site_name}_{access,error}.log were NOT removed (root-owned). Run 'wpdev up' and retry, or: sudo rm -f logs/nginx/${site_name}_*.log"
     fi
 
+    stop_unused_php
+
     echo ""
     print_info "${domain} removed."
     if grep -q "[[:space:]]${domain}" /etc/hosts 2>/dev/null; then
@@ -3263,7 +3359,8 @@ cmd_clone() {
     new_db_pass="$(openssl rand -hex 16)"
 
     print_step "1/8 Starting MySQL + PHP (${php_svc})..."
-    docker compose up -d mysql "$php_svc" >/dev/null
+    ensure_php_running "$php_svc"
+    docker compose up -d mysql >/dev/null
     wait_for_mysql
     print_info "MySQL and PHP are up"
 
@@ -3810,7 +3907,8 @@ cmd_add() {
     #    harmless if already running). Nginx is brought up/reloaded later
     #    once its config and cert exist.
     print_step "1/9 Starting MySQL + ${php_svc} + Redis..."
-    docker compose up -d mysql "$php_svc" redis >/dev/null
+    ensure_php_running "$php_svc"
+    docker compose up -d mysql redis >/dev/null
     wait_for_mysql
     print_info "MySQL, PHP and Redis are up"
 

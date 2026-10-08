@@ -54,14 +54,19 @@ services:
     networks:
       - network
 
-  # PHP-FPM — one service per supported PHP version, so each site can pick
-  # its own at creation time (`wpdev add`). All share the same ./sites, since
+  # PHP-FPM — one service per supported PHP version (7.4 to 8.5), so each
+  # site can pick its own at creation time (`wpdev add`). Only the versions
+  # some site uses are started: `wpdev up` names exactly those, `add`/`clone`
+  # start (and on first use, build) the one they need, and an unused one is
+  # stopped -- so supporting seven versions costs nothing until a site uses
+  # one. A bare `docker compose up` would start them all; use `wpdev up`.
+  # All share the same ./sites, since
   # which container actually handles a given site is entirely down to which
   # one its Nginx vhost points at (PHP_UPSTREAM) — Nginx routing decides,
   # not filesystem access. php82 is the default and carries a `php` network
   # alias so existing vhosts created before multi-PHP support (which say
   # `fastcgi_pass php:9000` literally) keep resolving with zero changes.
-  php81: &php-fpm
+  php74: &php-fpm
     build:
       context: .
       dockerfile: php/Dockerfile
@@ -72,14 +77,14 @@ services:
       entitlements:
         - network.host
       args:
-        PHP_VERSION: "8.1"
+        PHP_VERSION: "7.4"
         # Only set if your network needs a proxy to reach the internet during
         # the build (e.g. to download wp-cli/PECL extensions). Leave HTTP_PROXY
         # unset in .env and these are empty — no proxy is used.
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
-    container_name: wp-php81
+    container_name: wp-php74
     restart: unless-stopped
     # PHP-FPM, wp-cli and cron all run as www-data, which php/entrypoint.sh
     # renumbers to this uid/gid -- your own (API_UID/API_GID, detected by
@@ -111,6 +116,41 @@ services:
     depends_on:
       - mailpit
 
+  php80:
+    <<: *php-fpm
+    build:
+      context: .
+      dockerfile: php/Dockerfile
+      network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
+      args:
+        PHP_VERSION: "8.0"
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    container_name: wp-php80
+
+  php81:
+    <<: *php-fpm
+    build:
+      context: .
+      dockerfile: php/Dockerfile
+      network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
+      args:
+        PHP_VERSION: "8.1"
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    container_name: wp-php81
   php82:
     <<: *php-fpm
     build:
@@ -169,6 +209,24 @@ services:
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     container_name: wp-php84
 
+  php85:
+    <<: *php-fpm
+    build:
+      context: .
+      dockerfile: php/Dockerfile
+      network: host
+      # Newer Compose builds via `buildx bake`, which refuses a host-network
+      # build unless the privilege is granted explicitly ("pass
+      # --allow=network.host"). This grants it. (#24)
+      entitlements:
+        - network.host
+      args:
+        PHP_VERSION: "8.5"
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    container_name: wp-php85
+
   # Nginx (Shared reverse proxy for all sites)
   nginx:
     image: nginx:alpine
@@ -192,11 +250,9 @@ services:
       # can share it too -- see their own volumes for why.
       - wp_fastcgi_cache:/var/cache/nginx/fastcgi
       - ./nginx/host-user.sh:/docker-entrypoint.d/05-host-user.sh:ro
-    depends_on:
-      - php81
-      - php82
-      - php83
-      - php84
+    # No depends_on the PHP containers: only the versions some site uses
+    # run, and vhosts resolve their PHP upstream per request (a variable in
+    # fastcgi_pass), so nginx starts fine without any of them.
     networks:
       - network
 

@@ -29,18 +29,24 @@ function __wpdev_sites
 end
 
 function __wpdev_php_versions
+    echo 7.4
+    echo 8.0
     echo 8.1
     echo 8.2
     echo 8.3
     echo 8.4
+    echo 8.5
 end
 
 function __wpdev_services
     echo mysql
+    echo php74
+    echo php80
     echo php81
     echo php82
     echo php83
     echo php84
+    echo php85
     echo redis
     echo mailpit
     echo nginx

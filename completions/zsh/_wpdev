@@ -97,11 +97,11 @@ _wpdev() {
             if (( CURRENT == 3 )); then
                 compadd php db nginx redis
             elif (( CURRENT == 4 )) && [[ "${words[3]}" == php ]]; then
-                compadd 8.1 8.2 8.3 8.4
+                compadd 7.4 8.0 8.1 8.2 8.3 8.4 8.5
             fi
             ;;
         inspect)
-            (( CURRENT == 3 )) && compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard
+            (( CURRENT == 3 )) && compadd mysql php74 php80 php81 php82 php83 php84 php85 redis mailpit nginx adminer api dashboard
             ;;
         images)
             (( CURRENT == 3 )) && compadd -- --json rm prune
@@ -110,11 +110,11 @@ _wpdev() {
             (( CURRENT == 3 )) && compadd -- --json rm
             ;;
         restart)
-            compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard
+            compadd mysql php74 php80 php81 php82 php83 php84 php85 redis mailpit nginx adminer api dashboard
             ;;
         logs)
             if (( CURRENT == 3 )); then
-                compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer
+                compadd mysql php74 php80 php81 php82 php83 php84 php85 redis mailpit nginx adminer
             fi
             ;;
         restore-all)
