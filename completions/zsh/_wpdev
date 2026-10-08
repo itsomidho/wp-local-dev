@@ -66,6 +66,7 @@ _wpdev() {
         "cert:Reissue a site's HTTPS certificate"
         "fix-perms:Give a site's files back to you"
         "media-proxy:Load uploads missing locally from production"
+        "admin-domain:Move wp-admin to a separate domain"
         'wp:Run a WP-CLI command against a site'
         'help:Show usage'
     )
@@ -77,7 +78,7 @@ _wpdev() {
 
     local subcmd="${words[2]}"
     case "$subcmd" in
-        remove|snapshot|restore|db-export|db-import|creds|cert|fix-perms|media-proxy|wp|clone|db|adminer)
+        remove|snapshot|restore|db-export|db-import|creds|cert|fix-perms|media-proxy|admin-domain|wp|clone|db|adminer)
             if (( CURRENT == 3 )); then
                 compadd -- $(_wpdev_sites)
             fi

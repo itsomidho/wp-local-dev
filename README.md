@@ -45,6 +45,11 @@ touches `docker-compose.yml`.
   with no plugin and no `wp-config.php` change, regardless of how your
   `/etc/hosts` resolves production. See
   [Production media proxy](#production-media-proxy).
+- **Separate admin domain** — move a site's wp-admin to its own domain
+  through a reverse proxy, the way many production setups do: the site
+  domain redirects wp-admin there, and the project's own admin-domain code
+  (or wpdev's mu-plugin) runs as it does in production. See
+  [Admin domain](#admin-domain).
 - **Cloning, snapshots, and backups** — duplicate a site under a new
   domain, snapshot/restore before a risky change, full-stack or per-site
   database backup and restore. See [Cloning a site](#cloning-a-site),
@@ -304,6 +309,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
 | `wpdev cert <name>` | Reissue a site's HTTPS certificate from the current mkcert CA, then reload nginx |
 | `wpdev media-proxy <name> [url\|on\|off]` | Load uploads missing locally from production, through the local site, with no plugin (see [Production media proxy](#production-media-proxy)) |
+| `wpdev admin-domain <name> [domain\|on\|off]` | Move the site's wp-admin to a separate domain, like a production admin reverse proxy (see [Admin domain](#admin-domain)) |
 | `wpdev fix-perms <name>\|--all` | Give a site's files back to you (owner + write), e.g. after copying a site in from elsewhere |
 | `wpdev wp <name> <args...>` | Run any WP-CLI command against a site, e.g. `wpdev wp mysite plugin list` |
 
@@ -712,6 +718,97 @@ backed by `GET`/`POST /api/sites/<site>/media-proxy`, which takes
 The production URL is saved in `sites/<site>/.production-url`. If your
 network's DNS servers change, re-run `wpdev media-proxy <site> on` to pick
 up the new ones.
+
+## Admin domain
+
+Many production sites serve wp-admin on a separate domain: a reverse
+proxy answers `admin.example.com` and forwards to the public site with the
+site's own `Host`, plus `X-Forwarded-Host: admin.example.com`, and the
+public domain sends wp-admin there. `wpdev admin-domain` sets the same up
+locally:
+
+```bash
+wpdev admin-domain mysite admin-mysite.test   # wp-admin moves to admin-mysite.test
+wpdev admin-domain mysite on                  # turn on again (domain remembered)
+wpdev admin-domain mysite off                 # wp-admin back on mysite.test
+wpdev admin-domain mysite                     # show the current state
+```
+
+It has three parts:
+
+1. **The admin domain is a real reverse proxy.** A server block for it
+   forwards to the site's own vhost in the same nginx, with
+   `Host: mysite.test`, `X-Forwarded-Host: admin-mysite.test`,
+   `X-Forwarded-Proto: https`, `X-Forwarded-Port` and `X-Forwarded-For`.
+   WordPress's redirects (`Location`) are rewritten to stay on the admin
+   domain. Only `/wp-admin/`, `/wp-login.php`, `/wp-includes/`,
+   `/wp-content/` and `/wp-json/` pass. `/` redirects to `/wp-admin/`.
+   Post previews (`?preview=true`), the Customizer's preview
+   (`?customize_changeset_uuid=`) and `?rest_route=` REST calls pass, and
+   everything else is a 404.
+2. **The site domain sends wp-admin over.** `https://mysite.test/wp-admin/…`
+   and `/wp-login.php` redirect (302, so browsers don't remember it after
+   `off`) to the same path on the admin domain.
+   `/wp-admin/admin-ajax.php` and `/wp-admin/admin-post.php` stay, because
+   public pages use them. `/wp-json/` stays too: the site's public REST
+   API (used by themes, forms and plugins) keeps working on the site
+   domain, as on production.
+3. **wp-admin's URLs point at the admin domain.** WordPress builds its URLs
+   from `siteurl`/`home`, so without help every link, form and script in
+   wp-admin would point back at the site domain.
+   - **If the project has its own admin-domain code** (it defines
+     `WP_ADMIN_DOMAIN`, e.g. a mu-plugin reading it from `.env`), that's
+     used as is, the same code as on production. `on` checks
+     `WP_ADMIN_DOMAIN` matches, and warns when it doesn't.
+   - **Otherwise `on` installs wpdev's mu-plugin**,
+     `wp-content/mu-plugins/wpdev-admin-domain.php`, and `off` removes it.
+     For requests through the admin domain only (the header plus a
+     connection from nginx itself, so a browser can't fake it), it
+     rewrites URLs on the site's own host (admin, login/logout, includes,
+     content, plugins, REST, previews, scripts and styles) and the `Host`
+     WordPress sees (list-table links, wp-admin's canonical URL,
+     `redirect_to`). It allows redirects to the admin domain, and keeps the
+     Customizer's preview on it. Media URLs stay on the site domain, so
+     images you insert into posts point at the public site. Its source is
+     `wordpress/mu-plugins/wpdev-admin-domain.php`.
+
+**Logins and the REST API.** You log in on the admin domain, so the login
+cookie only goes to the admin domain. You aren't logged in on the site
+domain (no admin bar there), and REST calls wp-admin makes to the site
+domain (the block editor, Site Health, many plugin screens) would be
+anonymous and fail with 401/403. wpdev's mu-plugin points `rest_url()` at
+the admin domain, which forwards `/wp-json/`. If your project has its own
+admin-domain code, filter `rest_url` there the same way as `admin_url`.
+The Customizer has the same problem: it previews the site domain unless
+`home_url()` points at the admin domain while customizing (wpdev's
+mu-plugin does this).
+
+**Full-page cache.** Forwarded requests arrive with the site's own
+`Host`, so the page cache could store an admin-domain response (e.g.
+`/wp-json/`, whose links point at the admin domain) and serve it on the
+site domain. The cached vhost never caches requests that carry
+`X-Forwarded-Host`, and `on` regenerates a cached vhost from before this
+rule (and purges the cache).
+
+- **Certificate and hosts.** `on` issues an mkcert certificate for the
+  admin domain, and prints the `/etc/hosts` line when it's missing.
+  `wpdev hosts` lists admin domains too, and `wpdev cert <site>` reissues
+  both certificates. `wpdev doctor` checks the certificate, the hosts
+  entry, and that something rewrites wp-admin's URLs (the project's
+  `WP_ADMIN_DOMAIN` code or wpdev's mu-plugin). Changing to another domain
+  removes the old domain's certificate.
+- **It survives everything else.** The admin server block lives in
+  `nginx/sites/admin-domain/<site-domain>.conf` (included from
+  `nginx/sites/default.conf`), and the site-domain redirects in
+  `nginx/sites/admin-domain/frontend/<site-domain>.conf` (included from
+  the site's vhost), so `wpdev cache on/off` keeps both. `remove` deletes
+  them with the certificate. `clone` doesn't copy them or wpdev's
+  mu-plugin, because one domain can't belong to two sites; give the clone
+  its own.
+
+The dashboard has the same controls in each site's **Admin domain** tab,
+backed by `GET`/`POST /api/sites/<site>/admin-domain`, which takes
+`{"domain": "…"}` or `{"mode": "on"|"off"}`.
 
 ## Full-page cache (nginx FastCGI)
 

@@ -31,6 +31,10 @@ server {
     # a glob, which nginx skips silently when no file matches -- i.e. off.
     include /etc/nginx/sites/media-proxy/DOMAIN.con[f];
 
+    # Admin domain (`wpdev admin-domain`): sends wp-admin and the login on
+    # this domain over to the admin domain. Same [f] glob: off = no file.
+    include /etc/nginx/sites/admin-domain/frontend/DOMAIN.con[f];
+
     # Main WordPress rewrite logic
     location / {
         try_files $uri $uri/ /index.php?$args;
@@ -64,6 +68,12 @@ server {
     # WooCommerce cart cookie) -- built and escaped by `wpdev cache`, never
     # raw regex a site owner writes by hand.
     if ($http_cookie ~* "CACHE_BYPASS_COOKIES") {
+        set $skip_cache 1;
+    }
+    # Requests an admin domain forwards here (`wpdev admin-domain`) carry
+    # X-Forwarded-Host, and their responses can hold that domain's URLs
+    # (e.g. /wp-json/): never cache them, or this domain would serve them.
+    if ($http_x_forwarded_host != "") {
         set $skip_cache 1;
     }
 
