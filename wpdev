@@ -1287,14 +1287,22 @@ cmd_doctor() {
 
             admin="$(site_admin_domain "$site_name")"
             if [ -n "$admin" ]; then
+                admin_ok=1
                 problem="$(cert_problem "$admin")"
                 if [ -n "$problem" ]; then
                     print_warning "  Admin domain ${admin}: SSL certificate ${problem} — run: wpdev cert ${site_name}"
-                    warnings=$((warnings + 1))
-                elif ! in_hosts_file "$admin"; then
+                    warnings=$((warnings + 1)); admin_ok=0
+                fi
+                if ! in_hosts_file "$admin"; then
                     print_warning "  Admin domain ${admin}: missing /etc/hosts entry — run: wpdev hosts"
-                    warnings=$((warnings + 1))
-                else
+                    warnings=$((warnings + 1)); admin_ok=0
+                fi
+                if [ -z "$(admin_domain_plugin_path "$site_name")" ] && [ -f "$config" ] \
+                    && ! grep -rqs "WP_ADMIN_DOMAIN" "sites/${site_name}/wp-content/mu-plugins" "$config" "sites/${site_name}/.env"; then
+                    print_warning "  Admin domain ${admin}: nothing rewrites wp-admin's URLs to it (no WP_ADMIN_DOMAIN code, and wpdev's mu-plugin is missing) — run: wpdev admin-domain ${site_name} on"
+                    warnings=$((warnings + 1)); admin_ok=0
+                fi
+                if [ "$admin_ok" = 1 ]; then
                     print_info "  Admin domain ${admin} set up"
                 fi
             fi
@@ -1793,6 +1801,11 @@ admin_domains() {
     done
 }
 
+# Whether <admin-domain> is served for a site other than <site-domain>.
+admin_domain_in_use() {
+    grep -l "^# admin-domain: $1$" nginx/sites/admin-domain/*.conf 2>/dev/null | grep -qvx "$(admin_domain_conf "$2")"
+}
+
 in_hosts_file() {
     grep -q "[[:space:]]$1$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]$1[[:space:]]" /etc/hosts 2>/dev/null
 }
@@ -1862,10 +1875,15 @@ server {
     proxy_redirect $(site_url "$site_domain")/ $(site_url "$admin")/;
     proxy_redirect http://${site_domain}/ $(site_url "$admin")/;
 
-    # Frontend requests the admin domain still answers: post previews and
-    # REST calls without pretty permalinks.
+    # Frontend requests the admin domain still answers: post previews, the
+    # Customizer's preview (it tags every request with its changeset), and
+    # REST calls without pretty permalinks. They need the login, which only
+    # this domain has.
     set \$wpdev_admin_pass "";
     if (\$arg_preview = "true") {
+        set \$wpdev_admin_pass 1;
+    }
+    if (\$arg_customize_changeset_uuid != "") {
         set \$wpdev_admin_pass 1;
     }
     if (\$arg_rest_route != "") {
@@ -2000,9 +2018,20 @@ cmd_admin_domain() {
     other="$(grep -l "^# admin-domain: ${admin}$" nginx/sites/admin-domain/*.conf 2>/dev/null | grep -vx "$conf" | head -1)" || true
     [ -n "$other" ] && print_error "${admin} is already the admin domain of $(basename "$other" .conf)."
 
+    docker exec wp-nginx true >/dev/null 2>&1 || print_error "nginx isn't running — start the stack first: wpdev up"
+
     if [ ! -f "nginx/ssl/certs/${admin}.pem" ] || [ -n "$(cert_problem "$admin")" ]; then
         issue_cert "$admin" || print_error "Couldn't issue a certificate for ${admin} — is mkcert installed? (wpdev install-mkcert)"
         print_info "Certificate issued for ${admin}"
+    fi
+
+    # A cached vhost from before admin domains existed would cache forwarded
+    # requests under the site's own host; regenerate it with the rule that
+    # skips them, and drop anything already cached.
+    if grep -q 'fastcgi_cache ' "nginx/sites/${domain}.conf" && ! grep -q 'http_x_forwarded_host' "nginx/sites/${domain}.conf"; then
+        ( cmd_cache "$site_name" on ) >/dev/null || print_error "Couldn't regenerate ${domain}'s cached vhost — run: wpdev cache ${site_name} on"
+        ( cmd_cache_purge ) >/dev/null || true
+        print_info "Regenerated ${domain}'s cached vhost so it never caches requests from the admin domain"
     fi
 
     echo "$admin" > "$state_file"
@@ -2020,7 +2049,11 @@ cmd_admin_domain() {
         print_error "nginx rejected the admin-domain config, so it was rolled back. Check: docker exec wp-nginx nginx -t"
     fi
     rm -f "${conf}.bak" "${fconf}.bak"
-    print_info "Admin domain on: $(site_url "$admin")  →  $(site_url "$domain") (wp-admin, wp-login.php, wp-includes, wp-content, wp-json, previews)"
+    if [ -n "$current" ] && [ "$current" != "$admin" ] && ! admin_domain_in_use "$current" "$domain"; then
+        rm -f "nginx/ssl/certs/${current}.pem" "nginx/ssl/private/${current}-key.pem"
+        print_info "${current} is no longer served (its certificate was removed)"
+    fi
+    print_info "Admin domain on: $(site_url "$admin")  →  $(site_url "$domain") (wp-admin, wp-login.php, wp-includes, wp-content, wp-json, previews, Customizer)"
     print_info "${domain}/wp-admin and /wp-login.php now redirect to ${admin} (admin-ajax.php and admin-post.php stay)"
 
     if ! in_hosts_file "$admin"; then
@@ -2670,6 +2703,10 @@ cmd_remove() {
     site_name="${arg%.test}"
     site_name="${site_name//./-}"
     domain="${site_name}.test"
+    # Read now, while sites/<name> still exists: after `admin-domain off`
+    # only the state file remembers the domain whose certificate is left.
+    admin="$(site_admin_domain "$site_name")"
+    [ -z "$admin" ] && admin="$(cat "$(admin_domain_file "$site_name")" 2>/dev/null)" || true
 
     if [ ! -f "nginx/sites/${domain}.conf" ] && [ ! -d "sites/${site_name}" ]; then
         print_error "No such site: ${domain} (checked nginx/sites/${domain}.conf and sites/${site_name}/)"
@@ -2761,8 +2798,7 @@ cmd_remove() {
         [ -d "sites/${site_name}" ] || print_info "Removed sites/${site_name}"
     fi
 
-    admin="$(site_admin_domain "$site_name")"
-    if [ -n "$admin" ]; then
+    if [ -n "$admin" ] && ! admin_domain_in_use "$admin" "$domain"; then
         rm -f "nginx/ssl/certs/${admin}.pem" "nginx/ssl/private/${admin}-key.pem"
     fi
     rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem" "$(media_proxy_conf "$domain")" "$(admin_domain_conf "$domain")" "$(admin_domain_frontend_conf "$domain")"

@@ -18,9 +18,15 @@ defined('ABSPATH') || exit;
 const WPDEV_ADMIN_DOMAIN = '__WPDEV_ADMIN_DOMAIN__';
 const WPDEV_ADMIN_ORIGIN = '__WPDEV_ADMIN_ORIGIN__';
 
+/**
+ * Whether this request came in through the admin domain: nginx's admin
+ * server block forwards from 127.0.0.1 and sets X-Forwarded-Host itself,
+ * so a browser sending that header straight to the site doesn't count.
+ */
 function wpdev_admin_domain_request(): bool
 {
-    return ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? '') === WPDEV_ADMIN_DOMAIN;
+    return ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? '') === WPDEV_ADMIN_DOMAIN
+        && ($_SERVER['REMOTE_ADDR'] ?? '') === '127.0.0.1';
 }
 
 /*
@@ -120,3 +126,15 @@ foreach (['wp_default_scripts', 'wp_default_styles'] as $wpdev_hook) {
 }
 unset($wpdev_hook);
 
+
+// The Customizer previews home_url(), on the site domain, where you aren't
+// logged in -- so its preview fails. While customizing through the admin
+// domain, keep the site's own links on the admin domain too: the preview
+// frame, and the pages you click to inside it, then load through the
+// admin domain with your login.
+add_filter('home_url', function ($url) {
+    if (function_exists('is_customize_preview') && is_customize_preview()) {
+        return wpdev_admin_domain_url($url);
+    }
+    return $url;
+}, 99);

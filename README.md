@@ -742,8 +742,9 @@ It has three parts:
    `X-Forwarded-Proto: https`, `X-Forwarded-Port` and `X-Forwarded-For`.
    WordPress's redirects (`Location`) are rewritten to stay on the admin
    domain. Only `/wp-admin/`, `/wp-login.php`, `/wp-includes/`,
-   `/wp-content/` and `/wp-json/` pass. `/` redirects to `/wp-admin/`,
-   post previews (`?preview=true`) and `?rest_route=` REST calls pass, and
+   `/wp-content/` and `/wp-json/` pass. `/` redirects to `/wp-admin/`.
+   Post previews (`?preview=true`), the Customizer's preview
+   (`?customize_changeset_uuid=`) and `?rest_route=` REST calls pass, and
    everything else is a 404.
 2. **The site domain sends wp-admin over.** `https://mysite.test/wp-admin/…`
    and `/wp-login.php` redirect (302, so browsers don't remember it after
@@ -761,11 +762,14 @@ It has three parts:
      `WP_ADMIN_DOMAIN` matches, and warns when it doesn't.
    - **Otherwise `on` installs wpdev's mu-plugin**,
      `wp-content/mu-plugins/wpdev-admin-domain.php`, and `off` removes it.
-     For requests through the admin domain only, it rewrites URLs on the
-     site's own host (admin, login/logout, includes, content, plugins,
-     REST, previews, scripts and styles) and the `Host` WordPress sees
-     (list-table links, wp-admin's canonical URL, `redirect_to`). It also
-     allows redirects to the admin domain. Its source is
+     For requests through the admin domain only (the header plus a
+     connection from nginx itself, so a browser can't fake it), it
+     rewrites URLs on the site's own host (admin, login/logout, includes,
+     content, plugins, REST, previews, scripts and styles) and the `Host`
+     WordPress sees (list-table links, wp-admin's canonical URL,
+     `redirect_to`). It allows redirects to the admin domain, and keeps the
+     Customizer's preview on it. Media URLs stay on the site domain, so
+     images you insert into posts point at the public site. Its source is
      `wordpress/mu-plugins/wpdev-admin-domain.php`.
 
 **Logins and the REST API.** You log in on the admin domain, so the login
@@ -775,11 +779,24 @@ domain (the block editor, Site Health, many plugin screens) would be
 anonymous and fail with 401/403. wpdev's mu-plugin points `rest_url()` at
 the admin domain, which forwards `/wp-json/`. If your project has its own
 admin-domain code, filter `rest_url` there the same way as `admin_url`.
+The Customizer has the same problem: it previews the site domain unless
+`home_url()` points at the admin domain while customizing (wpdev's
+mu-plugin does this).
+
+**Full-page cache.** Forwarded requests arrive with the site's own
+`Host`, so the page cache could store an admin-domain response (e.g.
+`/wp-json/`, whose links point at the admin domain) and serve it on the
+site domain. The cached vhost never caches requests that carry
+`X-Forwarded-Host`, and `on` regenerates a cached vhost from before this
+rule (and purges the cache).
 
 - **Certificate and hosts.** `on` issues an mkcert certificate for the
   admin domain, and prints the `/etc/hosts` line when it's missing.
-  `wpdev hosts` lists admin domains too, `wpdev cert <site>` reissues both
-  certificates, and `wpdev doctor` checks them.
+  `wpdev hosts` lists admin domains too, and `wpdev cert <site>` reissues
+  both certificates. `wpdev doctor` checks the certificate, the hosts
+  entry, and that something rewrites wp-admin's URLs (the project's
+  `WP_ADMIN_DOMAIN` code or wpdev's mu-plugin). Changing to another domain
+  removes the old domain's certificate.
 - **It survives everything else.** The admin server block lives in
   `nginx/sites/admin-domain/<site-domain>.conf` (included from
   `nginx/sites/default.conf`), and the site-domain redirects in
