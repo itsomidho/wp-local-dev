@@ -269,17 +269,99 @@ export function JumpToLatest({ onClick }) {
   );
 }
 
+// Tab-separated output with a header row -- what WP-CLI prints for any
+// list (`plugin list`, `user list`, ...) when it isn't attached to a
+// terminal -- as {columns, rows}; null for anything else. Every line must
+// have the header's column count, so prose that merely contains a tab
+// stays text.
+export function parseTsv(text) {
+  const lines = (text || '').replace(/\n+$/, '').split('\n');
+  if (lines.length < 2 || !lines[0].includes('\t')) return null;
+  const columns = lines[0].split('\t');
+  if (columns.length < 2 || columns.some((c) => !c.trim())) return null;
+  const rows = lines.slice(1).map((l) => l.split('\t'));
+  return rows.every((r) => r.length === columns.length) ? { columns, rows } : null;
+}
+
+const VALUE_TONE = {
+  active: 'success',
+  'active-network': 'success',
+  'must-use': 'info',
+  dropin: 'info',
+  inactive: undefined,
+  available: 'warning',
+  on: 'success',
+  off: undefined,
+  parent: 'info',
+};
+
+function Cell({ column, value }) {
+  if (value === '') return <span className="dim">—</span>;
+  // Status-like columns get a chip; everything else stays a plain value.
+  if (/^(status|update|auto_update)$/.test(column) && value in VALUE_TONE) {
+    return <Chip tone={VALUE_TONE[value]}>{value}</Chip>;
+  }
+  return value;
+}
+
+function OutputTable({ table }) {
+  return (
+    <div className="output-table-wrap">
+      <table className="data-table output-table">
+        <thead>
+          <tr>
+            {table.columns.map((c) => (
+              <th key={c}>{c.replace(/_/g, ' ')}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((v, j) => (
+                <td key={j} className={j === 0 ? 'mono strong' : 'mono'}>
+                  <Cell column={table.columns[j]} value={v} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // A command's output appearing inside a panel (the site drawer's tabs):
 // brought into view when it shows up or changes, since it usually lands
-// below whatever button produced it.
+// below whatever button produced it. Tabular output is shown as a table,
+// with the untouched text one click away.
 export function Output({ children }) {
   const ref = useRef(null);
+  const [raw, setRaw] = useState(false);
+  const table = typeof children === 'string' ? parseTsv(children) : null;
+
   useEffect(() => {
     ref.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [children]);
+
+  if (!table) {
+    return (
+      <pre ref={ref} className="terminal output">
+        {children}
+      </pre>
+    );
+  }
   return (
-    <pre ref={ref} className="terminal output">
-      {children}
-    </pre>
+    <div ref={ref} className="output-block">
+      <div className="output-block-head">
+        <span className="muted small">
+          {table.rows.length} row{table.rows.length === 1 ? '' : 's'}
+        </span>
+        <button type="button" className="btn btn-ghost btn-xs" onClick={() => setRaw((v) => !v)}>
+          {raw ? 'Table' : 'Raw output'}
+        </button>
+      </div>
+      {raw ? <pre className="terminal output">{children}</pre> : <OutputTable table={table} />}
+    </div>
   );
 }
