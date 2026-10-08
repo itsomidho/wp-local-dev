@@ -88,7 +88,13 @@ app.get('/api/update-check', async (req, res) => {
   }
   res.json({ updateAvailable: code === 2, stdout, stderr });
 });
-app.get('/api/logs/:service', (req, res) => streamWpdev(['logs', req.params.service], res));
+// Starts from the last ?tail= lines (default 200) -- a long-running
+// container's full history can be megabytes, which the dashboard would
+// otherwise replay line by line before showing anything live.
+app.get('/api/logs/:service', (req, res) => {
+  const tail = /^\d{1,4}$/.test(req.query.tail || '') ? req.query.tail : '200';
+  streamWpdev(['logs', req.params.service, `--tail=${tail}`], res);
+});
 app.post('/api/reload-nginx', sync(() => ['reload-nginx']));
 app.post('/api/clean', sync(() => ['clean']));
 app.post('/api/clean-all', sync(() => ['clean-all', '--yes']));

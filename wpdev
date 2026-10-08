@@ -324,7 +324,7 @@ show_help() {
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
     echo "  fix-dns                   Repair container DNS when the host resolver is behind a VPN tunnel (needs sudo;"
     echo "                            'up' does this automatically — this is for running it on its own)"
-    echo "  logs [service]            Tail logs (all services, or one)"
+    echo "  logs [service] [--tail=N] Tail logs (all services, or one; last N lines first)"
     echo "  shell php[ ver]|db|nginx|redis  Shell into a container (php defaults to $DEFAULT_PHP_VERSION; e.g. 'shell php 8.4')"
     echo "  db [name]                 Open a MySQL prompt (root, or scoped to one site's DB)"
     echo "  adminer [name]            Open Adminer in the browser (root, or deep-linked to one site's DB)"
@@ -1444,10 +1444,24 @@ cmd_doctor() {
 }
 
 cmd_logs() {
-    if [ -n "$1" ]; then
-        docker compose logs -f "$1"
+    local service="" tail="all" arg
+    for arg in "$@"; do
+        case "$arg" in
+            --tail=*) tail="${arg#--tail=}" ;;
+            *) service="$arg" ;;
+        esac
+    done
+    case "$tail" in
+        all|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]) ;;
+        *) print_error "Invalid --tail value '${tail}' (a number, or all)" ;;
+    esac
+    # exec, so a SIGTERM to wpdev (the api does that when the dashboard
+    # closes its log view) reaches the follower itself -- without it bash
+    # exits and leaves `docker compose logs -f` running forever.
+    if [ -n "$service" ]; then
+        exec docker compose logs -f --tail="$tail" "$service"
     else
-        docker compose logs -f
+        exec docker compose logs -f --tail="$tail"
     fi
 }
 
@@ -3803,7 +3817,7 @@ case "${1:-help}" in
     status) cmd_status ;;
     doctor) cmd_doctor ;;
     fix-dns) cmd_fix_dns ;;
-    logs) cmd_logs "$2" ;;
+    logs) shift; cmd_logs "$@" ;;
     shell) cmd_shell "$2" ;;
     db) cmd_db "$2" ;;
     adminer) cmd_adminer "$2" ;;

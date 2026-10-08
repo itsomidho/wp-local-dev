@@ -197,7 +197,7 @@ wpdev update
   `php/xdebug.ini`, etc.), so a pulled fix could otherwise sit on disk
   unapplied until something else happened to restart that container.
   Site data isn't touched either way — only the stack's own containers.
-- Works the same from the dashboard's "Update available" badge, including
+- Works the same from the dashboard's "Update available" card, including
   for the api service itself, which can't rebuild and recreate its own
   container mid-request. See [API service](#api-service).
 
@@ -328,7 +328,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev fix-dns` | Repair container DNS when the host's resolver lives behind a VPN tunnel (needs sudo). `wpdev up` already does this for you — this is for running it on its own |
-| `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
+| `wpdev logs [service] [--tail=N]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`); `--tail` starts from the last N lines instead of the whole history |
 | `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` (as you, not root) |
 | `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
 | `wpdev adminer [name]` | Open Adminer in the browser — root by default, or deep-linked to one site's DB |
@@ -1115,28 +1115,44 @@ wpdev dashboard
 ```
 
 A React GUI (`dashboard/`) for everything above — add/remove/clone sites,
-manage snapshots, toggle caching, run WP-CLI commands, and watch
-long-running actions stream live, all from the browser instead of the CLI.
-Starts automatically with `wpdev up`, at `http://localhost:39007` by default
-(`DASHBOARD_PORT` in `.env`).
+manage snapshots, toggle caching, run WP-CLI commands, follow container
+logs, and watch long-running actions stream live, all from the browser
+instead of the CLI. Starts automatically with `wpdev up`, at
+`http://localhost:39007` by default (`DASHBOARD_PORT` in `.env`).
+
+The sidebar has five pages:
+
+| Page | What it shows |
+|------|---------------|
+| **Overview** | Site, reachability, container and MySQL totals; your sites; every container's state; the machine's CPU, memory and disk; quick actions |
+| **Sites** | A card per site (grid or list, filter by name or PHP version) with its reachability, PHP and WordPress versions, database check and Redis state, plus Visit, Admin and Manage |
+| **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit/Portainer, and **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it |
+| **Doctor** | `wpdev doctor` as a checklist grouped by section and site, with a pass/warning/fail summary |
+| **Docs** | This README (see below) |
+
+**Manage** on a site opens a side panel with its tabs: Overview
+(credentials, masked until you reveal or copy them, plus certificate and
+permission fixes), Cache, Media, Admin domain, Snapshots, Clone, WP-CLI
+and Remove. **⌘K / Ctrl+K** opens a command palette that can jump to any
+page, open, manage or wp-admin any site, start/restart/stop the stack,
+open the tools and switch theme, all from the keyboard. Escape closes
+whatever is on top.
 
 It's a thin client, same principle as the API: it's static files (no server
 logic of its own) that talk directly to the `api` service from your
-browser, rendering `wpdev`'s own colored output rather than re-deriving
-status text. `doctor`/`status` show up exactly as they would in a terminal,
-and every provisioning/removal action shows the real, live `wpdev` output as
-it happens.
+browser. Every value comes from `wpdev`'s own output: the Services and
+Doctor pages lay out what `status`/`doctor` printed instead of re-deriving
+it, and each keeps the untouched terminal output one click away under
+**Raw output**. Every provisioning/removal action shows the real, live
+`wpdev` output as it happens.
 
-Each site's row shows its real WordPress core version alongside its PHP
-version (both genuinely vary per site), and the shared MySQL version once
-near the "+ Add site" button rather than repeated on every row, since
-every site uses the same one server. This comes from `status`, not
-`list` — getting it means a real `wp core version` per site, so unlike
-the sites list itself (which polls every 15s) it's only refreshed on
-load, after an action that changes the site list, or an explicit click
-on the refresh icon.
+The per-site details (WordPress version, HTTP reachability, database and
+cache checks) and the container states come from `status`, not `list`.
+Getting them means a real `wp core version` per site, so unlike the sites
+list itself (which polls every 15s) they're only refreshed on load, after
+an action, or when you click refresh.
 
-A "Machine" panel at the top shows the host's CPU, memory, and disk usage —
+The "Machine" card on the Overview shows the host's CPU, memory, and disk usage —
 the one part of the dashboard not backed by `wpdev` at all, since there's no
 WordPress-domain judgment call in reading `/proc/meminfo`/`/proc/stat`/`df`
 for a second implementation to drift from. On Docker Desktop (Mac/Windows)
@@ -1144,7 +1160,7 @@ this reports the Linux VM's resources, not the raw host hardware — the more
 useful number anyway, since that VM is the real ceiling on what this stack
 can use.
 
-Disk shows two different numbers on purpose: the bar is the whole
+Disk shows two different numbers on purpose: the ring is the whole
 partition holding this project (`df` — "is this drive about to fill up"),
 while the smaller line under it is just wp-local-dev's own footprint
 (`sites/` + `snapshots/` + `backups/`, the same thing Doctor's own disk
@@ -1152,8 +1168,7 @@ line already reports) — "how much has this project itself used." They're
 easy to conflate but answer different questions, especially if this
 project shares a partition with anything else.
 
-A **Docs** button in the header opens this README itself, rendered in the
-dashboard — a searchable sidebar table of contents next to the full text,
+The **Docs** page is this README itself, rendered in the dashboard — a searchable sidebar table of contents next to the full text,
 so there's one explanation of this project instead of a second, shorter one
 duplicated into the UI. It's the real `README.md`, imported directly at
 build time (not copied), so it can't drift out of sync with this file; the
@@ -1177,12 +1192,13 @@ link.
   and restarting (not rebuilding) the `dashboard` container picks it up —
   a small `config.js` is regenerated from the current `.env` on every
   container start.
-- **The small version badge next to "local-dev"** is `git describe` for
+- **The small version label at the bottom of the sidebar** is `git describe` for
   whatever commit is actually checked out (tag, commits-since, short
   hash — `-dirty` appended over uncommitted changes), re-detected on
   every `wpdev up` the same way `API_UID`/`PROJECT_DIR` are. Not a
   hand-maintained version number that can fall out of sync with reality.
-- **A green "Update available" badge** shows up next to it when `git
+- **An "Update available" card** shows up above it (and in the command
+  palette) when `git
   fetch` finds commits on `origin` this checkout doesn't have yet (`wpdev
   update-check`, checked on load and on every manual refresh — not on the
   15s poll, since that would mean a `git fetch` every 15 seconds).
@@ -1196,7 +1212,7 @@ link.
   `wpdev cert` for that site (after a confirmation). Use it when Doctor
   flags the cert, or your browser shows a certificate warning.
 - **The API token**, if you've set `API_TOKEN`, goes in the dashboard's own
-  settings panel (⚙ in the header) — it's stored in your browser's
+  settings panel (⚙ at the bottom of the sidebar) — it's stored in your browser's
   `localStorage`, sent as `Authorization: Bearer <token>` on every request,
   and never touches the image or the container.
 

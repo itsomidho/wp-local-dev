@@ -584,6 +584,22 @@ jobs:
           curl -s "http://127.0.0.1:39007$js_path" | grep -q "Multi-site, multi-PHP"
 
       - name: >
+          Regression test -- the dashboard's Logs view starts from the last
+          ?tail= lines and stops following when the client goes away.
+          `wpdev logs` used to leave `docker compose logs -f` running after
+          the api killed it (bash exited, the follower didn't), one more
+          per view, forever.
+        run: |
+          ! ./wpdev logs redis --tail=abc </dev/null
+
+          out=$(curl -sN -m 5 "http://127.0.0.1:39006/api/logs/redis?tail=2" || true)
+          [ "$(echo "$out" | grep -c '^event: line')" -eq 2 ]
+
+          sleep 2
+          followers=$(docker exec wp-api sh -c 'for p in /proc/[0-9]*; do tr "\0" " " < $p/cmdline 2>/dev/null; echo; done' | grep -c "compose logs -f" || true)
+          [ "$followers" -eq 0 ]
+
+      - name: >
           Regression test -- `wpdev add --wp-version=` actually installs
           the requested version, not just accepts the flag. Switched the
           download step from a manual curl+tar+mv to `wp core download
