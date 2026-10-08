@@ -1034,6 +1034,13 @@ Docker daemon.
 screen — get it with `docker logs wp-portainer`, paste it in, then create
 your own admin account.
 
+**"Your Portainer instance timed out for security purposes":** until the
+admin account exists, Portainer locks itself 5 minutes after it starts —
+so a stack restart you didn't follow up on leaves it locked. `wpdev
+portainer` (and the dashboard's Open button) checks for that first,
+restarts Portainer, and tells you to create the admin within 5 minutes.
+Once the account exists, it never locks again.
+
 **Worth knowing:** Portainer works by mounting your host's `docker.sock`,
 which gives it — and anyone who can reach `localhost:39003` — full control of
 your *entire* Docker daemon, not just this project's four containers. That's
