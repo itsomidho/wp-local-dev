@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, AlertTriangle, XCircle, Info, X } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, XCircle, Info, X, ArrowDown } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Layers: modals, drawers and the command palette stack (a confirm opened
@@ -198,3 +198,88 @@ export function Kbd({ children }) {
 }
 
 export const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent);
+
+// ---------------------------------------------------------------------------
+// Following output as it arrives
+// ---------------------------------------------------------------------------
+
+const NEAR_BOTTOM_PX = 48;
+
+// Keeps a scrolling box pinned to its bottom while new rows arrive (`dep`
+// changes) -- but only while you're already at the bottom. Scroll up to
+// read something and it stops following; `atBottom` goes false so the
+// caller can offer a way back, and `scrollToBottom` resumes it.
+export function useFollowOutput(dep, { enabled = true } = {}) {
+  const ref = useRef(null);
+  const follow = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const onScroll = () => {
+      const near = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+      follow.current = near;
+      setAtBottom(near);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (enabled && el && follow.current) el.scrollTop = el.scrollHeight;
+  }, [dep, enabled]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    follow.current = true;
+    setAtBottom(true);
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, []);
+
+  return { ref, atBottom, scrollToBottom };
+}
+
+// The same, for the page itself (the Doctor page grows as checks stream
+// in): follows while `active` and you haven't scrolled away from the end.
+export function useFollowPage(dep, active) {
+  const follow = useRef(true);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const doc = document.documentElement;
+      follow.current = doc.scrollHeight - window.scrollY - window.innerHeight < NEAR_BOTTOM_PX * 2;
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (active && follow.current) window.scrollTo({ top: document.documentElement.scrollHeight });
+  }, [dep, active]);
+}
+
+export function JumpToLatest({ onClick }) {
+  return (
+    <button type="button" className="jump-latest" onClick={onClick}>
+      <ArrowDown size={14} /> Jump to latest
+    </button>
+  );
+}
+
+// A command's output appearing inside a panel (the site drawer's tabs):
+// brought into view when it shows up or changes, since it usually lands
+// below whatever button produced it.
+export function Output({ children }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    ref.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [children]);
+  return (
+    <pre ref={ref} className="terminal output">
+      {children}
+    </pre>
+  );
+}

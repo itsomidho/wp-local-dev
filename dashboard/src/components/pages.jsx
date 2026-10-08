@@ -27,7 +27,7 @@ import { siteUrl } from '../api';
 import MachineStats from './MachineStats';
 import SiteCard, { SiteChips, httpTone } from './SiteCard';
 import Terminal, { stripAnsiToLines } from './Terminal';
-import { Avatar, Chip, EmptyState, Skeleton, StatusDot } from './ui';
+import { Avatar, Chip, EmptyState, Skeleton, StatusDot, useFollowPage } from './ui';
 import { mergeServices, serviceInfo } from '../lib/services';
 
 // ---------------------------------------------------------------------------
@@ -446,6 +446,9 @@ const CHECK_ICON = { ok: CheckCircle2, warn: AlertTriangle, error: XCircle, info
 
 export function DoctorPage({ doctor, onRun }) {
   const { loading, result, raw, error, ranAt } = doctor;
+  // Follow the checks down the page as they stream in, unless you've
+  // scrolled up to read one.
+  useFollowPage(raw, loading);
   const counts = result?.counts;
   const verdict = !counts || loading
     ? null

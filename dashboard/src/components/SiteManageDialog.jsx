@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { api, siteUrl } from '../api';
 import ConfirmDialog from './ConfirmDialog';
-import { Avatar, Chip, Drawer, Skeleton, useToast } from './ui';
+import { Avatar, Chip, Drawer, Output, Skeleton, useToast } from './ui';
 import { stripAnsi } from '../lib/parse';
 
 const TABS = [
@@ -172,7 +172,7 @@ function OverviewTab({ site }) {
         <h4>Credentials</h4>
         {error && <p className="error">{error}</p>}
         {!creds && !error && <Skeleton height={96} radius={12} />}
-        {creds && rows.length === 0 && <pre className="terminal output">{creds}</pre>}
+        {creds && rows.length === 0 && <Output>{creds}</Output>}
         {rows.length > 0 && (
           <dl className="kv">
             {rows.map((row) => (
@@ -227,7 +227,7 @@ function OverviewTab({ site }) {
           </button>
         </div>
         {busy && <Skeleton height={60} radius={10} />}
-        {result && <pre className="terminal output">{result}</pre>}
+        {result && <Output>{result}</Output>}
       </section>
 
       {confirmCert && (
@@ -295,7 +295,7 @@ function CacheTab({ site }) {
           Purge cache
         </button>
       </div>
-      {result && <pre className="terminal output">{result}</pre>}
+      {result && <Output>{result}</Output>}
       {confirmPurge && (
         <ConfirmDialog
           title="Purge the full-page cache?"
@@ -405,7 +405,7 @@ function MediaTab({ site }) {
           </button>
         )}
       </div>
-      {result && <pre className="terminal output">{result}</pre>}
+      {result && <Output>{result}</Output>}
       {confirmOff && (
         <ConfirmDialog
           title="Turn the media proxy off?"
@@ -517,7 +517,7 @@ function AdminDomainTab({ site }) {
           </button>
         )}
       </div>
-      {result && <pre className="terminal output">{result}</pre>}
+      {result && <Output>{result}</Output>}
       {confirmOff && (
         <ConfirmDialog
           title="Turn the admin domain off?"
@@ -740,7 +740,7 @@ function WpCliTab({ site }) {
         ))}
       </div>
       {busy && <Skeleton height={80} radius={10} />}
-      {output && <pre className="terminal output">{output}</pre>}
+      {output && <Output>{output}</Output>}
       {confirmRun && (
         <ConfirmDialog
           title="Run this WP-CLI command?"

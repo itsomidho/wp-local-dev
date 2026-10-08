@@ -3384,3 +3384,46 @@ input::placeholder {
 .raw-output {
   scroll-margin-top: 88px;
 }
+
+/* Streamed output: the scrolling box plus a way back to the live end
+   once you've scrolled up (see useFollowOutput). */
+.log-frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.log-frame > .log-body {
+  flex: 1;
+}
+
+.jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--brand-gradient);
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  animation: pop-in 0.2s var(--ease);
+}
+
+.jump-latest:hover {
+  filter: brightness(1.1);
+}
+
+.drawer-body .terminal.output {
+  scroll-margin-bottom: 16px;
+}

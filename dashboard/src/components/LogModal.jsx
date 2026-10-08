@@ -2,15 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, XCircle, Loader2, ScrollText, Pause, Play, Trash2 } from 'lucide-react';
 import { streamSSE } from '../api';
 import Terminal from './Terminal';
-import { Drawer, Modal, ModalHeader } from './ui';
-
-function useAutoScroll(dep, enabled = true) {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (enabled && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [dep, enabled]);
-  return ref;
-}
+import { Drawer, JumpToLatest, Modal, ModalHeader, useFollowOutput } from './ui';
 
 // Runs one streamed wpdev action (POST/DELETE that returns SSE) and shows
 // its output live, exactly as it would print in a terminal. `request` is
@@ -23,7 +15,7 @@ export default function LogModal({ title, request, onFinished, onClose }) {
   const [code, setCode] = useState(null);
   const started = useRef(Date.now());
   const [elapsed, setElapsed] = useState(0);
-  const bodyRef = useAutoScroll(lines);
+  const { ref: bodyRef, atBottom, scrollToBottom } = useFollowOutput(lines);
 
   useEffect(() => {
     const abort = streamSSE(request.method, request.path, request.body, {
@@ -55,9 +47,12 @@ export default function LogModal({ title, request, onFinished, onClose }) {
   return (
     <Modal onClose={running ? null : onClose} size="lg" className={`log-modal ${running ? 'is-running' : code === 0 ? 'is-ok' : 'is-fail'}`}>
       <ModalHeader icon={icon} title={title} subtitle={running ? `Running · ${elapsed}s` : code === 0 ? 'Finished successfully' : `Exited with code ${code}`} />
-      <div className="log-body" ref={bodyRef}>
-        <Terminal lines={lines} className="terminal-flush" />
-        {running && <span className="cursor" />}
+      <div className="log-frame">
+        <div className="log-body" ref={bodyRef}>
+          <Terminal lines={lines} className="terminal-flush" />
+          {running && <span className="cursor" />}
+        </div>
+        {!atBottom && <JumpToLatest onClick={scrollToBottom} />}
       </div>
       <div className="modal-footer">
         {running ? (
@@ -81,7 +76,7 @@ export function LogsDrawer({ service, label, onClose }) {
   const [ended, setEnded] = useState(null);
   const pausedRef = useRef(false);
   const buffer = useRef([]);
-  const bodyRef = useAutoScroll(lines, !paused);
+  const { ref: bodyRef, atBottom, scrollToBottom } = useFollowOutput(lines, { enabled: !paused });
 
   useEffect(() => {
     const abort = streamSSE('GET', `/api/logs/${encodeURIComponent(service)}?tail=200`, undefined, {
@@ -127,9 +122,12 @@ export function LogsDrawer({ service, label, onClose }) {
           </button>
         </div>
       </ModalHeader>
-      <div className="log-body" ref={bodyRef}>
-        {lines.length === 0 && ended === null && <p className="log-waiting">Waiting for output…</p>}
-        <Terminal lines={lines} className="terminal-flush" />
+      <div className="log-frame">
+        <div className="log-body" ref={bodyRef}>
+          {lines.length === 0 && ended === null && <p className="log-waiting">Waiting for output…</p>}
+          <Terminal lines={lines} className="terminal-flush" />
+        </div>
+        {!atBottom && !paused && <JumpToLatest onClick={scrollToBottom} />}
       </div>
     </Drawer>
   );
