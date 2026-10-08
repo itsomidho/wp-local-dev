@@ -149,13 +149,20 @@ export function OverviewPage({ sites, sitesLoading, statusBySite, services, stat
             </button>
           </div>
           <div className="service-strip service-strip-compact">
-            {merged.map((svc) => {
-              const info = serviceInfo(svc.service);
+            {groupPhp(merged).map((svc) => {
+              const info = svc.php ? { label: 'PHP', icon: serviceInfo(svc.php[0].service).icon } : serviceInfo(svc.service);
               const Icon = info.icon;
               return (
                 <div key={svc.service} className={`service-mini state-${loadingStatus ? 'unknown' : svc.state}`} title={svc.status}>
                   <Icon size={15} />
-                  <span>{info.label}</span>
+                  <span>
+                    {info.label}
+                    {svc.php && (
+                      <span className="service-mini-versions mono">
+                        {svc.php.length > 3 ? `${svc.php.length} versions` : svc.php.map((p) => serviceInfo(p.service).php).join(' · ')}
+                      </span>
+                    )}
+                  </span>
                   <StatusDot tone={loadingStatus ? 'muted' : stateTone(svc.state)} />
                 </div>
               );
@@ -202,6 +209,28 @@ export function OverviewPage({ sites, sitesLoading, statusBySite, services, stat
       </section>
     </div>
   );
+}
+
+// The Overview's Services card shows every PHP version as one "PHP" tile
+// (its versions listed in it), so the card keeps the same height however
+// many versions run -- it shares a row with the fixed-height Machine card.
+// The tile is only as healthy as its least healthy version. The Services
+// page still has a card per version.
+const STATE_RANK = { running: 0, restarting: 1, unhealthy: 1, stopped: 2 };
+
+function groupPhp(services) {
+  const php = services.filter((s) => serviceInfo(s.service).php);
+  if (php.length === 0) return services;
+  const worst = php.reduce((a, b) => ((STATE_RANK[b.state] ?? 2) > (STATE_RANK[a.state] ?? 2) ? b : a));
+  const tile = {
+    service: 'php',
+    php,
+    state: worst.state,
+    status: php.map((p) => `${serviceInfo(p.service).label}: ${p.status}`).join('\n'),
+  };
+  const at = services.indexOf(php[0]);
+  const rest = services.filter((s) => !serviceInfo(s.service).php);
+  return [...rest.slice(0, at), tile, ...rest.slice(at)];
 }
 
 function RowSkeletons() {
