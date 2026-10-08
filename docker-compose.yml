@@ -38,27 +38,6 @@ services:
     networks:
       - network
 
-  # Portainer (Docker container/image management UI)
-  #
-  # NOTE: this mounts the host's docker.sock, which gives Portainer — and
-  # anyone who can reach its UI — full control of your ENTIRE Docker daemon,
-  # not just this project's containers. That's how Portainer works; it's not
-  # scoped to this compose project. First visit to
-  # http://localhost:${PORTAINER_PORT:-39003} asks for a one-time setup token —
-  # get it with `docker logs wp-portainer` — then you create your own admin
-  # account.
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: wp-portainer
-    restart: unless-stopped
-    ports:
-      - "${PORTAINER_PORT:-39003}:9000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - wp_portainer_data:/data
-    networks:
-      - network
-
   # Adminer (Shared database management)
   adminer:
     image: adminer
@@ -227,8 +206,8 @@ services:
   # "API service" section.
   #
   # Docker-outside-of-Docker: this container has no Docker daemon of its
-  # own -- it talks to the HOST's daemon over the bind-mounted socket (same
-  # pattern as Portainer above), then runs `./wpdev`, which itself shells
+  # own -- it talks to the HOST's daemon over the bind-mounted socket, then
+  # runs `./wpdev`, which itself shells
   # out `docker compose ...`. That INNER `docker compose` CLI resolves this
   # file's relative volume paths (./sites, ./nginx, etc.) against its own
   # cwd, but the resulting container-create request is serviced by the HOST
@@ -359,8 +338,6 @@ services:
 
 volumes:
   wp_mysql_data:
-    driver: local
-  wp_portainer_data:
     driver: local
   wp_fastcgi_cache:
     driver: local

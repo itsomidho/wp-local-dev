@@ -10,7 +10,6 @@
 #   wpdev shell php[ version]|db|nginx|redis
 #   wpdev db [name]           Open a MySQL prompt (root, or scoped to one site's DB)
 #   wpdev adminer [name]      Open Adminer in the browser (root, or deep-linked to one site's DB)
-#   wpdev portainer           Open Portainer in the browser (Docker container/image management)
 #   wpdev mailpit             Open Mailpit in the browser (every site's outgoing mail, caught)
 #   wpdev dashboard           Open the web dashboard in the browser (GUI for everything above)
 #   wpdev reload-nginx
@@ -340,7 +339,6 @@ show_help() {
     echo "  shell php[ ver]|db|nginx|redis  Shell into a container (php defaults to $DEFAULT_PHP_VERSION; e.g. 'shell php 8.4')"
     echo "  db [name]                 Open a MySQL prompt (root, or scoped to one site's DB)"
     echo "  adminer [name]            Open Adminer in the browser (root, or deep-linked to one site's DB)"
-    echo "  portainer                 Open Portainer in the browser (Docker container/image management)"
     echo "  mailpit                   Open Mailpit in the browser (every site's outgoing mail, caught)"
     echo "  dashboard                 Open the web dashboard in the browser (GUI for everything above)"
     echo "  reload-nginx              Test and reload Nginx config"
@@ -934,11 +932,40 @@ cmd_up() {
         print_info "Removed container(s) left by an interrupted recreate: $(echo $stale)"
     fi
 
+    retire_services
     docker compose up -d $(stack_services)
     if [ -n "${WPDEV_IN_API:-}" ] && api_is_stale; then
         recreate_api_detached "up -d"
     fi
     echo "Containers started. Give MySQL 30 seconds to initialize if this is the first run."
+}
+
+# Containers of services this project no longer has (Portainer, removed
+# in favour of the dashboard's Docker page). Compose doesn't remove a
+# service's container just because the service left docker-compose.yml --
+# it would keep running, and doctor would report it as an orphan. Only a
+# container carrying this project's compose label is touched. Its image
+# goes too, unless something else still uses it (no --force, so Docker
+# refuses then) -- once the service is gone from docker-compose.yml, the
+# Docker page no longer counts that image as this project's. Its data
+# volume is left alone (the Docker page shows it as unused, to delete if
+# you want). Entries are service=image.
+RETIRED_SERVICES="portainer=portainer/portainer-ce:latest"
+retire_services() {
+    local entry svc image c project
+    project="$(compose_project)"
+    for entry in $RETIRED_SERVICES; do
+        svc="${entry%%=*}"
+        image="${entry#*=}"
+        c="wp-${svc}"
+        [ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c" 2>/dev/null)" = "$project" ] || continue
+        docker rm -f "$c" >/dev/null 2>&1 || continue
+        print_info "Removed ${c} (${svc} is no longer part of wp-local-dev)"
+        if docker rmi "$image" >/dev/null 2>&1; then
+            print_info "Removed its image ${image}"
+        fi
+    done
+    return 0
 }
 
 # Run from the dashboard, these commands execute inside the api container
@@ -1095,6 +1122,7 @@ cmd_update() {
 
     print_info "Rebuilding images and recreating containers to apply changes..."
     docker compose build $(stack_services)
+    retire_services
     docker compose up -d --force-recreate $(stack_services)
     # Always, not just when api_is_stale: the pull may have changed api's
     # code, which only a rebuild picks up -- its config hash can't show it.
@@ -1274,13 +1302,13 @@ cmd_doctor() {
         warnings=$((warnings + 1))
     fi
 
-    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer wp-api wp-dashboard"
+    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-api wp-dashboard"
     for v in $SUPPORTED_PHP_VERSIONS; do
         expected_containers="$expected_containers wp-$(php_slug "$v")"
     done
     for c in $expected_containers; do
         # || true: docker inspect exits nonzero for a container that doesn't
-        # exist at all (e.g. adminer/portainer, which `wpdev add` never
+        # exist at all (e.g. adminer, which `wpdev add` never
         # starts) -- a bare assignment like this one is NOT exempt from
         # set -e the way `cmd1 && cmd2` is, so without this the whole
         # script aborts right here instead of reaching the `-z "$state"`
@@ -1837,46 +1865,11 @@ cmd_adminer() {
     fi
 }
 
+# Portainer used to ship with the stack; the dashboard's Docker page (and
+# `wpdev stats`/`images`/`volumes`/`inspect`) replaced it. Kept as a pointer
+# for anyone with the old command in their fingers.
 cmd_portainer() {
-    if [ -f .env ]; then
-        set -a
-        # shellcheck disable=SC1091
-        source .env
-        set +a
-    fi
-    port="${PORTAINER_PORT:-39003}"
-    url="http://localhost:${port}/"
-
-    # A Portainer nobody has created the admin account on locks itself 5
-    # minutes after it starts ("timed out for security purposes") until
-    # it's restarted -- which any stack restart can leave you looking at.
-    # Its API says so plainly, so restart it here instead of opening a
-    # dead page. From inside the api, localhost is the api container, so
-    # it's reached by its compose name instead.
-    local probe="http://localhost:${port}"
-    [ -n "${WPDEV_IN_API:-}" ] && probe="http://portainer:9000"
-    if curl -s -m 5 "${probe}/api/users/admin/check" 2>/dev/null | grep -q "initialization timeout"; then
-        print_warning "Portainer locked itself: nobody created the admin account within 5 minutes of it starting. Restarting it..."
-        docker compose restart portainer >/dev/null 2>&1 || print_error "Couldn't restart Portainer: docker compose restart portainer"
-        local i
-        for i in $(seq 1 20); do
-            curl -s -m 2 -o /dev/null "${probe}/api/system/status" 2>/dev/null && break
-            sleep 1
-        done
-        print_warning "Create the admin account within 5 minutes, or it locks again."
-    fi
-
-    echo "Opening ${url}"
-    echo "First visit: it'll ask for a setup token — get it with: docker logs wp-portainer"
-    echo "Note: Portainer manages your whole Docker daemon, not just this project's containers."
-
-    if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$url" >/dev/null 2>&1 &
-    elif command -v open >/dev/null 2>&1; then
-        open "$url" >/dev/null 2>&1 &
-    else
-        print_warning "No browser opener found (xdg-open/open) — open the URL above manually."
-    fi
+    print_error "Portainer was removed from wp-local-dev. Use the dashboard's Docker page (wpdev dashboard), or: wpdev stats | images | volumes | inspect <service>"
 }
 
 cmd_mailpit() {

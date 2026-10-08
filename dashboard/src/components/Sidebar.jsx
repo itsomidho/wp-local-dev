@@ -7,7 +7,6 @@ import {
   Database,
   Mail,
   Container,
-  Ship,
   ArrowUpRight,
   Settings,
   Sparkles,
@@ -26,7 +25,6 @@ export const PAGES = [
 export const TOOLS = [
   { id: 'adminer', label: 'Adminer', icon: Database },
   { id: 'mailpit', label: 'Mailpit', icon: Mail },
-  { id: 'portainer', label: 'Portainer', icon: Ship },
 ];
 
 // A terminal prompt typing a "w" -- WordPress, driven from the command

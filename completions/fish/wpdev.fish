@@ -45,7 +45,6 @@ function __wpdev_services
     echo mailpit
     echo nginx
     echo adminer
-    echo portainer
 end
 
 # True when the command line has exactly N tokens so far (`wpdev` itself
@@ -60,7 +59,7 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update update-check status doctor logs stats images volumes inspect shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help
+set -l __wpdev_cmds up down restart update update-check status doctor logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help
 
 complete -c wpdev -f
 
@@ -80,7 +79,6 @@ complete -c wpdev -n "$__wpdev_top" -a logs -d "Tail logs (all services, or one)
 complete -c wpdev -n "$__wpdev_top" -a shell -d "Shell into a container"
 complete -c wpdev -n "$__wpdev_top" -a db -d "Open a MySQL prompt"
 complete -c wpdev -n "$__wpdev_top" -a adminer -d "Open Adminer in the browser"
-complete -c wpdev -n "$__wpdev_top" -a portainer -d "Open Portainer in the browser"
 complete -c wpdev -n "$__wpdev_top" -a mailpit -d "Open Mailpit in the browser"
 complete -c wpdev -n "$__wpdev_top" -a reload-nginx -d "Test and reload Nginx config"
 complete -c wpdev -n "$__wpdev_top" -a cache -d "Toggle nginx full-page cache for a site"

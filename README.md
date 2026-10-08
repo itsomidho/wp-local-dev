@@ -61,10 +61,9 @@ touches `docker-compose.yml`.
   [Status dashboard](#status-dashboard) and [Doctor](#doctor).
 - **Xdebug on demand** — installed but only attaches when triggered, so
   normal page loads stay fast. See [Xdebug](#xdebug).
-- **Portainer and Adminer included** — container/image management and
-  database browsing in the browser, no extra setup. See
-  [Portainer](#portainer-containerimage-dashboard) and
-  [Access points](#access-points).
+- **Adminer included** — database browsing in the browser, no extra setup.
+  Container stats, images and volumes are on the dashboard's Docker page.
+  See [Access points](#access-points) and [Web dashboard](#web-dashboard).
 - **Tab completion** — fish, bash, and zsh, completing subcommands, PHP
   versions, and site names. See [Tab completion](#tab-completion).
 - **HTTP API** — every `wpdev` command available over HTTP (with live
@@ -201,11 +200,18 @@ wpdev update
   for the api service itself, which can't rebuild and recreate its own
   container mid-request. See [API service](#api-service).
 
+**Portainer was removed** in favour of the dashboard's Docker page (live
+stats, images, volumes, container details — scoped to this project, no
+separate account). The first `wpdev up` after updating removes the old
+`wp-portainer` container and, if nothing else uses it, its image (the
+update itself still runs the previous `wpdev`, which doesn't know to). Its settings volume (`wp_portainer_data`) is left in place; delete
+it from the Docker page's Volumes tab once you don't need it.
+
 ## Getting started
 
 ```bash
 wpdev install-mkcert     # 1. one-time: sets up a local trusted SSL CA
-wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api, dashboard
+wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, api, dashboard
 wpdev add                 # 3. provision your first site
 ```
 
@@ -336,7 +342,6 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` (as you, not root) |
 | `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
 | `wpdev adminer [name]` | Open Adminer in the browser — root by default, or deep-linked to one site's DB |
-| `wpdev portainer` | Open Portainer in the browser (Docker container/image management) |
 | `wpdev mailpit` | Open Mailpit in the browser — every site's outgoing mail, caught |
 | `wpdev dashboard` | Open the web dashboard in the browser (GUI for everything above) |
 | `wpdev reload-nginx` | Test + reload Nginx (after editing a vhost by hand) |
@@ -381,7 +386,6 @@ WP-CLI (site provisioning), nothing hidden behind it.
 | Adminer | `http://localhost:39002` (`ADMINER_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | MySQL (host) | `localhost:39000` (`MYSQL_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | Redis (host) | `localhost:39001` (`REDIS_PORT`) | none (no auth configured — local dev only) |
-| Portainer | `http://localhost:39003` (`PORTAINER_PORT`) | Set your own admin account on first visit (see below) |
 | Mailpit | `http://localhost:39004` (`MAILPIT_UI_PORT`) | none — local only, nothing ever really sends |
 | API | `http://localhost:39006` (`API_PORT`) | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
 | Dashboard | `http://localhost:39007` (`DASHBOARD_PORT`) | none — API token (if set) entered in its own settings panel |
@@ -414,7 +418,7 @@ Sites are checked in parallel (up to 6 at once), so it takes about as long
 as the slowest site rather than the sum of all of them.
 
 Shows container health (`docker compose ps`) plus a per-site table — the
-WordPress-specific view Portainer's generic container UI can't give you:
+WordPress-specific view a generic container UI can't give you:
 
 ```
 DOMAIN                       PHP    WP        MYSQL     HTTP   DATABASE   CACHE
@@ -1024,41 +1028,6 @@ A few things worth knowing if you ever touch `php/crontab` or
   than cron's one-minute interval, and without the lock, overlapping runs
   pile up.
 
-## Portainer (container/image dashboard)
-
-```bash
-wpdev portainer
-```
-
-Opens a web UI showing every container's state, logs, resource usage, plus
-images, volumes, and networks — for this project and anything else on your
-Docker daemon.
-
-**First visit:** it asks for a one-time setup token instead of a bare login
-screen — get it with `docker logs wp-portainer`, paste it in, then create
-your own admin account.
-
-**You may not need it:** the dashboard's **Docker** page covers what this
-stack uses Portainer for: per-container resource use, details and logs,
-plus this project's images and volumes. It reads Docker through `wpdev`
-(`stats`, `images`, `volumes`, `inspect`), so there's no Portainer account
-or token involved, and it only ever touches this project's resources.
-Portainer stays useful for anything outside that (other projects'
-containers, networks, the whole daemon).
-
-**"Your Portainer instance timed out for security purposes":** until the
-admin account exists, Portainer locks itself 5 minutes after it starts —
-so a stack restart you didn't follow up on leaves it locked. `wpdev
-portainer` (and the dashboard's Open button) checks for that first,
-restarts Portainer, and tells you to create the admin within 5 minutes.
-Once the account exists, it never locks again.
-
-**Worth knowing:** Portainer works by mounting your host's `docker.sock`,
-which gives it — and anyone who can reach `localhost:39003` — full control of
-your *entire* Docker daemon, not just this project's four containers. That's
-inherent to how Portainer works, not a misconfiguration. Fine for a personal
-dev machine; worth remembering if this box is ever shared or exposed.
-
 ## API service
 
 A thin HTTP API wrapping `wpdev` — no reimplemented logic. Every endpoint
@@ -1083,7 +1052,7 @@ Endpoints cover the stack (`status`, `doctor`, `up`/`down`/`restart`,
 passthrough, `cache`), snapshots/restore, database import/export, and
 `backup`/`restore-all`. A few just return a URL + login hint rather than
 duplicating wpdev's own credential-lookup logic (`/api/links/adminer`,
-`/api/links/portainer`, `/api/links/mailpit`) — open it yourself, since
+`/api/links/mailpit`) — open it yourself, since
 this container has no browser to open it for you.
 
 **Worth knowing:**
@@ -1093,8 +1062,7 @@ this container has no browser to open it for you.
   `.env` to also require `Authorization: Bearer <token>`; without it, any
   other local user/process on this machine can reach it.
 - **Docker-outside-of-Docker.** This container has no Docker daemon of its
-  own — it talks to the host's daemon over a bind-mounted socket (same as
-  Portainer) and runs real `wpdev`/`docker compose` commands against it. It
+  own — it talks to the host's daemon over a bind-mounted socket and runs real `wpdev`/`docker compose` commands against it. It
   runs as your own user (`API_UID`/`API_GID`, auto-detected by `wpdev up`
   from `id -u`/`id -g`), not root, so files it writes directly — snapshots,
   nginx configs, SSL certificates, backups — land owned by you, same as if
@@ -1151,8 +1119,8 @@ The sidebar has six pages:
 |------|---------------|
 | **Overview** | Site, reachability, container and MySQL totals; your sites; every container's state; the machine's CPU, memory and disk; quick actions |
 | **Sites** | A card per site (grid or list, filter by name or PHP version) with its reachability, PHP and WordPress versions, database check and Redis state, plus Visit, Admin and Manage |
-| **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit/Portainer, **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it — and **Restart** (`wpdev restart <service>`, after a confirmation saying what it interrupts) |
-| **Docker** | What you'd otherwise open Portainer for, scoped to this project: live CPU/memory/network/disk per container, images (remove unused ones, clean up old builds) and volumes (delete an unused one after typing its name). Each container's **Details** (also on its Services card) shows its ports, networks, mounts and environment, secrets masked |
+| **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit, **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it — and **Restart** (`wpdev restart <service>`, after a confirmation saying what it interrupts) |
+| **Docker** | A container manager scoped to this project: live CPU/memory/network/disk per container, images (remove unused ones, clean up old builds) and volumes (delete an unused one after typing its name). Each container's **Details** (also on its Services card) shows its ports, networks, mounts and environment, secrets masked |
 | **Doctor** | `wpdev doctor` as a checklist grouped by section and site, with a pass/warning/fail summary |
 | **Docs** | This README (see below) |
 
@@ -1247,7 +1215,7 @@ link.
 
 ```
 wp-local-dev/
-├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api, dashboard
+├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, api, dashboard
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── .env.example                 # template for .env, copied by install.sh
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)

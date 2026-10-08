@@ -288,7 +288,6 @@ app.get('/api/hosts', sync(() => ['hosts']));
 // parsing/duplicating that lookup logic in JS.
 // ---------------------------------------------------------------------------
 app.get('/api/links/adminer', sync((req) => (req.query.site ? ['adminer', String(req.query.site)] : ['adminer'])));
-app.get('/api/links/portainer', sync(() => ['portainer']));
 app.get('/api/links/mailpit', sync(() => ['mailpit']));
 
 app.listen(PORT, () => {

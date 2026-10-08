@@ -237,8 +237,7 @@ export default function App() {
         const match = /Opening (\S+)/.exec(out);
         if (match && win) {
           win.location.href = match[1];
-          // wpdev's own warnings (e.g. it had to restart a locked
-          // Portainer first) matter more than the login hint.
+          // wpdev's own warnings matter more than the login hint.
           const warnings = out.split('\n').filter((l) => l.startsWith('⚠')).map((l) => l.slice(1).trim());
           const note = /Login: (.+)/.exec(out);
           if (warnings.length) toast({ tone: 'warning', title: `Opened ${which}`, description: warnings.join(' '), duration: 9000 });

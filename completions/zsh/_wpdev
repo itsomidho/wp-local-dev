@@ -46,7 +46,6 @@ _wpdev() {
         'shell:Shell into a container'
         'db:Open a MySQL prompt'
         'adminer:Open Adminer in the browser'
-        'portainer:Open Portainer in the browser'
         'mailpit:Open Mailpit in the browser'
         'reload-nginx:Test and reload Nginx config'
         'cache:Toggle nginx full-page cache for a site'
@@ -102,7 +101,7 @@ _wpdev() {
             fi
             ;;
         inspect)
-            (( CURRENT == 3 )) && compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer api dashboard
+            (( CURRENT == 3 )) && compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard
             ;;
         images)
             (( CURRENT == 3 )) && compadd -- --json rm prune
@@ -111,11 +110,11 @@ _wpdev() {
             (( CURRENT == 3 )) && compadd -- --json rm
             ;;
         restart)
-            compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer api dashboard
+            compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard
             ;;
         logs)
             if (( CURRENT == 3 )); then
-                compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer
+                compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer
             fi
             ;;
         restore-all)

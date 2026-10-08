@@ -58,7 +58,7 @@ jobs:
 
       - name: doctor reports no failures
         # Not "Everything checks out": `wpdev up` above means every
-        # container (including adminer/portainer/api) is running, but the
+        # container (including adminer/api) is running, but the
         # /etc/hosts entry is still deliberately skipped (curl --resolve is
         # used instead throughout this file), which doctor correctly
         # reports as a warning, not a failure. Asserting on the absence of
@@ -653,6 +653,26 @@ jobs:
           ! ./wpdev inspect mysql | grep -qF "$root_pw"
           ! curl -s http://127.0.0.1:39006/api/services/mysql/inspect | grep -qF "$root_pw"
           [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39006/api/docker/images/not-an-id/remove')" = "400" ]
+
+      - name: >
+          Regression test -- `wpdev up` removes the container of a service
+          that left docker-compose.yml (Portainer), but only this project's:
+          compose itself would leave it running as an orphan forever.
+        run: |
+          project=$(docker compose config | sed -n 's/^name: //p' | head -1)
+          docker pull -q busybox >/dev/null
+          docker run -d --name wp-portainer --label "com.docker.compose.project=${project}" busybox sleep 600 >/dev/null
+          ./wpdev up </dev/null
+          ! docker inspect wp-portainer >/dev/null 2>&1
+
+          # Same name, another project's label: left alone.
+          docker run -d --name wp-portainer --label com.docker.compose.project=someone-else busybox sleep 600 >/dev/null
+          ./wpdev up </dev/null
+          docker inspect wp-portainer >/dev/null
+          docker rm -f wp-portainer >/dev/null
+          docker rmi busybox >/dev/null
+
+          ! ./wpdev portainer </dev/null
 
       - name: >
           Regression test -- `wpdev add --wp-version=` actually installs

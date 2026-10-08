@@ -13,9 +13,8 @@ const TABS = [
   { id: 'volumes', label: 'Volumes', icon: HardDrive },
 ];
 
-// The bits of Portainer this stack actually needs -- live resource use,
-// images and volumes -- read straight from Docker through wpdev, scoped
-// to this project. Container details live on each Services card.
+// Live resource use, images and volumes, read straight from Docker
+// through wpdev and scoped to this project. Container details live on each Services card.
 export default function DockerPage({ onShowDetails }) {
   const [tab, setTab] = useState('stats');
   return (
@@ -348,7 +347,7 @@ function ImagesTab() {
 const VOLUME_ROLE = {
   wp_mysql_data: 'Every site’s database',
   wp_fastcgi_cache: 'Full-page cache',
-  wp_portainer_data: 'Portainer’s settings',
+  wp_portainer_data: 'Settings of the removed Portainer; safe to delete',
   wp_api_mkcert_ca: 'HTTPS CA, only used when MKCERT_CAROOT isn’t set',
 };
 

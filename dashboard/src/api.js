@@ -95,7 +95,6 @@ export const api = {
   reloadNginx: () => request('POST', '/api/reload-nginx'),
   links: {
     adminer: (site) => request('GET', `/api/links/adminer${site ? `?site=${encodeURIComponent(site)}` : ''}`),
-    portainer: () => request('GET', '/api/links/portainer'),
     mailpit: () => request('GET', '/api/links/mailpit'),
   },
 };
