@@ -3427,3 +3427,243 @@ input::placeholder {
 .drawer-body .terminal.output {
   scroll-margin-bottom: 16px;
 }
+
+/* ---------------------------------------------------------------------
+   Docker page: tabs, data tables, meters; container details drawer
+   ------------------------------------------------------------------- */
+
+.segmented-tabs {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+}
+
+.segmented-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.segmented-tabs button:hover {
+  color: var(--text);
+}
+
+.segmented-tabs button.is-active {
+  color: var(--text);
+  background: var(--active);
+  box-shadow: var(--shadow-sm);
+}
+
+.segmented-tabs button.is-active svg {
+  color: var(--brand);
+}
+
+.card-head-padded {
+  padding: 18px 20px 4px;
+  margin-bottom: 8px;
+}
+
+.card-pad {
+  padding: 0 20px 12px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr:hover td {
+  background: var(--hover);
+}
+
+.data-table th:first-child,
+.data-table td:first-child {
+  padding-left: 20px;
+}
+
+.data-table th:last-child,
+.data-table td:last-child {
+  padding-right: 20px;
+}
+
+.data-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cell-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.cell-title svg {
+  color: var(--muted);
+}
+
+.cell-title .mono {
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cell-meter {
+  min-width: 140px;
+}
+
+.cell-meter .mono {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12.5px;
+}
+
+.cell-actions {
+  text-align: right;
+  width: 1%;
+}
+
+.meter {
+  display: block;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--active);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.6s var(--ease);
+}
+
+.meter-success {
+  background: var(--success);
+}
+
+.meter-warning {
+  background: var(--warning);
+}
+
+.meter-danger {
+  background: var(--danger);
+}
+
+.btn-danger-ghost {
+  color: var(--muted);
+}
+
+.btn-danger-ghost:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.drawer-details {
+  width: min(760px, 100vw);
+}
+
+.kv-inline {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.kv-env .kv-row {
+  grid-template-columns: minmax(140px, 38%) 1fr;
+  padding: 8px 14px;
+}
+
+.kv-env dt {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.kv-env dd code {
+  word-break: break-all;
+  white-space: normal;
+}
+
+.masked {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.mount-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.mount-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+}
+
+.mount-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.mount-list code {
+  background: none;
+  border: none;
+  padding: 0;
+  word-break: break-all;
+}

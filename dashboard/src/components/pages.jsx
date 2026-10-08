@@ -332,7 +332,7 @@ export function stateTone(state) {
   return 'danger';
 }
 
-export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefresh, onRestart, restarting }) {
+export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefresh, onRestart, onShowDetails, restarting }) {
   const merged = mergeServices(services);
   const loading = !status.checkedAt;
 
@@ -396,6 +396,9 @@ export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefre
                   )}
                   <button type="button" className="btn btn-ghost btn-sm" onClick={() => onShowLogs(svc.service)} disabled={svc.state === 'stopped'}>
                     <ScrollText size={14} /> Logs
+                  </button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => onShowDetails(svc.service)} disabled={svc.state === 'stopped'}>
+                    <Info size={14} /> Details
                   </button>
                   <button
                     type="button"

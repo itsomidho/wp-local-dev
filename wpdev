@@ -333,6 +333,10 @@ show_help() {
     echo "  fix-dns                   Repair container DNS when the host resolver is behind a VPN tunnel (needs sudo;"
     echo "                            'up' does this automatically — this is for running it on its own)"
     echo "  logs [service] [--tail=N] Tail logs (all services, or one; last N lines first)"
+    echo "  stats                     Live CPU/memory/network/disk I/O per container"
+    echo "  images [rm <id>|prune]    This project's images: list, remove one, or clean up unused untagged ones"
+    echo "  volumes [rm <name>]       This project's volumes: list with size and users, or remove an unused one"
+    echo "  inspect <service>         A service's container details (docker inspect, secrets masked)"
     echo "  shell php[ ver]|db|nginx|redis  Shell into a container (php defaults to $DEFAULT_PHP_VERSION; e.g. 'shell php 8.4')"
     echo "  db [name]                 Open a MySQL prompt (root, or scoped to one site's DB)"
     echo "  adminer [name]            Open Adminer in the browser (root, or deep-linked to one site's DB)"
@@ -1534,6 +1538,193 @@ cmd_logs() {
     else
         exec docker compose logs -f --tail="$tail"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Docker resources (the dashboard's Docker page): stats, images, volumes and
+# container details, for this project only -- never another project's
+# images or volumes, so nothing here can delete something unrelated.
+# Everything reads Docker's own output; --json emits one JSON object per
+# line (built with Docker's own --format templates, so no jq needed).
+# ---------------------------------------------------------------------------
+
+compose_project() {
+    local name
+    name="$(docker compose config 2>/dev/null | sed -n 's/^name: //p' | head -1)"
+    [ -n "$name" ] || name="${COMPOSE_PROJECT_NAME:-$(basename "$SCRIPT_DIR")}"
+    echo "$name"
+}
+
+human_bytes() {
+    awk -v b="$1" 'BEGIN { split("B KB MB GB TB", u); i = 1; while (b >= 1000 && i < 5) { b /= 1000; i++ } printf (i == 1 ? "%d %s" : "%.1f %s"), b, u[i] }'
+}
+
+cmd_stats() {
+    local ids
+    ids="$(docker compose ps -q 2>/dev/null)"
+    [ -n "$ids" ] || print_error "No containers running. Start the stack with: wpdev up"
+    if [ "${1:-}" = "--json" ]; then
+        # shellcheck disable=SC2086
+        docker stats --no-stream --format '{{json .}}' $ids
+    else
+        # shellcheck disable=SC2086
+        docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}' $ids
+    fi
+}
+
+# Image IDs that belong to this project: what docker-compose.yml runs
+# (pulled or built), anything compose built for it (they carry its project
+# label, including old builds left dangling by a rebuild), and dangling
+# leftovers of the images it pulls (an old mysql:8.0 after a re-pull).
+project_image_ids() {
+    local project ref repo id repos
+    project="$(compose_project)"
+    {
+        docker images -q --filter "label=com.docker.compose.project=${project}"
+        # Asked for separately: newer Docker leaves untagged images out of
+        # a plain `docker images`, even with a label filter.
+        docker images -q --filter dangling=true --filter "label=com.docker.compose.project=${project}"
+        for ref in $(docker compose config --images 2>/dev/null); do
+            docker images -q "$ref"
+        done
+        repos=" $(docker compose config --images 2>/dev/null | sed -E 's/:[^:/]+$//' | tr '\n' ' ') "
+        for id in $(docker images -q --filter dangling=true); do
+            repo="$(docker image inspect --format '{{range .RepoDigests}}{{.}} {{end}}' "$id" 2>/dev/null | awk '{print $1}' | sed 's/@.*//')"
+            [ -n "$repo" ] && case "$repos" in *" ${repo} "*) echo "$id" ;; esac
+        done
+    } | sort -u
+}
+
+# Disk used by all images, in bytes, from `docker system df`.
+images_disk_bytes() {
+    docker system df --format '{{.Type}} {{.Size}}' 2>/dev/null | awk '$1 == "Images" {
+        v = $2; n = v + 0; u = v; sub(/^[0-9.]+/, "", u)
+        m = (u == "kB" || u == "KB") ? 1e3 : (u == "MB") ? 1e6 : (u == "GB") ? 1e9 : (u == "TB") ? 1e12 : 1
+        printf "%d\n", n * m }'
+}
+
+cmd_images() {
+    case "${1:-}" in
+        rm)
+            local id="${2:-}"
+            [ -n "$id" ] || print_error "Usage: wpdev images rm <image-id>"
+            local full
+            full="$(docker image inspect --format '{{.Id}}' "$id" 2>/dev/null)" || print_error "No image '${id}'."
+            project_image_ids | while read -r own; do
+                [ "$(docker image inspect --format '{{.Id}}' "$own")" = "$full" ] && echo yes
+            done | grep -q yes || print_error "Image '${id}' isn't one of this project's — wpdev only removes its own."
+            # No --force: Docker refuses an image a container still uses,
+            # which is exactly the protection wanted here.
+            docker rmi "$full"
+            print_info "Removed image ${id}."
+            return
+            ;;
+        prune)
+            # Freed space is measured, not summed: images share layers, so
+            # adding up their sizes overstates what removing them frees.
+            local before after id removed=0
+            before="$(images_disk_bytes)"
+            for id in $(project_image_ids); do
+                [ "$(docker image inspect --format '{{len .RepoTags}}' "$id" 2>/dev/null)" = "0" ] || continue
+                docker ps -aq --filter "ancestor=${id}" | grep -q . && continue
+                if docker rmi "$id" >/dev/null 2>&1; then
+                    removed=$((removed + 1))
+                    echo "Removed $(echo "$id" | sed 's/^sha256://' | cut -c1-12)"
+                fi
+            done
+            after="$(images_disk_bytes)"
+            print_info "Removed ${removed} unused untagged image(s) of this project, freed $(human_bytes $((before > after ? before - after : 0)))."
+            return
+            ;;
+        ""|--json) ;;
+        *) print_error "Usage: wpdev images [--json] | images rm <image-id> | images prune" ;;
+    esac
+
+    local ids usage
+    ids="$(project_image_ids)"
+    [ -n "$ids" ] || { echo "No images for this project yet."; return; }
+    # image id -> containers using it, one docker call for all of them.
+    usage="$(docker ps -aq | xargs -r docker inspect --format '{{.Image}} {{slice .Name 1}}' 2>/dev/null)"
+
+    if [ "${1:-}" = "--json" ]; then
+        local line id used
+        # shellcheck disable=SC2086
+        docker image inspect --format '{{.Id}}|{"id":{{json .Id}},"tags":{{json .RepoTags}},"size":{{.Size}},"created":{{json .Created}}' $ids |
+        while IFS='|' read -r id line; do
+            used="$(echo "$usage" | awk -v i="$id" '$1 == i { print $2 }' | paste -sd, -)"
+            echo "${line},\"usedBy\":\"${used}\"}"
+        done
+    else
+        printf "%-44s %-14s %-10s %-12s %s\n" "IMAGE" "ID" "SIZE" "CREATED" "USED BY"
+        local id tags size created used
+        # shellcheck disable=SC2086
+        docker image inspect --format '{{.Id}} {{if .RepoTags}}{{index .RepoTags 0}}{{else}}<untagged>{{end}} {{.Size}} {{slice .Created 0 10}}' $ids |
+        while read -r id tags size created; do
+            used="$(echo "$usage" | awk -v i="$id" '$1 == i { print $2 }' | paste -sd, -)"
+            printf "%-44s %-14s %-10s %-12s %s\n" "$tags" "$(echo "$id" | sed 's/^sha256://' | cut -c1-12)" "$(human_bytes "$size")" "$created" "${used:--}"
+        done
+    fi
+}
+
+cmd_volumes() {
+    local project
+    project="$(compose_project)"
+    case "${1:-}" in
+        rm)
+            local name="${2:-}" yes=""
+            [ "${3:-}" = "--yes" ] && yes=1
+            [ -n "$name" ] || print_error "Usage: wpdev volumes rm <volume> [--yes]"
+            [ "$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$name" 2>/dev/null)" = "$project" ] \
+                || print_error "Volume '${name}' isn't one of this project's — wpdev only removes its own."
+            if docker ps -aq --filter "volume=${name}" | grep -q .; then
+                print_error "Volume '${name}' is still used by: $(docker ps -a --filter "volume=${name}" --format '{{.Names}}' | paste -sd, -). Remove that container first."
+            fi
+            if [ -z "$yes" ]; then
+                print_warning "This permanently deletes everything stored in ${name}."
+                read -r -p "Type the volume name to confirm: " answer
+                [ "$answer" = "$name" ] || cancelled
+            fi
+            docker volume rm "$name" >/dev/null
+            print_info "Removed volume ${name}."
+            return
+            ;;
+        ""|--json) ;;
+        *) print_error "Usage: wpdev volumes [--json] | volumes rm <volume> [--yes]" ;;
+    esac
+
+    local names sizes
+    names="$(docker volume ls -q --filter "label=com.docker.compose.project=${project}")"
+    [ -n "$names" ] || { echo "No volumes for this project."; return; }
+    # Sizes come from `docker system df -v`'s volume table (name, links, size).
+    sizes="$(docker system df -v 2>/dev/null | awk '/^Local Volumes space usage:/ { on = 1; next } on && /^$/ && seen { exit } on && NF >= 3 && $1 != "VOLUME" { seen = 1; print $1, $NF }')"
+
+    local name size used short created
+    if [ "${1:-}" != "--json" ]; then
+        printf "%-36s %-10s %s\n" "VOLUME" "SIZE" "USED BY"
+    fi
+    for name in $names; do
+        size="$(echo "$sizes" | awk -v n="$name" '$1 == n { print $2 }')"
+        used="$(docker ps -a --filter "volume=${name}" --format '{{.Names}}' | paste -sd, -)"
+        if [ "${1:-}" = "--json" ]; then
+            short="$(docker volume inspect --format '{{index .Labels "com.docker.compose.volume"}}' "$name")"
+            created="$(docker volume inspect --format '{{.CreatedAt}}' "$name")"
+            printf '{"name":"%s","volume":"%s","size":"%s","usedBy":"%s","created":"%s"}\n' "$name" "$short" "${size:-}" "$used" "$created"
+        else
+            printf "%-36s %-10s %s\n" "$name" "${size:-?}" "${used:--}"
+        fi
+    done
+}
+
+# `docker inspect` for one service's container, with any environment
+# variable whose name looks like a secret masked -- the dashboard shows
+# this, and a password has no business reaching a browser.
+cmd_inspect() {
+    local svc="${1:-}" id
+    [ -n "$svc" ] || print_error "Usage: wpdev inspect <service>"
+    docker compose config --services 2>/dev/null | grep -qx -- "$svc" || print_error "Unknown service '${svc}'."
+    id="$(docker compose ps -aq "$svc" 2>/dev/null | head -1)"
+    [ -n "$id" ] || print_error "Service '${svc}' has no container. Start it with: wpdev up"
+    docker inspect "$id" | sed -E 's/^([[:space:]]*"[A-Za-z0-9_]*([Pp][Aa][Ss][Ss]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]|[Ss][Aa][Ll][Tt]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee])[A-Za-z0-9_]*=)[^"]*"/\1********"/'
 }
 
 cmd_shell() {
@@ -3908,6 +4099,10 @@ case "${1:-help}" in
     doctor) cmd_doctor ;;
     fix-dns) cmd_fix_dns ;;
     logs) shift; cmd_logs "$@" ;;
+    stats) shift; cmd_stats "$@" ;;
+    images) shift; cmd_images "$@" ;;
+    volumes) shift; cmd_volumes "$@" ;;
+    inspect) shift; cmd_inspect "$@" ;;
     shell) cmd_shell "$2" ;;
     db) cmd_db "$2" ;;
     adminer) cmd_adminer "$2" ;;

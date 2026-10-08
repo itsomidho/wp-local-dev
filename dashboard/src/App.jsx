@@ -13,6 +13,7 @@ import {
   KeyRound,
   Sparkles,
   ScrollText,
+  Info,
 } from 'lucide-react';
 import { api, getToken, setToken, siteUrl, streamSSE } from './api';
 import { parseDoctor, parseServices, parseSites, parseStatusSites, stripAnsi } from './lib/parse';
@@ -26,6 +27,8 @@ import SiteManageDialog from './components/SiteManageDialog';
 import LogModal, { LogsDrawer } from './components/LogModal';
 import ConfirmDialog from './components/ConfirmDialog';
 import DocsPage from './components/DocsPage';
+import DockerPage from './components/DockerPage';
+import ContainerDetails from './components/ContainerDetails';
 import { Modal, ModalHeader, useToast } from './components/ui';
 import { currentEffectiveTheme, setTheme } from './theme';
 
@@ -33,6 +36,7 @@ const PAGE_META = {
   overview: { title: 'Overview', subtitle: 'Your local WordPress stack at a glance' },
   sites: { title: 'Sites', subtitle: 'Provision, open and manage every site' },
   services: { title: 'Services', subtitle: 'The containers behind every site' },
+  docker: { title: 'Docker', subtitle: 'Resource use, images and volumes of this stack' },
   doctor: { title: 'Doctor', subtitle: 'Find and explain anything misconfigured' },
   docs: { title: 'Docs', subtitle: 'The README, searchable' },
 };
@@ -99,6 +103,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [manageSite, setManageSite] = useState(null);
   const [logsFor, setLogsFor] = useState(null);
+  const [detailsFor, setDetailsFor] = useState(null); // service name
   const [log, setLog] = useState(null); // {title, request, onFinished}
   const [stackBusy, setStackBusy] = useState(null);
   const [confirmStack, setConfirmStack] = useState(null);
@@ -370,6 +375,7 @@ export default function App() {
       const { label } = serviceInfo(svc.service);
       list.push({ id: `restart-${svc.service}`, group: 'Services', label: `Restart ${label}`, icon: RotateCw, hint: `wpdev restart ${svc.service}`, keywords: svc.service, run: () => setConfirmServiceRestart(svc.service) });
       list.push({ id: `logs-${svc.service}`, group: 'Services', label: `${label} logs`, icon: ScrollText, hint: 'live', keywords: `${svc.service} tail`, run: () => setLogsFor(svc.service) });
+      list.push({ id: `details-${svc.service}`, group: 'Services', label: `${label} details`, icon: Info, hint: 'inspect', keywords: `${svc.service} inspect env mounts ports`, run: () => setDetailsFor(svc.service) });
     });
     TOOLS.forEach((t) => list.push({ id: `tool-${t.id}`, group: 'Tools', label: `Open ${t.label}`, icon: t.icon, hint: 'new tab', run: () => openTool(t.id) }));
     list.push({ id: 'refresh', group: 'Preferences', label: 'Refresh everything', icon: RefreshCw, run: refreshAll });
@@ -442,9 +448,11 @@ export default function App() {
               onShowLogs={setLogsFor}
               onRefresh={refreshStatus}
               onRestart={setConfirmServiceRestart}
+              onShowDetails={setDetailsFor}
               restarting={restarting}
             />
           )}
+          {page === 'docker' && <DockerPage onShowDetails={setDetailsFor} />}
           {page === 'doctor' && <DoctorPage doctor={doctor} onRun={runDoctor} />}
           {page === 'docs' && <DocsPage />}
         </main>
@@ -465,6 +473,8 @@ export default function App() {
           }}
         />
       )}
+
+      {detailsFor && <ContainerDetails service={detailsFor} onClose={() => setDetailsFor(null)} />}
 
       {logsFor && <LogsDrawer service={logsFor} label={serviceInfo(logsFor).label} onClose={() => setLogsFor(null)} />}
 

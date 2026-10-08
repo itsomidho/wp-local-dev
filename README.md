@@ -328,6 +328,10 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev fix-dns` | Repair container DNS when the host's resolver lives behind a VPN tunnel (needs sudo). `wpdev up` already does this for you — this is for running it on its own |
+| `wpdev stats` | Live CPU, memory, network and disk I/O per container (`docker stats`, this project only) |
+| `wpdev images [rm <id> \| prune]` | This project's images with size, age and what uses them; remove an unused one, or `prune` its unused untagged leftovers (old builds, superseded pulls) |
+| `wpdev volumes [rm <name>]` | This project's volumes with size and what uses them; remove an unused one (asks you to type its name) |
+| `wpdev inspect <service>` | `docker inspect` for a service's container, with secret-looking environment variables (`*PASSWORD*`, `*TOKEN*`, `*KEY*`, ...) masked |
 | `wpdev logs [service] [--tail=N]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`); `--tail` starts from the last N lines instead of the whole history |
 | `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` (as you, not root) |
 | `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
@@ -1034,6 +1038,14 @@ Docker daemon.
 screen — get it with `docker logs wp-portainer`, paste it in, then create
 your own admin account.
 
+**You may not need it:** the dashboard's **Docker** page covers what this
+stack uses Portainer for: per-container resource use, details and logs,
+plus this project's images and volumes. It reads Docker through `wpdev`
+(`stats`, `images`, `volumes`, `inspect`), so there's no Portainer account
+or token involved, and it only ever touches this project's resources.
+Portainer stays useful for anything outside that (other projects'
+containers, networks, the whole daemon).
+
 **"Your Portainer instance timed out for security purposes":** until the
 admin account exists, Portainer locks itself 5 minutes after it starts —
 so a stack restart you didn't follow up on leaves it locked. `wpdev
@@ -1133,13 +1145,14 @@ logs, and watch long-running actions stream live, all from the browser
 instead of the CLI. Starts automatically with `wpdev up`, at
 `http://localhost:39007` by default (`DASHBOARD_PORT` in `.env`).
 
-The sidebar has five pages:
+The sidebar has six pages:
 
 | Page | What it shows |
 |------|---------------|
 | **Overview** | Site, reachability, container and MySQL totals; your sites; every container's state; the machine's CPU, memory and disk; quick actions |
 | **Sites** | A card per site (grid or list, filter by name or PHP version) with its reachability, PHP and WordPress versions, database check and Redis state, plus Visit, Admin and Manage |
 | **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit/Portainer, **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it — and **Restart** (`wpdev restart <service>`, after a confirmation saying what it interrupts) |
+| **Docker** | What you'd otherwise open Portainer for, scoped to this project: live CPU/memory/network/disk per container, images (remove unused ones, clean up old builds) and volumes (delete an unused one after typing its name). Each container's **Details** (also on its Services card) shows its ports, networks, mounts and environment, secrets masked |
 | **Doctor** | `wpdev doctor` as a checklist grouped by section and site, with a pass/warning/fail summary |
 | **Docs** | This README (see below) |
 

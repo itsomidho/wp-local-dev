@@ -616,6 +616,45 @@ jobs:
           [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39006/api/services/a%20b/restart')" = "400" ]
 
       - name: >
+          Feature test -- stats/images/volumes/inspect (the dashboard's Docker
+          page) only see and only remove this project's resources, never one
+          in use, and inspect never shows a password.
+        run: |
+          ./wpdev stats --json | python3 -c '
+          import json, sys
+          rows = [json.loads(l) for l in sys.stdin if l.strip()]
+          assert rows and all(r["Name"].startswith("wp-") for r in rows), rows'
+
+          images=$(./wpdev images --json)
+          echo "$images" | python3 -c '
+          import json, sys
+          imgs = [json.loads(l) for l in sys.stdin if l.strip()]
+          redis = [i for i in imgs if "redis:alpine" in i["tags"]]
+          assert redis and "wp-redis" in redis[0]["usedBy"], imgs'
+          # In use: Docker itself refuses.
+          ! ./wpdev images rm "$(docker inspect -f '{{.Image}}' wp-redis)" </dev/null
+          # Not this project's: refused before Docker is asked.
+          docker pull -q hello-world >/dev/null
+          out=$(./wpdev images rm "$(docker image inspect -f '{{.Id}}' hello-world)" </dev/null || true)
+          echo "$out" | grep -q "isn't one of this project's"
+          docker image inspect hello-world >/dev/null
+          docker rmi hello-world >/dev/null
+
+          ./wpdev volumes --json | grep -q '"volume":"wp_mysql_data"'
+          ! ./wpdev volumes rm "$(docker volume ls -q | grep '_wp_mysql_data$')" --yes </dev/null
+          docker volume inspect "$(docker volume ls -q | grep '_wp_mysql_data$')" >/dev/null
+          docker volume create citest-foreign >/dev/null
+          out=$(./wpdev volumes rm citest-foreign --yes </dev/null || true)
+          echo "$out" | grep -q "isn't one of this project's"
+          docker volume rm citest-foreign >/dev/null
+
+          root_pw=$(sed -n 's/^DB_ROOT_PASSWORD=//p' .env)
+          ./wpdev inspect mysql | grep -q '"MYSQL_ROOT_PASSWORD=\*\*\*\*\*\*\*\*"'
+          ! ./wpdev inspect mysql | grep -qF "$root_pw"
+          ! curl -s http://127.0.0.1:39006/api/services/mysql/inspect | grep -qF "$root_pw"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39006/api/docker/images/not-an-id/remove')" = "400" ]
+
+      - name: >
           Regression test -- `wpdev add --wp-version=` actually installs
           the requested version, not just accepts the flag. Switched the
           download step from a manual curl+tar+mv to `wp core download

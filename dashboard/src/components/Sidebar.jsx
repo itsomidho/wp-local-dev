@@ -7,6 +7,7 @@ import {
   Database,
   Mail,
   Container,
+  Ship,
   ArrowUpRight,
   Settings,
   Sparkles,
@@ -17,6 +18,7 @@ export const PAGES = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'sites', label: 'Sites', icon: Globe },
   { id: 'services', label: 'Services', icon: Boxes },
+  { id: 'docker', label: 'Docker', icon: Container },
   { id: 'doctor', label: 'Doctor', icon: Stethoscope },
   { id: 'docs', label: 'Docs', icon: BookOpen },
 ];
@@ -24,7 +26,7 @@ export const PAGES = [
 export const TOOLS = [
   { id: 'adminer', label: 'Adminer', icon: Database },
   { id: 'mailpit', label: 'Mailpit', icon: Mail },
-  { id: 'portainer', label: 'Portainer', icon: Container },
+  { id: 'portainer', label: 'Portainer', icon: Ship },
 ];
 
 // A terminal prompt typing a "w" -- WordPress, driven from the command

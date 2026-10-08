@@ -112,6 +112,34 @@ app.post('/api/clean-all', sync(() => ['clean-all', '--yes']));
 app.post('/api/install-mkcert', sync(() => ['install-mkcert']));
 
 // ---------------------------------------------------------------------------
+// Docker resources (the dashboard's Docker page) -- this project's own
+// containers, images and volumes only; wpdev enforces that, these routes
+// only keep the names to plain tokens.
+// ---------------------------------------------------------------------------
+const plainName = (param, re) => (req, res, next) =>
+  re.test(req.params[param]) ? next() : res.status(400).json({ error: `invalid ${param}` });
+
+app.get('/api/docker/stats', sync(() => ['stats', '--json']));
+app.get('/api/docker/images', sync(() => ['images', '--json']));
+app.post('/api/docker/images/prune', sync(() => ['images', 'prune']));
+app.post(
+  '/api/docker/images/:id/remove',
+  plainName('id', /^(sha256:)?[a-f0-9]{12,64}$/),
+  sync((req) => ['images', 'rm', req.params.id])
+);
+app.get('/api/docker/volumes', sync(() => ['volumes', '--json']));
+app.delete(
+  '/api/docker/volumes/:name',
+  plainName('name', /^[A-Za-z0-9][A-Za-z0-9_.-]*$/),
+  sync((req) => ['volumes', 'rm', req.params.name, '--yes'])
+);
+app.get(
+  '/api/services/:service/inspect',
+  plainName('service', /^[a-z0-9][a-z0-9_-]*$/),
+  sync((req) => ['inspect', req.params.service])
+);
+
+// ---------------------------------------------------------------------------
 // Sites
 // ---------------------------------------------------------------------------
 app.get('/api/sites', sync(() => ['list']));

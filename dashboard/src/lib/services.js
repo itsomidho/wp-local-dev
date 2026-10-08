@@ -1,4 +1,4 @@
-import { Server, Database, Zap, Mail, Container, Code2, Terminal, LayoutDashboard, Table2, Box } from 'lucide-react';
+import { Server, Database, Zap, Mail, Ship, Code2, Terminal, LayoutDashboard, Table2, Box } from 'lucide-react';
 
 // What each compose service is for, for display only. A service missing
 // from `docker compose ps` is shown as stopped; one not listed here still
@@ -13,7 +13,7 @@ export const SERVICE_INFO = {
   php84: { label: 'PHP 8.4', role: 'PHP-FPM', icon: Code2, impact: 'Sites on PHP 8.4 return errors for a few seconds.' },
   mailpit: { label: 'Mailpit', role: 'Catches every email the sites send', icon: Mail, tool: 'mailpit', impact: 'Mail sent while it restarts is lost.' },
   adminer: { label: 'Adminer', role: 'Database browser', icon: Table2, tool: 'adminer' },
-  portainer: { label: 'Portainer', role: 'Container management UI', icon: Container, tool: 'portainer' },
+  portainer: { label: 'Portainer', role: 'Container management UI', icon: Ship, tool: 'portainer' },
   api: { label: 'API', role: 'Runs wpdev for this dashboard', icon: Terminal, impact: 'This dashboard shows “unreachable” for a few seconds, then reconnects on its own.' },
   dashboard: { label: 'Dashboard', role: 'This page', icon: LayoutDashboard, impact: 'This page keeps working; reloading it during the restart fails for a few seconds.' },
 };
