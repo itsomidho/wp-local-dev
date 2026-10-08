@@ -78,8 +78,46 @@ export function OverviewPage({ sites, sitesLoading, statusBySite, services, stat
         <Kpi icon={Database} tone="violet" label="MySQL" value={mysql || '—'} hint="shared by every site" loading={loadingStatus} />
       </section>
 
+      <section className="quick-actions">
+        <button type="button" className="quick-action" onClick={onAdd}>
+          <span className="quick-action-icon">
+            <Plus size={18} />
+          </span>
+          <span className="quick-action-text">
+            <strong>New site</strong>
+            <small>Files, database, HTTPS</small>
+          </span>
+        </button>
+        <button type="button" className="quick-action" onClick={() => onNavigate('doctor')}>
+          <span className="quick-action-icon">
+            <Stethoscope size={18} />
+          </span>
+          <span className="quick-action-text">
+            <strong>Run doctor</strong>
+            <small>Find anything misconfigured</small>
+          </span>
+        </button>
+        <button type="button" className="quick-action" onClick={() => onOpenTool('mailpit')}>
+          <span className="quick-action-icon">
+            <Mail size={18} />
+          </span>
+          <span className="quick-action-text">
+            <strong>Mailbox</strong>
+            <small>Every email the sites sent</small>
+          </span>
+        </button>
+        <button type="button" className="quick-action" onClick={() => onOpenTool('adminer')}>
+          <span className="quick-action-icon">
+            <Database size={18} />
+          </span>
+          <span className="quick-action-text">
+            <strong>Adminer</strong>
+            <small>Browse the databases</small>
+          </span>
+        </button>
+      </section>
+
       <div className="overview-grid">
-        <div className="overview-main">
         <section className="card">
           <div className="card-head">
             <div>
@@ -109,71 +147,41 @@ export function OverviewPage({ sites, sitesLoading, statusBySite, services, stat
             </ul>
           )}
         </section>
-      <section className="card">
+        <section className="card">
           <div className="card-head">
             <div>
-              <h2>Services</h2>
-              <p>{loadingStatus ? 'Checking containers…' : `${running} of ${merged.length} containers running`}</p>
+              <h2>Machine</h2>
+              <p>The host running Docker</p>
             </div>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNavigate('services')}>
-              Details <ArrowRight size={14} />
-            </button>
           </div>
-          <div className="service-strip">
-            {merged.map((svc) => {
-              const info = serviceInfo(svc.service);
-              const Icon = info.icon;
-              return (
-                <div key={svc.service} className={`service-mini state-${loadingStatus ? 'unknown' : svc.state}`} title={svc.status}>
-                  <Icon size={15} />
-                  <span>{info.label}</span>
-                  <StatusDot tone={loadingStatus ? 'muted' : stateTone(svc.state)} />
-                </div>
-              );
-            })}
-          </div>
+          <MachineStats stats={stats} error={statsError} />
         </section>
-        </div>
-
-        <div className="overview-side">
-          <section className="card">
-            <div className="card-head">
-              <div>
-                <h2>Machine</h2>
-                <p>The host running Docker</p>
-              </div>
-            </div>
-            <MachineStats stats={stats} error={statsError} />
-          </section>
-
-          <section className="card">
-            <div className="card-head">
-              <div>
-                <h2>Quick actions</h2>
-              </div>
-            </div>
-            <div className="quick-actions">
-              <button type="button" className="quick-action" onClick={onAdd}>
-                <Plus size={18} />
-                <span>New site</span>
-              </button>
-              <button type="button" className="quick-action" onClick={() => onNavigate('doctor')}>
-                <Stethoscope size={18} />
-                <span>Run doctor</span>
-              </button>
-              <button type="button" className="quick-action" onClick={() => onOpenTool('mailpit')}>
-                <Mail size={18} />
-                <span>Mailbox</span>
-              </button>
-              <button type="button" className="quick-action" onClick={() => onOpenTool('adminer')}>
-                <Database size={18} />
-                <span>Adminer</span>
-              </button>
-            </div>
-          </section>
-        </div>
       </div>
 
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h2>Services</h2>
+            <p>{loadingStatus ? 'Checking containers…' : `${running} of ${merged.length} containers running`}</p>
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNavigate('services')}>
+            Details <ArrowRight size={14} />
+          </button>
+        </div>
+        <div className="service-strip">
+          {merged.map((svc) => {
+            const info = serviceInfo(svc.service);
+            const Icon = info.icon;
+            return (
+              <div key={svc.service} className={`service-mini state-${loadingStatus ? 'unknown' : svc.state}`} title={svc.status}>
+                <Icon size={15} />
+                <span>{info.label}</span>
+                <StatusDot tone={loadingStatus ? 'muted' : stateTone(svc.state)} />
+              </div>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }

@@ -1364,43 +1364,65 @@ input::placeholder {
   color: var(--dim);
 }
 
+/* Sites and Machine side by side, stretched to the same height. */
 .overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr);
   gap: 20px;
-  align-items: start;
-}
-
-.overview-side {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+  align-items: stretch;
 }
 
 .quick-actions {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
 }
 
 .quick-action {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 14px;
-  border-radius: var(--radius);
+  align-items: center;
+  gap: 13px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  background: var(--surface-2);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   color: var(--text);
-  font-size: 13px;
-  font-weight: 550;
+  text-align: left;
   cursor: pointer;
   transition: all 0.18s var(--ease);
 }
 
-.quick-action svg {
+.quick-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  flex-shrink: 0;
   color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+.quick-action-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.quick-action-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.quick-action-text small {
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .quick-action:hover {
@@ -1409,10 +1431,29 @@ input::placeholder {
   box-shadow: var(--shadow-md);
 }
 
+/* Fixed column counts that divide the 12 stack services evenly. */
 .service-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
+}
+
+@media (max-width: 1500px) {
+  .service-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .service-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .service-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .service-mini {
@@ -2789,6 +2830,10 @@ input::placeholder {
     grid-template-columns: 1fr;
   }
 
+  .quick-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .search-trigger {
     width: 44px;
     flex: none;
@@ -2875,6 +2920,15 @@ input::placeholder {
 }
 
 @media (max-width: 560px) {
+  .quick-actions {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .quick-action-text small {
+    display: none;
+  }
+
   .kpis {
     grid-template-columns: 1fr 1fr;
     gap: 10px;
@@ -3237,12 +3291,6 @@ input::placeholder {
   }
 }
 
-.overview-main {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  min-width: 0;
-}
 
 /* Inputs embedded in a larger focusable shell (palette, CLI prompt,
    affixed input) -- the shell shows focus, not the bare input. */
