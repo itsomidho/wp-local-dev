@@ -3706,4 +3706,52 @@ input::placeholder {
   display: flex;
   align-items: center;
   gap: 8px;
+
+/* Tabular command output (WP-CLI lists) -- see Output in ui.jsx. */
+.output-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scroll-margin-bottom: 16px;
+}
+
+.output-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.output-table-wrap {
+  /* As tall as the drawer leaves room for, so long lists use the panel. */
+  max-height: max(320px, calc(100vh - 340px));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.output-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--raised);
+}
+
+.output-table td,
+.output-table th {
+  padding: 8px 12px;
+}
+
+.output-table th:first-child,
+.output-table td:first-child {
+  padding-left: 14px;
+}
+
+.output-table td {
+  font-size: 12.5px;
+}
+
+.output-table td.strong {
+  color: var(--text);
+  font-weight: 500;
 }
