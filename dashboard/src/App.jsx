@@ -12,14 +12,15 @@ import {
   RefreshCw,
   KeyRound,
   Sparkles,
+  ScrollText,
 } from 'lucide-react';
 import { api, getToken, setToken, siteUrl } from './api';
-import { parseDoctor, parseServices, parseSites, parseStatusSites } from './lib/parse';
+import { parseDoctor, parseServices, parseSites, parseStatusSites, stripAnsi } from './lib/parse';
 import Sidebar, { PAGES, TOOLS } from './components/Sidebar';
 import Topbar from './components/Topbar';
 import CommandPalette from './components/CommandPalette';
 import { OverviewPage, SitesPage, ServicesPage, DoctorPage } from './components/pages';
-import { serviceInfo } from './lib/services';
+import { serviceInfo, restartImpact } from './lib/services';
 import AddSiteDialog from './components/AddSiteDialog';
 import SiteManageDialog from './components/SiteManageDialog';
 import LogModal, { LogsDrawer } from './components/LogModal';
@@ -82,6 +83,8 @@ export default function App() {
   const [stackBusy, setStackBusy] = useState(null);
   const [confirmStack, setConfirmStack] = useState(null);
   const [confirmUpdate, setConfirmUpdate] = useState(false);
+  const [confirmServiceRestart, setConfirmServiceRestart] = useState(null); // service name
+  const [restarting, setRestarting] = useState([]); // service names mid-restart
 
   // --- navigation (hash-based, so a reload or bookmark keeps the page) ---
   useEffect(() => {
@@ -222,7 +225,7 @@ export default function App() {
         else await api.stackRestart();
         toast({ tone: 'success', title: label });
       } catch (e) {
-        toast({ tone: 'error', title: `wpdev ${action} failed`, description: e.data?.stdout?.trim().split('\n').pop() || e.message });
+        toast({ tone: 'error', title: `wpdev ${action} failed`, description: stripAnsi(e.data?.stdout).trim().split('\n').pop() || e.message });
       } finally {
         setStackBusy(null);
         refresh();
@@ -230,6 +233,30 @@ export default function App() {
       }
     },
     [toast, refresh, refreshStatus],
+  );
+
+  const restartService = useCallback(
+    async (service) => {
+      const { label } = serviceInfo(service);
+      setRestarting((list) => [...list, service]);
+      try {
+        const r = await api.restartService(service);
+        // The api can't restart itself in-process; wpdev hands it to a
+        // helper that does it a few seconds after this response.
+        const deferred = /restarts itself/.test(r.stdout || '');
+        toast({
+          tone: 'success',
+          title: deferred ? `${label} restarts in a few seconds` : `${label} restarted`,
+          description: deferred ? 'The dashboard reconnects on its own.' : undefined,
+        });
+      } catch (e) {
+        toast({ tone: 'error', title: `Couldn't restart ${label}`, description: stripAnsi(e.data?.stdout || e.message).trim().split('\n').pop() });
+      } finally {
+        setRestarting((list) => list.filter((s) => s !== service));
+        refreshStatus();
+      }
+    },
+    [toast, refreshStatus],
   );
 
   const requestStackAction = useCallback(
@@ -304,12 +331,17 @@ export default function App() {
     if (updateInfo?.updateAvailable) {
       list.push({ id: 'stack-update', group: 'Stack', label: 'Update wp-local-dev', icon: Sparkles, hint: 'wpdev update', run: () => setConfirmUpdate(true) });
     }
+    (status.services || []).forEach((svc) => {
+      const { label } = serviceInfo(svc.service);
+      list.push({ id: `restart-${svc.service}`, group: 'Services', label: `Restart ${label}`, icon: RotateCw, hint: `wpdev restart ${svc.service}`, keywords: svc.service, run: () => setConfirmServiceRestart(svc.service) });
+      list.push({ id: `logs-${svc.service}`, group: 'Services', label: `${label} logs`, icon: ScrollText, hint: 'live', keywords: `${svc.service} tail`, run: () => setLogsFor(svc.service) });
+    });
     TOOLS.forEach((t) => list.push({ id: `tool-${t.id}`, group: 'Tools', label: `Open ${t.label}`, icon: t.icon, hint: 'new tab', run: () => openTool(t.id) }));
     list.push({ id: 'refresh', group: 'Preferences', label: 'Refresh everything', icon: RefreshCw, run: refreshAll });
     list.push({ id: 'theme', group: 'Preferences', label: theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme', icon: theme === 'dark' ? Sun : Moon, run: toggleTheme });
     list.push({ id: 'settings', group: 'Preferences', label: 'API settings', icon: KeyRound, keywords: 'token', run: () => setShowSettings(true) });
     return list;
-  }, [siteList, navigate, requestStackAction, updateInfo, openTool, refreshAll, theme, toggleTheme]);
+  }, [siteList, status.services, navigate, requestStackAction, updateInfo, openTool, refreshAll, theme, toggleTheme]);
 
   const meta = PAGE_META[page];
 
@@ -368,7 +400,15 @@ export default function App() {
           )}
           {page === 'sites' && <SitesPage sites={siteList} sitesLoading={sites === null} statusBySite={statusBySite} onManage={setManageSite} onAdd={() => setShowAdd(true)} />}
           {page === 'services' && (
-            <ServicesPage services={status.services} status={status} onOpenTool={openTool} onShowLogs={setLogsFor} onRefresh={refreshStatus} />
+            <ServicesPage
+              services={status.services}
+              status={status}
+              onOpenTool={openTool}
+              onShowLogs={setLogsFor}
+              onRefresh={refreshStatus}
+              onRestart={setConfirmServiceRestart}
+              restarting={restarting}
+            />
           )}
           {page === 'doctor' && <DoctorPage doctor={doctor} onRun={runDoctor} />}
           {page === 'docs' && <DocsPage />}
@@ -405,6 +445,20 @@ export default function App() {
             const action = confirmStack;
             setConfirmStack(null);
             runStackAction(action);
+          }}
+        />
+      )}
+
+      {confirmServiceRestart && (
+        <ConfirmDialog
+          title={`Restart ${serviceInfo(confirmServiceRestart).label}?`}
+          message={`Stops and starts ${confirmServiceRestart} (wpdev restart ${confirmServiceRestart}). ${restartImpact(confirmServiceRestart)}`}
+          confirmLabel="Restart"
+          onCancel={() => setConfirmServiceRestart(null)}
+          onConfirm={() => {
+            const service = confirmServiceRestart;
+            setConfirmServiceRestart(null);
+            restartService(service);
           }}
         />
       )}

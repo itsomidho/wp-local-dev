@@ -322,7 +322,7 @@ Everything is `wpdev <command> [argument]`:
 |---|---|
 | `wpdev up` | Start all containers |
 | `wpdev down` | Stop all containers |
-| `wpdev restart` | Restart all containers |
+| `wpdev restart [service...]` | Restart all containers, or just the named services (e.g. `wpdev restart nginx php83`) |
 | `wpdev update` | `git pull` (fast-forward only), then rebuild + recreate every container |
 | `wpdev update-check` | Fetch and report whether an update is available — no changes made |
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
@@ -1126,7 +1126,7 @@ The sidebar has five pages:
 |------|---------------|
 | **Overview** | Site, reachability, container and MySQL totals; your sites; every container's state; the machine's CPU, memory and disk; quick actions |
 | **Sites** | A card per site (grid or list, filter by name or PHP version) with its reachability, PHP and WordPress versions, database check and Redis state, plus Visit, Admin and Manage |
-| **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit/Portainer, and **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it |
+| **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit/Portainer, **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it — and **Restart** (`wpdev restart <service>`, after a confirmation saying what it interrupts) |
 | **Doctor** | `wpdev doctor` as a checklist grouped by section and site, with a pass/warning/fail summary |
 | **Docs** | This README (see below) |
 
@@ -1179,7 +1179,8 @@ link.
 **Worth knowing:**
 
 - **Every action that stops a container, overwrites data, or runs an
-  arbitrary command asks for confirmation first** — Restart, Down, cache
+  arbitrary command asks for confirmation first** — Restart (the stack
+  or one service), Down, cache
   purge, clone, restore, and running a WP-CLI command all show a yes/no
   dialog describing exactly what's about to happen; removing a site asks
   you to type its domain, the same higher bar the CLI itself uses. Up,

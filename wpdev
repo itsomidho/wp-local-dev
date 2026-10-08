@@ -317,7 +317,7 @@ show_help() {
     echo "Stack:"
     echo "  up                        Start all containers"
     echo "  down                      Stop all containers"
-    echo "  restart                   Restart all containers"
+    echo "  restart [service...]      Restart all containers, or just the named services"
     echo "  update                    git pull, then rebuild + recreate all containers"
     echo "  update-check              Fetch and report whether an update is available (no changes made)"
     echo "  status                    Show container status"
@@ -1001,7 +1001,33 @@ cmd_down() {
         docker compose down
     fi
 }
-cmd_restart() { require_stack_services; docker compose restart $(stack_services); }
+# No arguments: the whole stack (minus the api when run from it). With
+# service names: just those, validated against the compose file so a typo
+# is an error rather than a silent no-op. Asked from inside the api to
+# restart the api itself, the restart is handed to the same detached
+# helper `up`/`update` use -- doing it in-process would kill the request
+# that asked for it.
+cmd_restart() {
+    if [ $# -eq 0 ]; then
+        require_stack_services
+        docker compose restart $(stack_services)
+        return
+    fi
+
+    local known svc others=() api=""
+    known="$(docker compose config --services 2>/dev/null)" || print_error "Couldn't list the compose services (docker compose config failed)."
+    for svc in "$@"; do
+        printf '%s\n' "$known" | grep -qx -- "$svc" || print_error "Unknown service '${svc}'. Services: $(echo $known)"
+        if [ "$svc" = "api" ] && [ -n "${WPDEV_IN_API:-}" ]; then api=1; else others+=("$svc"); fi
+    done
+
+    if [ ${#others[@]} -gt 0 ]; then
+        docker compose restart "${others[@]}"
+    fi
+    if [ -n "$api" ]; then
+        recreate_api_detached "restart"
+    fi
+}
 
 # Pull the latest wp-local-dev, then rebuild + fully recreate every
 # container. The rebuild picks up Dockerfile changes (anything baked into
@@ -3811,7 +3837,7 @@ migrate_site_configs
 case "${1:-help}" in
     up) cmd_up ;;
     down) cmd_down ;;
-    restart) cmd_restart ;;
+    restart) shift; cmd_restart "$@" ;;
     update) cmd_update ;;
     update-check) cmd_update_check ;;
     status) cmd_status ;;

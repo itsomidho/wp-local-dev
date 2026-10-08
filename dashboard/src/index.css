@@ -1782,9 +1782,29 @@ input::placeholder {
 
 .service-card-meta {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-height: 36px;
   font-size: 12px;
+  color: var(--dim);
+}
+
+.service-card-meta-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.service-card-meta-text span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.service-card-meta .chips {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
 .service-card-foot {
@@ -1792,14 +1812,20 @@ input::placeholder {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--border);
-  min-height: 43px;
 }
 
 .service-card-actions {
   display: flex;
   gap: 2px;
+  /* Ghost buttons' own padding lines their text up with the card edges. */
+  width: calc(100% + 20px);
+  margin: 0 -10px;
+}
+
+/* Restart is the one disruptive action -- set apart on the right. */
+.service-card-actions > button:last-child {
   margin-left: auto;
 }
 

@@ -33,7 +33,7 @@ _wpdev() {
     cmds=(
         'up:Start all containers'
         'down:Stop all containers'
-        'restart:Restart all containers'
+        'restart:Restart all containers, or the named services'
         'update:git pull, then rebuild + recreate all containers'
         'update-check:Fetch and report whether an update is available'
         'status:Show container status'
@@ -96,6 +96,9 @@ _wpdev() {
             elif (( CURRENT == 4 )) && [[ "${words[3]}" == php ]]; then
                 compadd 8.1 8.2 8.3 8.4
             fi
+            ;;
+        restart)
+            compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer api dashboard
             ;;
         logs)
             if (( CURRENT == 3 )); then

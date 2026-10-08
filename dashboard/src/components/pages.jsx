@@ -20,6 +20,8 @@ import {
   Info,
   Terminal as TerminalIcon,
   Settings2,
+  RotateCw,
+  Loader2,
 } from 'lucide-react';
 import { siteUrl } from '../api';
 import MachineStats from './MachineStats';
@@ -330,7 +332,7 @@ export function stateTone(state) {
   return 'danger';
 }
 
-export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefresh }) {
+export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefresh, onRestart, restarting }) {
   const merged = mergeServices(services);
   const loading = !status.checkedAt;
 
@@ -351,7 +353,8 @@ export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefre
         {merged.map((svc) => {
           const info = serviceInfo(svc.service);
           const Icon = info.icon;
-          const tone = loading ? 'muted' : stateTone(svc.state);
+          const busy = restarting.includes(svc.service);
+          const tone = loading ? 'muted' : busy ? 'warning' : stateTone(svc.state);
           return (
             <article key={svc.service} className="service-card">
               <div className="service-card-head">
@@ -366,23 +369,25 @@ export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefre
                   <Skeleton width={64} height={20} radius={999} />
                 ) : (
                   <Chip tone={tone}>
-                    <StatusDot tone={tone} pulse={svc.state === 'running'} />
-                    {svc.state}
+                    <StatusDot tone={tone} pulse={busy || svc.state === 'running'} />
+                    {busy ? 'restarting' : svc.state}
                   </Chip>
                 )}
               </div>
               <div className="service-card-meta">
-                <span className="mono dim">{svc.container}</span>
-                {!loading && <span className="dim">{svc.status}</span>}
-              </div>
-              <div className="service-card-foot">
+                <div className="service-card-meta-text">
+                  <span className="mono">{svc.container}</span>
+                  {!loading && <span>{svc.status}</span>}
+                </div>
                 <div className="chips">
                   {svc.ports.map((p) => (
-                    <Chip key={p} mono>
+                    <Chip key={p} mono title={`Published on localhost:${p}`}>
                       :{p}
                     </Chip>
                   ))}
                 </div>
+              </div>
+              <div className="service-card-foot">
                 <div className="service-card-actions">
                   {info.tool && (
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => onOpenTool(info.tool)}>
@@ -391,6 +396,15 @@ export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefre
                   )}
                   <button type="button" className="btn btn-ghost btn-sm" onClick={() => onShowLogs(svc.service)} disabled={svc.state === 'stopped'}>
                     <ScrollText size={14} /> Logs
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => onRestart(svc.service)}
+                    disabled={busy || loading || svc.state === 'stopped'}
+                    title={svc.state === 'stopped' ? 'Not running -- use Up to start the stack' : `Restart ${info.label}`}
+                  >
+                    {busy ? <Loader2 size={14} className="spin" /> : <RotateCw size={14} />} Restart
                   </button>
                 </div>
               </div>

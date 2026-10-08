@@ -77,6 +77,14 @@ app.get('/api/doctor', sync(() => ['doctor']));
 app.post('/api/stack/up', sync(() => ['up']));
 app.post('/api/stack/down', sync(() => ['down']));
 app.post('/api/stack/restart', sync(() => ['restart']));
+// One compose service (the dashboard's Services page). wpdev validates
+// the name against the compose file; this only keeps it to a plain token.
+app.post('/api/services/:service/restart', (req, res, next) => {
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(req.params.service)) {
+    return res.status(400).json({ error: 'invalid service name' });
+  }
+  next();
+}, sync((req) => ['restart', req.params.service]));
 app.post('/api/stack/update', stream(() => ['update']));
 // Not sync() -- that maps any non-zero exit to HTTP 500, but
 // update-check's exit code is the result, not an error: 0 up to date, 2

@@ -65,6 +65,9 @@ _wpdev_complete() {
                 COMPREPLY=($(compgen -W "8.1 8.2 8.3 8.4" -- "$cur"))
             fi
             ;;
+        restart)
+            COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer api dashboard" -- "$cur"))
+            ;;
         logs)
             if [ "$COMP_CWORD" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer" -- "$cur"))

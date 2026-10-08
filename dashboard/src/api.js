@@ -83,6 +83,7 @@ export const api = {
   stackUp: () => request('POST', '/api/stack/up'),
   stackDown: () => request('POST', '/api/stack/down'),
   stackRestart: () => request('POST', '/api/stack/restart'),
+  restartService: (service) => request('POST', `/api/services/${encodeURIComponent(service)}/restart`),
   updateCheck: () => request('GET', '/api/update-check'),
   reloadNginx: () => request('POST', '/api/reload-nginx'),
   links: {

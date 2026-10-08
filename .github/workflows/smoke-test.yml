@@ -600,6 +600,22 @@ jobs:
           [ "$followers" -eq 0 ]
 
       - name: >
+          Feature test -- `wpdev restart <service>` restarts just that
+          service (the dashboard's per-service Restart), rejects unknown
+          names, and the api route refuses anything but a plain name.
+        run: |
+          ! ./wpdev restart nosuch </dev/null
+
+          before=$(docker inspect -f '{{.State.StartedAt}}' wp-redis)
+          other=$(docker inspect -f '{{.State.StartedAt}}' wp-mailpit)
+          out=$(curl -s -X POST http://127.0.0.1:39006/api/services/redis/restart)
+          echo "$out" | python3 -c 'import json,sys; assert json.load(sys.stdin)["code"] == 0'
+          [ "$(docker inspect -f '{{.State.StartedAt}}' wp-redis)" != "$before" ]
+          [ "$(docker inspect -f '{{.State.StartedAt}}' wp-mailpit)" = "$other" ]
+
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39006/api/services/a%20b/restart')" = "400" ]
+
+      - name: >
           Regression test -- `wpdev add --wp-version=` actually installs
           the requested version, not just accepts the flag. Switched the
           download step from a manual curl+tar+mv to `wp core download

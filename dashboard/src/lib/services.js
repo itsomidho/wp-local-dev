@@ -4,22 +4,27 @@ import { Server, Database, Zap, Mail, Container, Code2, Terminal, LayoutDashboar
 // from `docker compose ps` is shown as stopped; one not listed here still
 // shows up (with a generic icon) if compose reports it.
 export const SERVICE_INFO = {
-  nginx: { label: 'Nginx', role: 'Web server and HTTPS for every site', icon: Server },
-  mysql: { label: 'MySQL', role: 'Databases for every site', icon: Database },
-  redis: { label: 'Redis', role: 'Object cache', icon: Zap },
-  php81: { label: 'PHP 8.1', role: 'PHP-FPM', icon: Code2 },
-  php82: { label: 'PHP 8.2', role: 'PHP-FPM', icon: Code2 },
-  php83: { label: 'PHP 8.3', role: 'PHP-FPM', icon: Code2 },
-  php84: { label: 'PHP 8.4', role: 'PHP-FPM', icon: Code2 },
-  mailpit: { label: 'Mailpit', role: 'Catches every email the sites send', icon: Mail, tool: 'mailpit' },
+  nginx: { label: 'Nginx', role: 'Web server and HTTPS for every site', icon: Server, impact: 'Every site is unreachable for a few seconds.' },
+  mysql: { label: 'MySQL', role: 'Databases for every site', icon: Database, impact: 'Every site shows a database error until MySQL is back, usually a few seconds.' },
+  redis: { label: 'Redis', role: 'Object cache', icon: Zap, impact: 'The object cache starts empty, so the next page loads are slower while it refills.' },
+  php81: { label: 'PHP 8.1', role: 'PHP-FPM', icon: Code2, impact: 'Sites on PHP 8.1 return errors for a few seconds.' },
+  php82: { label: 'PHP 8.2', role: 'PHP-FPM', icon: Code2, impact: 'Sites on PHP 8.2 return errors for a few seconds.' },
+  php83: { label: 'PHP 8.3', role: 'PHP-FPM', icon: Code2, impact: 'Sites on PHP 8.3 return errors for a few seconds.' },
+  php84: { label: 'PHP 8.4', role: 'PHP-FPM', icon: Code2, impact: 'Sites on PHP 8.4 return errors for a few seconds.' },
+  mailpit: { label: 'Mailpit', role: 'Catches every email the sites send', icon: Mail, tool: 'mailpit', impact: 'Mail sent while it restarts is lost.' },
   adminer: { label: 'Adminer', role: 'Database browser', icon: Table2, tool: 'adminer' },
   portainer: { label: 'Portainer', role: 'Container management UI', icon: Container, tool: 'portainer' },
-  api: { label: 'API', role: 'Runs wpdev for this dashboard', icon: Terminal },
-  dashboard: { label: 'Dashboard', role: 'This page', icon: LayoutDashboard },
+  api: { label: 'API', role: 'Runs wpdev for this dashboard', icon: Terminal, impact: 'This dashboard shows “unreachable” for a few seconds, then reconnects on its own.' },
+  dashboard: { label: 'Dashboard', role: 'This page', icon: LayoutDashboard, impact: 'This page keeps working; reloading it during the restart fails for a few seconds.' },
 };
 
 export function serviceInfo(name) {
   return SERVICE_INFO[name] || { label: name, role: 'Container', icon: Box };
+}
+
+// What restarting a service interrupts, for its confirmation dialog.
+export function restartImpact(name) {
+  return SERVICE_INFO[name]?.impact || 'It is unavailable for a few seconds.';
 }
 
 // Known services first, in SERVICE_INFO's order, with any compose reports
