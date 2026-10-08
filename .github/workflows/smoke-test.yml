@@ -597,6 +597,7 @@ jobs:
           ! ./wpdev logs redis --tail=abc </dev/null
 
           out=$(curl -sN -m 5 "http://127.0.0.1:39005/api/logs/redis?tail=2" || true)
+          echo "$out"
           [ "$(echo "$out" | grep -c '^event: line')" -eq 2 ]
 
           sleep 2
