@@ -207,6 +207,13 @@ separate account). The first `wpdev up` after updating removes the old
 update itself still runs the previous `wpdev`, which doesn't know to). Its settings volume (`wp_portainer_data`) is left in place; delete
 it from the Docker page's Volumes tab once you don't need it.
 
+**Ports were renumbered** to close the gap Portainer left: Mailpit's
+inbox is now `39003` and its SMTP `39004`, the API `39005` and the
+dashboard `39006` (MySQL, Redis and Adminer are unchanged). `wpdev` moves
+these in your `.env` by itself, once, but only the ones still on their old
+default; any port you set yourself stays put. Run `wpdev up` afterwards,
+and update bookmarks (the dashboard is at `http://localhost:39006` now).
+
 ## Getting started
 
 ```bash
@@ -386,12 +393,12 @@ WP-CLI (site provisioning), nothing hidden behind it.
 | Adminer | `http://localhost:39002` (`ADMINER_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | MySQL (host) | `localhost:39000` (`MYSQL_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | Redis (host) | `localhost:39001` (`REDIS_PORT`) | none (no auth configured — local dev only) |
-| Mailpit | `http://localhost:39004` (`MAILPIT_UI_PORT`) | none — local only, nothing ever really sends |
-| API | `http://localhost:39006` (`API_PORT`) | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
-| Dashboard | `http://localhost:39007` (`DASHBOARD_PORT`) | none — API token (if set) entered in its own settings panel |
+| Mailpit | `http://localhost:39003` (`MAILPIT_UI_PORT`) | none — local only, nothing ever really sends |
+| API | `http://localhost:39005` (`API_PORT`) | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
+| Dashboard | `http://localhost:39006` (`DASHBOARD_PORT`) | none — API token (if set) entered in its own settings panel |
 
 Every port above except nginx's 80/443 lives in one deliberately-uncommon
-block (39000–39007, see `.env.example`) specifically to avoid colliding with
+block (39000–39006, see `.env.example`) specifically to avoid colliding with
 another locally-installed MySQL/Redis or some other tool's web UI on 8080/
 9000 — the single most common reason a `docker compose up` fails on a dev
 machine that already has other things running. Change any one of them in
@@ -984,8 +991,8 @@ automatically for every site — including ones that predate this feature.
 wpdev mailpit
 ```
 
-Opens the web inbox at `http://localhost:39004`. Real SMTP too, at
-`localhost:39005`, if some tool wants to connect directly instead of going
+Opens the web inbox at `http://localhost:39003`. Real SMTP too, at
+`localhost:39004`, if some tool wants to connect directly instead of going
 through `mail()`.
 
 ## Real WP-Cron
@@ -1036,13 +1043,13 @@ anything slow and step-by-step: `add`, `clone`, `snapshot`, `restore`,
 `update`, `backup`, `restore-all`) streams its output live as
 Server-Sent Events. It exists so a GUI or other automation can drive this
 stack without shelling out itself. Starts automatically with `wpdev up`,
-same as every other service, at `http://127.0.0.1:39006` by default
+same as every other service, at `http://127.0.0.1:39005` by default
 (`API_PORT` in `.env`).
 
 ```bash
-curl http://127.0.0.1:39006/api/status
-curl http://127.0.0.1:39006/api/sites
-curl -X POST http://127.0.0.1:39006/api/sites \
+curl http://127.0.0.1:39005/api/status
+curl http://127.0.0.1:39005/api/sites
+curl -X POST http://127.0.0.1:39005/api/sites \
   -H 'Content-Type: application/json' \
   -d '{"domain": "mysite.test", "php": "8.2"}'
 ```
@@ -1111,7 +1118,7 @@ A React GUI (`dashboard/`) for everything above — add/remove/clone sites,
 manage snapshots, toggle caching, run WP-CLI commands, follow container
 logs, and watch long-running actions stream live, all from the browser
 instead of the CLI. Starts automatically with `wpdev up`, at
-`http://localhost:39007` by default (`DASHBOARD_PORT` in `.env`).
+`http://localhost:39006` by default (`DASHBOARD_PORT` in `.env`).
 
 The sidebar has six pages:
 

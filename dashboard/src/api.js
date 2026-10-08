@@ -2,7 +2,7 @@
 // beyond building requests and parsing SSE frames. Every value shown in the
 // UI comes straight from wpdev's own output.
 
-const DEFAULT_BASE = 'http://localhost:39006';
+const DEFAULT_BASE = 'http://localhost:39005';
 
 function apiBase() {
   return (window.__WPDEV_API_BASE__ && window.__WPDEV_API_BASE__.trim()) || DEFAULT_BASE;

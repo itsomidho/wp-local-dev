@@ -414,7 +414,7 @@ jobs:
           rm -rf sites/citest/wp-content/upgrade-temp-backup
 
           # Through the api too (dashboard button).
-          curl -sf -X POST http://127.0.0.1:39006/api/sites/citest/fix-perms | grep -q '"code":0'
+          curl -sf -X POST http://127.0.0.1:39005/api/sites/citest/fix-perms | grep -q '"code":0'
 
           # Save a post inside PHP-FPM, the way wp-admin does: nginx-helper
           # must delete the cached page.
@@ -480,10 +480,10 @@ jobs:
           this container left root-owned files under snapshots/ that the
           host user couldn't even `rm` without sudo.
         run: |
-          curl -sf http://127.0.0.1:39006/api/health
+          curl -sf http://127.0.0.1:39005/api/health
           echo
 
-          curl -s http://127.0.0.1:39006/api/status | grep -q '"code":0'
+          curl -s http://127.0.0.1:39005/api/status | grep -q '"code":0'
 
           # Regression test -- /api/system/stats reads /proc/meminfo,
           # /proc/stat, and `df` on the bind-mounted project path from
@@ -491,7 +491,7 @@ jobs:
           # these reflect the real host, not a cgroup-scoped view of it --
           # this just asserts the endpoint returns plausible numbers, not
           # that they match the runner (which this job doesn't control).
-          curl -s http://127.0.0.1:39006/api/system/stats | python3 -c "
+          curl -s http://127.0.0.1:39005/api/system/stats | python3 -c "
           import json, sys
           d = json.load(sys.stdin)
           assert 0 <= d['cpu']['percent'] <= 100, d
@@ -514,12 +514,12 @@ jobs:
           # endpoint returns well-formed JSON. printf, not echo -- echo's
           # backslash handling isn't consistent across shells, and the
           # response's stdout field contains a real \n escape sequence.
-          check=$(curl -s http://127.0.0.1:39006/api/update-check)
+          check=$(curl -s http://127.0.0.1:39005/api/update-check)
           printf '%s\n' "$check"
           ! printf '%s' "$check" | grep -qi "not a git checkout"
           printf '%s' "$check" | python3 -c "import json, sys; json.load(sys.stdin)"
 
-          add_out=$(curl -N -s -X POST http://127.0.0.1:39006/api/sites \
+          add_out=$(curl -N -s -X POST http://127.0.0.1:39005/api/sites \
             -H "Content-Type: application/json" \
             -d '{"domain":"apicitest.test","php":"8.2"}' --max-time 120)
           echo "$add_out" | grep -qi "apicitest.test is ready"
@@ -539,9 +539,9 @@ jobs:
           echo "nginx config owned by: $owner"
           [ "$owner" != "root" ]
 
-          curl -s http://127.0.0.1:39006/api/sites/apicitest/creds | grep -qi "Site: apicitest"
+          curl -s http://127.0.0.1:39005/api/sites/apicitest/creds | grep -qi "Site: apicitest"
 
-          remove_out=$(curl -N -s -X DELETE http://127.0.0.1:39006/api/sites/apicitest --max-time 60)
+          remove_out=$(curl -N -s -X DELETE http://127.0.0.1:39005/api/sites/apicitest --max-time 60)
           echo "$remove_out" | grep -qi "apicitest.test removed"
 
           ! ./wpdev list | grep -q apicitest.test
@@ -555,11 +555,11 @@ jobs:
           building it) -- this just catches a broken build or a
           docker-entrypoint.sh/envsubst regression.
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:39007/)
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:39006/)
           [ "$code" = "200" ]
 
-          curl -s http://127.0.0.1:39007/ | grep -qi "<title>wp-local-dev</title>"
-          curl -s http://127.0.0.1:39007/config.js | grep -q 'http://localhost:39006'
+          curl -s http://127.0.0.1:39006/ | grep -qi "<title>wp-local-dev</title>"
+          curl -s http://127.0.0.1:39006/config.js | grep -q 'http://localhost:39005'
 
           # Regression test -- `wpdev up` (run above) must have synced a real
           # `git describe` into .env's APP_VERSION and docker-entrypoint.sh
@@ -570,7 +570,7 @@ jobs:
           # something real landed, not an empty string or the literal
           # unsubstituted placeholder a missing envsubst allow-list entry
           # would leave behind.
-          config=$(curl -s http://127.0.0.1:39007/config.js)
+          config=$(curl -s http://127.0.0.1:39006/config.js)
           echo "$config" | grep -qE '__WPDEV_APP_VERSION__ = "[^"]+"'
           ! echo "$config" | grep -q '__WPDEV_APP_VERSION__ = "unknown"'
           ! echo "$config" | grep -q '\${APP_VERSION}'
@@ -580,8 +580,8 @@ jobs:
           # as local dev expects, see DocsPage.jsx's `?raw` import). Grep the
           # built JS for actual README prose (not a source comment -- the
           # build minifies those away) to catch a stale or empty bundle.
-          js_path=$(curl -s http://127.0.0.1:39007/ | grep -oE '/assets/index-[^"]+\.js' | head -1)
-          curl -s "http://127.0.0.1:39007$js_path" | grep -q "Multi-site, multi-PHP"
+          js_path=$(curl -s http://127.0.0.1:39006/ | grep -oE '/assets/index-[^"]+\.js' | head -1)
+          curl -s "http://127.0.0.1:39006$js_path" | grep -q "Multi-site, multi-PHP"
 
       - name: >
           Regression test -- the dashboard's Logs view starts from the last
@@ -592,7 +592,7 @@ jobs:
         run: |
           ! ./wpdev logs redis --tail=abc </dev/null
 
-          out=$(curl -sN -m 5 "http://127.0.0.1:39006/api/logs/redis?tail=2" || true)
+          out=$(curl -sN -m 5 "http://127.0.0.1:39005/api/logs/redis?tail=2" || true)
           [ "$(echo "$out" | grep -c '^event: line')" -eq 2 ]
 
           sleep 2
@@ -608,12 +608,12 @@ jobs:
 
           before=$(docker inspect -f '{{.State.StartedAt}}' wp-redis)
           other=$(docker inspect -f '{{.State.StartedAt}}' wp-mailpit)
-          out=$(curl -s -X POST http://127.0.0.1:39006/api/services/redis/restart)
+          out=$(curl -s -X POST http://127.0.0.1:39005/api/services/redis/restart)
           echo "$out" | python3 -c 'import json,sys; assert json.load(sys.stdin)["code"] == 0'
           [ "$(docker inspect -f '{{.State.StartedAt}}' wp-redis)" != "$before" ]
           [ "$(docker inspect -f '{{.State.StartedAt}}' wp-mailpit)" = "$other" ]
 
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39006/api/services/a%20b/restart')" = "400" ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39005/api/services/a%20b/restart')" = "400" ]
 
       - name: >
           Feature test -- stats/images/volumes/inspect (the dashboard's Docker
@@ -651,8 +651,8 @@ jobs:
           root_pw=$(sed -n 's/^DB_ROOT_PASSWORD=//p' .env)
           ./wpdev inspect mysql | grep -q '"MYSQL_ROOT_PASSWORD=\*\*\*\*\*\*\*\*"'
           ! ./wpdev inspect mysql | grep -qF "$root_pw"
-          ! curl -s http://127.0.0.1:39006/api/services/mysql/inspect | grep -qF "$root_pw"
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39006/api/docker/images/not-an-id/remove')" = "400" ]
+          ! curl -s http://127.0.0.1:39005/api/services/mysql/inspect | grep -qF "$root_pw"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39005/api/docker/images/not-an-id/remove')" = "400" ]
 
       - name: >
           Regression test -- `wpdev up` removes the container of a service
@@ -675,6 +675,30 @@ jobs:
           ! ./wpdev portainer </dev/null
 
       - name: >
+          Regression test -- an .env from before the port renumbering moves
+          its old default ports once, keeps a port you chose, and drops
+          PORTAINER_PORT.
+        run: |
+          cp .env .env.citest-backup
+          trap 'mv -f .env.citest-backup .env' EXIT
+          sed -i -e '/^# wpdev: ports renumbered/d' \
+                 -e 's/^MAILPIT_UI_PORT=.*/MAILPIT_UI_PORT=39004/' \
+                 -e 's/^MAILPIT_SMTP_PORT=.*/MAILPIT_SMTP_PORT=39005/' \
+                 -e 's/^API_PORT=.*/API_PORT=41234/' \
+                 -e 's/^DASHBOARD_PORT=.*/DASHBOARD_PORT=39007/' .env
+          echo "PORTAINER_PORT=39003" >> .env
+          ./wpdev list >/dev/null 2>&1
+          grep -qx "MAILPIT_UI_PORT=39003" .env
+          grep -qx "MAILPIT_SMTP_PORT=39004" .env
+          grep -qx "API_PORT=41234" .env
+          grep -qx "DASHBOARD_PORT=39006" .env
+          ! grep -q "^PORTAINER_PORT=" .env
+          # Once only: a second run changes nothing.
+          before=$(md5sum < .env)
+          ./wpdev list >/dev/null 2>&1
+          [ "$(md5sum < .env)" = "$before" ]
+
+      - name: >
           Regression test -- `wpdev add --wp-version=` actually installs
           the requested version, not just accepts the flag. Switched the
           download step from a manual curl+tar+mv to `wp core download
@@ -691,7 +715,7 @@ jobs:
           reachability (#6). It used to curl the api container's own
           loopback, which isn't nginx, so every site showed 000.
         run: |
-          out=$(curl -s http://127.0.0.1:39006/api/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"])')
+          out=$(curl -s http://127.0.0.1:39005/api/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"])')
           echo "$out"
           echo "$out" | grep -E '^citest\.test ' | grep -qw 200
 
@@ -734,7 +758,7 @@ jobs:
 
           ./wpdev status | grep -E '^porttest\.test ' | grep -qw 200
           ./wpdev list | grep -q 'https://porttest.test:8444'
-          curl -s http://127.0.0.1:39007/config.js | grep -q '__WPDEV_HTTPS_PORT__ = "8444"'
+          curl -s http://127.0.0.1:39006/config.js | grep -q '__WPDEV_HTTPS_PORT__ = "8444"'
 
           ./wpdev remove portclone --yes </dev/null
           ./wpdev remove porttest --yes </dev/null
@@ -772,7 +796,7 @@ jobs:
           curl -sf --noproxy '*' --resolve citest.test:443:127.0.0.1 -o /dev/null https://citest.test/
 
           before=$(served_serial)
-          curl -sf -X POST http://127.0.0.1:39006/api/sites/citest/cert | grep -q '"code":0'
+          curl -sf -X POST http://127.0.0.1:39005/api/sites/citest/cert | grep -q '"code":0'
           sleep 1
           [ "$(served_serial)" != "$before" ]
           curl -sf --noproxy '*' --resolve citest.test:443:127.0.0.1 -o /dev/null https://citest.test/
@@ -803,17 +827,17 @@ jobs:
             for i in $(seq 1 90); do
               sleep 1
               id=$(docker inspect -f '{{.Id}}' wp-api 2>/dev/null) || continue
-              [ "$id" != "$1" ] && curl -sf -o /dev/null http://127.0.0.1:39006/api/health && return 0
+              [ "$id" != "$1" ] && curl -sf -o /dev/null http://127.0.0.1:39005/api/health && return 0
             done
             cat logs/api-updater.log || true
             return 1
           }
           # The host `up` in the step above may itself have just recreated
           # the api (earlier steps edit .env, which it loads).
-          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:39006/api/health && break; sleep 1; done
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:39005/api/health && break; sleep 1; done
           before=$(docker inspect -f '{{.Id}}' wp-api)
           echo 'WPDEV_SELF_UPDATE_TEST=1' >> .env
-          resp=$(curl -s -X POST http://127.0.0.1:39006/api/stack/up); echo "$resp"
+          resp=$(curl -s -X POST http://127.0.0.1:39005/api/stack/up); echo "$resp"
           echo "$resp" | grep -q 'api restarts itself'
           wait_for_new_api "$before"
           docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
@@ -823,7 +847,7 @@ jobs:
 
           before=$(docker inspect -f '{{.Id}}' wp-api)
           sed -i '/^WPDEV_SELF_UPDATE_TEST=1$/d' .env
-          resp=$(curl -s -X POST http://127.0.0.1:39006/api/stack/up); echo "$resp"
+          resp=$(curl -s -X POST http://127.0.0.1:39005/api/stack/up); echo "$resp"
           echo "$resp" | grep -q 'api restarts itself'
           wait_for_new_api "$before"
           ! docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
@@ -893,7 +917,7 @@ jobs:
 
           # Through the api (the dashboard's Media tab): status, on with a
           # URL, off, and a 400 for anything that isn't a plain URL or on/off.
-          api=http://127.0.0.1:39006/api/sites/citest/media-proxy
+          api=http://127.0.0.1:39005/api/sites/citest/media-proxy
           post() { curl -s -o /tmp/mp.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$1" "$api"; }
           curl -sf "$api" | grep -q 'On:'
           [ "$(post '{"mode":"off"}')" = 200 ]
@@ -1059,7 +1083,7 @@ jobs:
           [ ! -e nginx/ssl/certs/adclone-admin.test.pem ]
 
           # Through the api (the dashboard's Admin domain tab).
-          api=http://127.0.0.1:39006/api/sites/citest/admin-domain
+          api=http://127.0.0.1:39005/api/sites/citest/admin-domain
           post() { curl -s -o /tmp/ad.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$1" "$api"; }
           curl -sf "$api" | grep -q 'On: https://citest-admin.test'
           [ "$(post '{"mode":"off"}')" = 200 ]

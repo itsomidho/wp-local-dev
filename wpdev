@@ -1879,7 +1879,7 @@ cmd_mailpit() {
         source .env
         set +a
     fi
-    port="${MAILPIT_UI_PORT:-39004}"
+    port="${MAILPIT_UI_PORT:-39003}"
     url="http://localhost:${port}/"
 
     echo "Opening ${url}"
@@ -1901,7 +1901,7 @@ cmd_dashboard() {
         source .env
         set +a
     fi
-    port="${DASHBOARD_PORT:-39007}"
+    port="${DASHBOARD_PORT:-39006}"
     url="http://localhost:${port}/"
 
     echo "Opening ${url}"
@@ -4076,11 +4076,44 @@ PHP
     echo ""
 }
 
+# The host ports were renumbered when Portainer left (it had 39003):
+# Mailpit, the api and the dashboard each moved down one to close the gap.
+# An .env made from the old .env.example still holds the old defaults, so
+# a value that's still its old default moves; one you chose stays. Done
+# per key in ascending order (each new number was just vacated by the
+# previous key), skipped if the new number is taken by another setting,
+# Runs once per .env (the marker line below), so a move it had to skip
+# warns once rather than on every command. Reported on stderr, so it never
+# mixes into output a caller parses.
+ENV_PORTS_MARKER="# wpdev: ports renumbered (Mailpit 39003/39004, API 39005, dashboard 39006)"
+migrate_env_ports() {
+    [ -f .env ] || return 0
+    grep -qxF "$ENV_PORTS_MARKER" .env && return 0
+    local pair key old new moved=""
+    sed -i '/^PORTAINER_PORT=[0-9]*$/d' .env
+    for pair in MAILPIT_UI_PORT:39004:39003 MAILPIT_SMTP_PORT:39005:39004 API_PORT:39006:39005 DASHBOARD_PORT:39007:39006; do
+        IFS=: read -r key old new <<<"$pair"
+        grep -qx "${key}=${old}" .env || continue
+        if grep -qE "^[A-Z_]+=${new}\$" .env; then
+            print_warning "Not moving ${key} to ${new}: another setting in .env already uses it." >&2
+            continue
+        fi
+        sed -i "s/^${key}=${old}\$/${key}=${new}/" .env
+        moved="${moved} ${key} ${old}→${new},"
+    done
+    printf '\n%s\n' "$ENV_PORTS_MARKER" >>.env
+    if [ -n "$moved" ]; then
+        echo -e "${GREEN}✓${NC} Ports renumbered in .env (Portainer's 39003 is free now):${moved%,}. Run 'wpdev up' to apply them." >&2
+    fi
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 migrate_site_configs
+migrate_env_ports
 
 case "${1:-help}" in
     up) cmd_up ;;
