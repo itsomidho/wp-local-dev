@@ -241,8 +241,8 @@ one command:
 
 1. Creates the Nginx vhost in `nginx/sites/<domain>.conf`, pointed at the chosen PHP version
 2. Downloads the requested WordPress version (`wp core download`, latest if
-   left blank) into `sites/<name>/`, and saves the PHP version choice to
-   `sites/<name>/.php-version`
+   left blank) into `sites/<name>/`, and saves the PHP version choice as
+   `PHP_VERSION` in `config/sites/<name>.env` (see [Per-site settings](#per-site-settings))
 3. Creates a dedicated MySQL database + user for the site
 4. Generates `wp-config.php` via WP-CLI (Redis + `DISABLE_WP_CRON` included — see below)
 5. Generates an mkcert SSL certificate
@@ -253,9 +253,57 @@ one command:
 10. Reloads Nginx and offers to add the `/etc/hosts` entry for you
 
 Visit `https://mysite.test` — it's a working, logged-in-capable WordPress
-site with Redis object caching already on. The admin password is also saved
-to `sites/mysite/.admin-password` if you need it again later (or just run
-`wpdev creds mysite`).
+site with Redis object caching already on. The admin and database passwords
+are saved in `config/sites/mysite.env` if you need them again later (or
+just run `wpdev creds mysite`).
+
+### Per-site settings
+
+Everything wpdev remembers about a site lives in one file per site,
+`config/sites/<name>.env`, in wpdev's own folder and not in the site's:
+
+```
+# wpdev settings for mysite -- see "Per-site settings" in the README.
+PHP_VERSION=8.2
+DB_PASSWORD=…
+ADMIN_PASSWORD=…
+PRODUCTION_URL=https://example.com/blog
+ADMIN_DOMAIN=admin-mysite.test
+CACHE=on
+CACHE_TTL=5m
+CACHE_BYPASS_COOKIES=woocommerce_items_in_cart wp_woocommerce_session_*
+CACHE_BYPASS_PATHS=/cart/ /checkout/*
+```
+
+| Key | Set by | Meaning |
+|---|---|---|
+| `PHP_VERSION` | `add` | Which PHP container serves the site (none = 8.2) |
+| `DB_PASSWORD` | `add`, `clone` | The site's MySQL user's password |
+| `ADMIN_PASSWORD` | `add` | wp-admin's `admin` password, as installed |
+| `PRODUCTION_URL` | `media-proxy` | Where missing uploads come from |
+| `ADMIN_DOMAIN` | `admin-domain` | The admin domain (kept after `off`) |
+| `CACHE` | `cache` | `on` while the full-page cache is on |
+| `CACHE_TTL`, `CACHE_BYPASS_COOKIES`, `CACHE_BYPASS_PATHS` | you | Full-page cache tuning (see below) |
+
+- **The site's folder stays the project's own.** `sites/<name>/` is often
+  a git repo, with its own `.env`. wpdev writes nothing there except
+  WordPress itself (`wp-config.php`, the Redis drop-in), and the admin
+  domain's mu-plugin when you ask for it.
+- **It holds passwords,** so it's git-ignored and readable only by you
+  (mode 600).
+- **It's plain `KEY=value`, read literally.** It's never `source`d, so
+  don't quote values. Edit it by hand for the cache keys; the rest is
+  managed by the commands above.
+- **Older sites migrate automatically.** wpdev used to keep these as
+  dotfiles in the site folder (`.php-version`, `.db-password`,
+  `.admin-password`, `.production-url`, `.admin-domain`, `.cache`,
+  `.cache-ttl`, `.cache-bypass-cookies`, `.cache-bypass-paths`). Any
+  `wpdev` command moves them over and deletes them. A value that's already
+  in the settings file wins, so restoring an old snapshot can't bring back
+  stale ones.
+- `clone` copies the PHP version, admin password, production URL and cache
+  tuning (the clone gets its own DB password, and no admin domain).
+  `remove` deletes the file, and `clean-all` deletes them all.
 
 Run `wpdev add` again for each additional site — the containers don't
 restart, and every site gets its own vhost, cert, and database.
@@ -367,7 +415,7 @@ mysite.test                  8.2    6.9.1     8.0.44    200    OK         Connec
 otherlab.test                8.3    6.7.2     8.0.44    200    OK         off
 ```
 
-- **PHP**/**WP** — the site's PHP version (`sites/<name>/.php-version`) and
+- **PHP**/**WP** — the site's PHP version (`PHP_VERSION`) and
   its real WordPress core version (`wp core version`) — different sites can
   genuinely be on different versions of each
 - **MYSQL** — the one shared server's version; the same on every row, since
@@ -424,8 +472,8 @@ PHP-FPM container per version. `wpdev add` prompts for one:
 PHP version [8.2] (choices: 8.1 8.2 8.3 8.4): 8.4
 ```
 
-Press enter for the default (8.2). The choice is saved to
-`sites/<name>/.php-version` and baked into that site's Nginx vhost
+Press enter for the default (8.2). The choice is saved as `PHP_VERSION` in
+`config/sites/<name>.env` and baked into that site's Nginx vhost
 (`fastcgi_pass php84:9000`, etc.) — `docker-compose.yml` runs one service
 per version (`php81`/`php82`/`php83`/`php84`), all sharing the same `sites/`
 directory; which container actually handles a given site is entirely down
@@ -715,7 +763,8 @@ current state, the production URL, and Turn on / Update / Turn off. They're
 backed by `GET`/`POST /api/sites/<site>/media-proxy`, which takes
 `{"url": "…"}` or `{"mode": "on"|"off"}`.
 
-The production URL is saved in `sites/<site>/.production-url`. If your
+The production URL is saved as `PRODUCTION_URL` in
+`config/sites/<site>.env`. If your
 network's DNS servers change, re-run `wpdev media-proxy <site> on` to pick
 up the new ones.
 
@@ -873,29 +922,26 @@ retroactively fix what's already sitting in it.
 
 ### Per-site TTL, extra bypass cookies, and extra bypass paths
 
-Three optional files, read when you run `wpdev cache <site> on`:
+Three optional settings in `config/sites/<site>.env` (see
+[Per-site settings](#per-site-settings)), read when you run
+`wpdev cache <site> on`:
 
 ```
-sites/mysite/.cache-ttl               # a plain duration, e.g. 5m or 1h -- defaults to 60m
-sites/mysite/.cache-bypass-cookies    # one cookie name per line, added to the baseline rules above
-sites/mysite/.cache-bypass-paths      # one URL path per line, added to the baseline rules above
+CACHE_TTL=5m                 # a plain duration, e.g. 5m or 1h -- defaults to 60m
+CACHE_BYPASS_COOKIES=…       # space-separated cookie names, added to the baseline rules above
+CACHE_BYPASS_PATHS=…         # space-separated URL paths, added to the baseline rules above
 ```
 
-Both bypass files take plain names, never nginx regex — a trailing `*`
+Both bypass lists take plain names, never nginx regex — a trailing `*`
 means "starts with" (for a cookie with a dynamic suffix, or a path whose
 sub-pages should all bypass too), anything else must match exactly:
 
 ```
-# .cache-bypass-cookies
-woocommerce_items_in_cart
-wp_woocommerce_session_*
-
-# .cache-bypass-paths
-/cart/
-/checkout/*
+CACHE_BYPASS_COOKIES=woocommerce_items_in_cart wp_woocommerce_session_*
+CACHE_BYPASS_PATHS=/cart/ /checkout/*
 ```
 
-The two files aren't matched the same way under the hood, deliberately.
+The two lists aren't matched the same way under the hood, deliberately.
 Cookies use a loose substring match, same as the baseline WordPress rules
 already did — a cookie name colliding by coincidence with another
 cookie's name or value is rare enough not to matter. Paths are anchored
@@ -1209,10 +1255,9 @@ wp-local-dev/
 │   │   └── default.conf         # catch-all for unmatched domains
 │   └── ssl/{certs,private}/     # mkcert output
 │
-├── sites/<name>/                 # WordPress core + wp-content for each site (git-ignored)
-│   ├── .admin-password          # generated by `wpdev add`
-│   ├── .db-password
-│   └── .php-version             # which PHP container serves this site (see "Multiple PHP versions")
+├── sites/<name>/                 # each site's own files: WordPress core + wp-content (git-ignored)
+│
+├── config/sites/<name>.env       # wpdev's settings + credentials per site (git-ignored, mode 600)
 │
 ├── logs/
 │   ├── nginx/                   # access/error logs, per site

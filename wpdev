@@ -44,7 +44,7 @@
 # does the whole thing:
 #   1. Ensure MySQL + the chosen PHP version + Redis are up
 #   2. Create the Nginx vhost config in nginx/sites/, pointed at that PHP version
-#   3. Download WordPress into sites/<name>, save .php-version there
+#   3. Download WordPress into sites/<name>, save PHP_VERSION in config/sites/<name>.env
 #   4. Create a dedicated database + user for the site
 #   5. Generate wp-config.php via WP-CLI (includes Redis object cache config)
 #   6. Generate an SSL certificate with mkcert
@@ -53,7 +53,7 @@
 #   9. Reload Nginx, offer to add the /etc/hosts entry
 #
 # Safe to re-run: every step in `add` is skipped if its output already
-# exists — including the PHP version prompt itself, once .php-version exists.
+# exists — including the PHP version prompt itself, once PHP_VERSION is saved.
 
 set -e
 
@@ -78,9 +78,10 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # One docker-compose service per version (php81/php82/php83/php84) — see
-# docker-compose.yml. Sites pick a version at `wpdev add` time; it's saved to
-# sites/<name>/.php-version. DEFAULT_PHP_VERSION is what a site gets if it
-# predates multi-PHP support (no marker file) or the prompt is left blank.
+# docker-compose.yml. Sites pick a version at `wpdev add` time; it's saved as
+# PHP_VERSION in config/sites/<name>.env. DEFAULT_PHP_VERSION is what a site
+# gets if it predates multi-PHP support (none saved) or the prompt is left
+# blank.
 SUPPORTED_PHP_VERSIONS="8.1 8.2 8.3 8.4"
 DEFAULT_PHP_VERSION="8.2"
 
@@ -93,6 +94,103 @@ print_error() { echo -e "${RED}✗${NC} $1"; exit 1; }
 # CI piping answers in) can tell "cancelled" from "done". Exiting 0 here
 # once hid a real provisioning failure behind a shifted piped answer.
 cancelled() { echo "Cancelled."; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Per-site settings
+# ---------------------------------------------------------------------------
+# Everything wpdev remembers about a site lives in config/sites/<name>.env,
+# one KEY=value per line -- never inside sites/<name>/, which is the
+# project's own folder (often its own git repo, with its own .env). It's
+# not a shell file: the helpers below read and write it and it's never
+# sourced, so values are literal (no quoting). Mode 600, since it holds
+# the site's passwords. Keys:
+#   PHP_VERSION           e.g. 8.2 (none saved = DEFAULT_PHP_VERSION)
+#   DB_PASSWORD           the site's MySQL user's password
+#   ADMIN_PASSWORD        wp-admin's "admin" password, as `add` installed it
+#   PRODUCTION_URL        `wpdev media-proxy`
+#   ADMIN_DOMAIN          `wpdev admin-domain` (kept after `off`)
+#   CACHE                 "on" while `wpdev cache` is on
+#   CACHE_TTL             e.g. 5m or 1h (default 60m)
+#   CACHE_BYPASS_COOKIES  space-separated cookie names (trailing * = prefix)
+#   CACHE_BYPASS_PATHS    space-separated URL paths (trailing * = prefix)
+SITE_CONFIG_DIR="config/sites"
+site_config_file() { echo "${SITE_CONFIG_DIR}/$1.env"; }
+
+# site_get <site-name> <KEY>: its value, or nothing.
+site_get() {
+    local f
+    f="$(site_config_file "$1")"
+    [ -f "$f" ] && sed -n "s/^$2=//p" "$f" | tail -1
+    return 0
+}
+
+# Rewrites <site-name>'s file without <KEY>, then appends "<KEY>=<value>"
+# unless no value is given -- via a temp file in the same directory, so a
+# reader never sees it half-written.
+site_write() {
+    local f tmp
+    f="$(site_config_file "$1")"
+    mkdir -p "$SITE_CONFIG_DIR"
+    tmp="$(mktemp "${f}.XXXXXX")"
+    chmod 600 "$tmp"
+    if [ -f "$f" ]; then
+        grep -v "^$2=" "$f" >> "$tmp" || true
+    else
+        printf '# wpdev settings for %s -- see "Per-site settings" in the README.\n' "$1" >> "$tmp"
+    fi
+    [ "$#" -ge 3 ] && printf '%s=%s\n' "$2" "$3" >> "$tmp"
+    mv -f "$tmp" "$f"
+}
+
+# site_set <site-name> <KEY> <value>
+site_set() { site_write "$1" "$2" "$3"; }
+
+# site_unset <site-name> <KEY>
+site_unset() {
+    [ -f "$(site_config_file "$1")" ] || return 0
+    site_write "$1" "$2"
+}
+
+# Sites from before config/sites/ kept these as dotfiles in sites/<name>/.
+# Moves each over -- a value the config already has wins, since restoring
+# an old snapshot can bring stale dotfiles back -- and deletes the file only
+# once its value is saved.
+migrate_site_config() {
+    local site="$1" pair file key value
+    for pair in .php-version:PHP_VERSION .db-password:DB_PASSWORD .admin-password:ADMIN_PASSWORD \
+        .production-url:PRODUCTION_URL .admin-domain:ADMIN_DOMAIN .cache:CACHE .cache-ttl:CACHE_TTL \
+        .cache-bypass-cookies:CACHE_BYPASS_COOKIES .cache-bypass-paths:CACHE_BYPASS_PATHS; do
+        file="sites/${site}/${pair%%:*}"
+        key="${pair#*:}"
+        [ -f "$file" ] || continue
+        if [ -z "$(site_get "$site" "$key")" ]; then
+            case "$key" in
+                CACHE) value="on" ;;
+                # One entry per line, # comments -> one space-separated line.
+                CACHE_BYPASS_*)
+                    value="$(grep -v '^[[:space:]]*#' "$file" | tr -s '[:space:]' ' ' || true)"
+                    value="$(echo "$value" | sed 's/^ *//; s/ *$//')"
+                    ;;
+                *) value="$(head -1 "$file" | tr -d '\r')" ;;
+            esac
+            if [ -n "$value" ]; then
+                site_set "$site" "$key" "$value" || continue
+            fi
+        fi
+        rm -f "$file" 2>/dev/null || true
+    done
+}
+
+migrate_site_configs() {
+    local d
+    for d in sites/*/; do
+        [ -d "$d" ] || continue
+        d="${d%/}"
+        d="${d#sites/}"
+        [ "$d" = "html" ] && continue
+        migrate_site_config "$d"
+    done
+}
 
 # The host port nginx publishes 443 on (NGINX_HTTPS_PORT in .env). Read
 # from the file first, so the api container -- which only got .env's
@@ -1033,13 +1131,7 @@ cmd_status() {
         site_name="${domain%.test}"
         site_name="${site_name//./-}"
         config="sites/${site_name}/wp-config.php"
-        # || true: set -e gotcha -- cat on a missing .php-version (any site
-        # that predates multi-PHP support) exits nonzero even with stderr
-        # silenced, and this bare assignment isn't exempt the way
-        # `cmd1 && cmd2` is. Confirmed live: without this, ONE site missing
-        # the marker file silently killed status reporting for every site,
-        # not just itself, since it died mid-loop.
-        php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)" || true
+        php_version="$(site_get "$site_name" PHP_VERSION)"
         [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
         php_svc="$(php_slug "$php_version")"
 
@@ -1402,9 +1494,9 @@ cmd_db() {
         return
     fi
 
-    dir="sites/${site}"
-    if [ ! -f "$dir/.db-password" ]; then
-        print_warning "No saved DB credentials for '${site}' (checked ${dir}/.db-password)."
+    db_pass="$(site_get "$site" DB_PASSWORD)"
+    if [ -z "$db_pass" ]; then
+        print_warning "No saved DB credentials for '${site}' (checked DB_PASSWORD in $(site_config_file "$site"))."
         echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
         return 1
     fi
@@ -1413,7 +1505,6 @@ cmd_db() {
     db_slug="${db_slug:0:28}"
     db_name="wp_${db_slug}"
     db_user="wp_${db_slug}"
-    db_pass="$(cat "$dir/.db-password")"
 
     docker exec -it wp-mysql mysql -u"${db_user}" -p"${db_pass}" "${db_name}"
 }
@@ -1451,8 +1542,8 @@ cmd_adminer() {
 
         if [ "$db_user" = "root" ]; then
             login_hint="root / \$DB_ROOT_PASSWORD from .env"
-        elif [ -f "sites/${site}/.db-password" ]; then
-            login_hint="${db_user} / $(cat "sites/${site}/.db-password")"
+        elif [ -n "$(site_get "$site" DB_PASSWORD)" ]; then
+            login_hint="${db_user} / $(site_get "$site" DB_PASSWORD)"
         else
             login_hint="${db_user} / (see DB_PASSWORD in ${config})"
         fi
@@ -1691,7 +1782,6 @@ cmd_media_proxy() {
     site_name="${site_name//./-}"
     domain="${site_name}.test"
     [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
-    url_file="sites/${site_name}/.production-url"
     conf="$(media_proxy_conf "$domain")"
     local_url="$(site_url "$domain")${MEDIA_PROXY_URI}"
 
@@ -1699,9 +1789,9 @@ cmd_media_proxy() {
         "")
             # Formats the dashboard parses too -- keep them stable.
             if [ -f "$conf" ]; then
-                print_info "On: ${local_url}/…  →  $(cat "$url_file" 2>/dev/null)${MEDIA_PROXY_URI}/…"
-            elif [ -f "$url_file" ]; then
-                print_info "Off (last production URL: $(cat "$url_file"))"
+                print_info "On: ${local_url}/…  →  $(site_get "$site_name" PRODUCTION_URL)${MEDIA_PROXY_URI}/…"
+            elif [ -n "$(site_get "$site_name" PRODUCTION_URL)" ]; then
+                print_info "Off (last production URL: $(site_get "$site_name" PRODUCTION_URL))"
             else
                 print_info "Off"
             fi
@@ -1714,7 +1804,7 @@ cmd_media_proxy() {
             return 0
             ;;
         on)
-            prod="$(cat "$url_file" 2>/dev/null)" || true
+            prod="$(site_get "$site_name" PRODUCTION_URL)"
             [ -n "$prod" ] || print_error "No production URL known for ${site_name}. Give it once: wpdev media-proxy ${site_name} https://your-production-site"
             ;;
         *)
@@ -1727,7 +1817,7 @@ cmd_media_proxy() {
     [[ "$prod" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/%-]*)?$ ]] \
         || print_error "Not a usable production URL: '${prod}' (expected e.g. https://example.com or https://example.com/blog)"
 
-    echo "$prod" > "$url_file"
+    site_set "$site_name" PRODUCTION_URL "$prod"
     render_media_proxy "$domain" "$prod"
     ensure_vhost_includes "$domain"
     if ! reload_nginx_or_fail; then
@@ -1782,7 +1872,6 @@ remove_admin_domain_plugin() {
     [ -n "$f" ] && rm -f "$f" && echo "$f"
     return 0
 }
-admin_domain_file() { echo "sites/$1/.admin-domain"; }
 
 # The admin domain currently served for <site-name>, or nothing.
 site_admin_domain() {
@@ -1977,7 +2066,6 @@ cmd_admin_domain() {
     site_name="${site_name//./-}"
     domain="${site_name}.test"
     [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
-    state_file="$(admin_domain_file "$site_name")"
     conf="$(admin_domain_conf "$domain")"
     current="$(site_admin_domain "$site_name")"
 
@@ -1986,8 +2074,8 @@ cmd_admin_domain() {
             # Formats the dashboard parses too -- keep them stable.
             if [ -n "$current" ]; then
                 print_info "On: $(site_url "$current")  →  $(site_url "$domain")"
-            elif [ -f "$state_file" ]; then
-                print_info "Off (last admin domain: $(cat "$state_file"))"
+            elif [ -n "$(site_get "$site_name" ADMIN_DOMAIN)" ]; then
+                print_info "Off (last admin domain: $(site_get "$site_name" ADMIN_DOMAIN))"
             else
                 print_info "Off"
             fi
@@ -2002,7 +2090,7 @@ cmd_admin_domain() {
             return 0
             ;;
         on)
-            admin="$(cat "$state_file" 2>/dev/null)" || true
+            admin="$(site_get "$site_name" ADMIN_DOMAIN)"
             [ -n "$admin" ] || print_error "No admin domain known for ${site_name}. Give it once: wpdev admin-domain ${site_name} admin-${site_name}.test"
             ;;
         *)
@@ -2034,7 +2122,7 @@ cmd_admin_domain() {
         print_info "Regenerated ${domain}'s cached vhost so it never caches requests from the admin domain"
     fi
 
-    echo "$admin" > "$state_file"
+    site_set "$site_name" ADMIN_DOMAIN "$admin"
     fconf="$(admin_domain_frontend_conf "$domain")"
     for f in "$conf" "$fconf"; do
         if [ -f "$f" ]; then cp "$f" "${f}.bak"; else rm -f "${f}.bak"; fi
@@ -2203,35 +2291,29 @@ cmd_cache() {
     sed -i "s/PHP_UPSTREAM/$php_svc/g" "nginx/sites/${domain}.conf"
 
     if [ "$mode" = "on" ]; then
-        # sites/<name>/.cache-ttl -- a plain duration (60m, 1h, 30s), not
-        # nginx syntax to hand-tune; validated so a typo fails here with a
-        # clear message instead of a cryptic nginx -t error later.
-        # || true: same set -e gotcha as elsewhere in this script -- cat on
-        # a missing file (the normal case: most sites have no .cache-ttl)
-        # exits nonzero even with stderr silenced, and a bare assignment
-        # isn't exempt from set -e the way `cmd1 && cmd2` is. Confirmed the
-        # hard way: this silently killed the whole command with zero output
-        # whenever .cache-ttl didn't exist.
-        ttl="$(cat "sites/${site_name}/.cache-ttl" 2>/dev/null)" || true
+        # CACHE_TTL -- a plain duration (60m, 1h, 30s), not nginx syntax to
+        # hand-tune; validated so a typo fails here with a clear message
+        # instead of a cryptic nginx -t error later. Most sites have none.
+        ttl="$(site_get "$site_name" CACHE_TTL)"
         [ -z "$ttl" ] && ttl="60m"
         if [[ ! "$ttl" =~ ^[0-9]+[smhdwMy]?$ ]]; then
-            print_error "Invalid .cache-ttl value '${ttl}' -- expected a plain duration like 60m, 1h, or 30s."
+            print_error "Invalid CACHE_TTL value '${ttl}' in $(site_config_file "$site_name") -- expected a plain duration like 60m, 1h, or 30s."
         fi
 
-        # sites/<name>/.cache-bypass-cookies -- one cookie name per line,
-        # never raw regex. A trailing '*' means "starts with" (needed for
+        # CACHE_BYPASS_COOKIES -- space-separated cookie names, never raw
+        # regex. A trailing '*' means "starts with" (needed for
         # cookies with a dynamic suffix, e.g. WooCommerce's session cookie);
         # anything else must match that exact name. Validated against a
         # strict whitelist BEFORE it's escaped and spliced into nginx's
-        # bypass regex, so this file can't break the generated config or
+        # bypass regex, so the setting can't break the generated config or
         # smuggle in nginx syntax -- it only ever contains cookie names.
         bypass="comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in"
-        cookie_file="sites/${site_name}/.cache-bypass-cookies"
-        if [ -f "$cookie_file" ]; then
-            while IFS= read -r line || [ -n "$line" ]; do
-                line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        cookie_setting="CACHE_BYPASS_COOKIES in $(site_config_file "$site_name")"
+        if [ -n "$(site_get "$site_name" CACHE_BYPASS_COOKIES)" ]; then
+            # One per line (not `for x in $list`, which would glob-expand a
+            # trailing '*').
+            while IFS= read -r line; do
                 [ -z "$line" ] && continue
-                case "$line" in \#*) continue ;; esac
 
                 name="$line"
                 case "$name" in
@@ -2239,7 +2321,7 @@ cmd_cache() {
                 esac
                 case "$name" in
                     *[!A-Za-z0-9_.-]*|'')
-                        print_error "Invalid line in ${cookie_file}: '${line}' -- cookie names may only contain letters, digits, '_', '-', '.', and an optional trailing '*' for a prefix match."
+                        print_error "Invalid entry in ${cookie_setting}: '${line}' -- cookie names may only contain letters, digits, '_', '-', '.', and an optional trailing '*' for a prefix match."
                         ;;
                 esac
                 # Only '.' needs escaping -- the whitelist above already
@@ -2252,24 +2334,22 @@ cmd_cache() {
                 # a cookie name like "my.cookie" should have had '\.'.
                 escaped="$(echo "$name" | sed 's/\./\\\\./g')"
                 bypass="${bypass}|${escaped}"
-            done < "$cookie_file"
+            done < <(site_get "$site_name" CACHE_BYPASS_COOKIES | tr -s ' ' '\n')
         fi
 
-        # sites/<name>/.cache-bypass-paths -- one URL path per line, never
-        # raw regex. Same trailing-'*'-means-prefix contract as the cookies
-        # file, but anchored (^pattern$ for exact, ^pattern for prefix)
+        # CACHE_BYPASS_PATHS -- space-separated URL paths, never raw regex.
+        # Same trailing-'*'-means-prefix contract as the cookies, but
+        # anchored (^pattern$ for exact, ^pattern for prefix)
         # rather than loose substring -- unlike cookie names, URL paths
         # routinely share prefixes (a bare substring match on /cart/ would
         # also false-positive on /shop/cart/), so this one needs real
         # anchoring to mean what it looks like it means. The baseline
         # wp-admin/xmlrpc/wp-login/wp-cron rules get the same anchoring.
         bypass_paths='^/wp-admin/|^/xmlrpc\\.php$|^/wp-login\\.php$|^/wp-cron\\.php$'
-        path_file="sites/${site_name}/.cache-bypass-paths"
-        if [ -f "$path_file" ]; then
-            while IFS= read -r line || [ -n "$line" ]; do
-                line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        path_setting="CACHE_BYPASS_PATHS in $(site_config_file "$site_name")"
+        if [ -n "$(site_get "$site_name" CACHE_BYPASS_PATHS)" ]; then
+            while IFS= read -r line; do
                 [ -z "$line" ] && continue
-                case "$line" in \#*) continue ;; esac
 
                 path="$line"
                 is_prefix=0
@@ -2278,7 +2358,7 @@ cmd_cache() {
                 esac
                 case "$path" in
                     *[!A-Za-z0-9/_.-]*|'')
-                        print_error "Invalid line in ${path_file}: '${line}' -- paths may only contain letters, digits, '/', '_', '-', '.', and an optional trailing '*' for a prefix match."
+                        print_error "Invalid entry in ${path_setting}: '${line}' -- paths may only contain letters, digits, '/', '_', '-', '.', and an optional trailing '*' for a prefix match."
                         ;;
                 esac
                 # Same doubled-backslash reasoning as the cookie escaping
@@ -2289,7 +2369,7 @@ cmd_cache() {
                 else
                     bypass_paths="${bypass_paths}|^${escaped}\$"
                 fi
-            done < "$path_file"
+            done < <(site_get "$site_name" CACHE_BYPASS_PATHS | tr -s ' ' '\n')
         fi
 
         sed -i "s/CACHE_TTL/$ttl/g" "nginx/sites/${domain}.conf"
@@ -2302,7 +2382,7 @@ cmd_cache() {
     fi
 
     if [ "$mode" = "on" ]; then
-        touch "sites/${site_name}/.cache"
+        site_set "$site_name" CACHE on
 
         # nginx-helper: auto-purges this site's own cached pages on save,
         # via its "unlink files" method -- verified directly against the
@@ -2347,7 +2427,7 @@ cmd_cache() {
             print_warning "Could not set up nginx-helper (auto-purge on save) -- caching still works, just purge manually with 'wpdev cache-purge' or wait out the TTL. Retry with: wpdev cache ${site_name} on"
         fi
     else
-        rm -f "sites/${site_name}/.cache"
+        site_unset "$site_name" CACHE
         php_exec "$php_svc" wp plugin deactivate nginx-helper --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1 || true
     fi
 
@@ -2481,7 +2561,7 @@ cmd_clean_all() {
     fi
     if [ "$confirm" = "yes" ]; then
         docker compose down -v
-        rm -rf sites/*/
+        rm -rf sites/*/ "$SITE_CONFIG_DIR"
         echo "All data removed."
     else
         cancelled
@@ -2574,13 +2654,13 @@ wait_for_mysql() {
 php_slug() { echo "php${1//./}"; }
 
 # The compose service (php81/php82/php83/php84) that actually serves a given
-# site, based on sites/<name>/.php-version. Falls back to the default version
-# for sites that predate multi-PHP support (no marker file) — which is
+# site, based on its PHP_VERSION. Falls back to the default version
+# for sites that predate multi-PHP support (none saved) — which is
 # exactly the version their Nginx vhost's literal `php:9000` already points
 # at via the alias on php82, so this stays consistent with reality without
 # needing every pre-existing site retrofitted.
 site_php_service() {
-    version="$(cat "sites/${1}/.php-version" 2>/dev/null)"
+    version="$(site_get "$1" PHP_VERSION)"
     [ -z "$version" ] && version="$DEFAULT_PHP_VERSION"
     php_slug "$version"
 }
@@ -2608,10 +2688,7 @@ cmd_list() {
         site_name="${domain%.test}"
         site_name="${site_name//./-}"
         if [ -d "sites/${site_name}" ]; then
-            # || true: same set -e gotcha as cmd_status -- a site missing
-            # .php-version would otherwise silently kill `wpdev list` for
-            # every site, not just itself.
-            php_version="$(cat "sites/${site_name}/.php-version" 2>/dev/null)" || true
+            php_version="$(site_get "$site_name" PHP_VERSION)"
             [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
             wp_status="provisioned, php ${php_version}"
         else
@@ -2653,22 +2730,24 @@ cmd_creds() {
         return 1
     fi
 
-    # || true: same set -e gotcha as cmd_status/cmd_list.
-    php_version="$(cat "$dir/.php-version" 2>/dev/null)" || true
+    php_version="$(site_get "$site" PHP_VERSION)"
     [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
+    admin_pass="$(site_get "$site" ADMIN_PASSWORD)"
+    db_pass="$(site_get "$site" DB_PASSWORD)"
 
     echo "Site: $site"
     echo "  PHP:       ${php_version} ($(php_slug "$php_version"))"
-    if [ -f "$dir/.admin-password" ]; then
-        echo "  wp-admin:  admin / $(cat "$dir/.admin-password")"
+    if [ -n "$admin_pass" ]; then
+        echo "  wp-admin:  admin / ${admin_pass}"
     else
         echo "  wp-admin:  (no saved password — site predates wpdev automation, or was installed manually)"
     fi
-    if [ -f "$dir/.db-password" ]; then
-        echo "  DB user:   wp_${site//-/_} / $(cat "$dir/.db-password")"
+    if [ -n "$db_pass" ]; then
+        echo "  DB user:   wp_${site//-/_} / ${db_pass}"
     else
         echo "  DB user:   (no saved password)"
     fi
+    echo "  (saved in $(site_config_file "$site"))"
 }
 
 cmd_wp() {
@@ -2703,10 +2782,10 @@ cmd_remove() {
     site_name="${arg%.test}"
     site_name="${site_name//./-}"
     domain="${site_name}.test"
-    # Read now, while sites/<name> still exists: after `admin-domain off`
-    # only the state file remembers the domain whose certificate is left.
+    # After `admin-domain off` only the setting remembers the domain whose
+    # certificate is left.
     admin="$(site_admin_domain "$site_name")"
-    [ -z "$admin" ] && admin="$(cat "$(admin_domain_file "$site_name")" 2>/dev/null)" || true
+    [ -z "$admin" ] && admin="$(site_get "$site_name" ADMIN_DOMAIN)"
 
     if [ ! -f "nginx/sites/${domain}.conf" ] && [ ! -d "sites/${site_name}" ]; then
         print_error "No such site: ${domain} (checked nginx/sites/${domain}.conf and sites/${site_name}/)"
@@ -2803,6 +2882,8 @@ cmd_remove() {
     fi
     rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem" "$(media_proxy_conf "$domain")" "$(admin_domain_conf "$domain")" "$(admin_domain_frontend_conf "$domain")"
     print_info "Removed Nginx config and SSL certificate${admin:+ (and admin domain ${admin})}"
+    rm -f "$(site_config_file "$site_name")"
+    print_info "Removed $(site_config_file "$site_name")"
 
     # Nginx (running as root in-container) owns these on the host too, so a
     # plain host-side `rm` would hit "Permission denied" — delete via the
@@ -2855,16 +2936,15 @@ cmd_clone() {
         print_error "sites/${new_name} or nginx/sites/${new_domain}.conf already exists — run 'wpdev remove ${new_name}' first, or pick a different name."
     fi
 
-    # The clone inherits the source's PHP version — .php-version travels
-    # along with everything else `cp -a` copies below, so this is also just
-    # what site_php_service will resolve to for the clone afterward.
+    # The clone inherits the source's PHP version (its settings are copied
+    # below), so this is also what site_php_service resolves to for it.
     php_svc="$(site_php_service "$source_name")"
     new_url="$(site_url "$new_domain")"
 
     echo "This will clone:"
     echo "  sites/${source_name}/  ->  sites/${new_name}/  (files + database)"
     echo "  New domain: $(site_url "$new_domain")"
-    echo "  PHP version: $(cat "sites/${source_name}/.php-version" 2>/dev/null || echo "$DEFAULT_PHP_VERSION") (same as source)"
+    echo "  PHP version: $(source_php="$(site_get "$source_name" PHP_VERSION)"; echo "${source_php:-$DEFAULT_PHP_VERSION}") (same as source)"
     echo "  Admin login will be the same as ${source_domain} (it's a copy of that database)."
     echo ""
     if [ "$assume_yes" -eq 1 ]; then
@@ -2918,8 +2998,15 @@ cmd_clone() {
             esac
         done' sh "$source_name" "$new_name" </dev/null
     fix_site_ownership "$php_svc" "$new_name" || print_warning "Couldn't hand sites/${new_name} over to you — run: wpdev fix-perms ${new_name}"
-    rm -f "sites/${new_name}/.admin-password" "sites/${new_name}/.db-password"
-    [ -f "sites/${source_name}/.admin-password" ] && cp "sites/${source_name}/.admin-password" "sites/${new_name}/.admin-password"
+    # Settings that describe the copy too: same PHP, same admin login (same
+    # database), same production and cache rules. Not the DB password (the
+    # clone gets its own user below), the admin domain (one site's), or the
+    # page cache (the clone's vhost starts plain).
+    rm -f "$(site_config_file "$new_name")"
+    for key in PHP_VERSION ADMIN_PASSWORD PRODUCTION_URL CACHE_TTL CACHE_BYPASS_COOKIES CACHE_BYPASS_PATHS; do
+        value="$(site_get "$source_name" "$key")"
+        if [ -n "$value" ]; then site_set "$new_name" "$key" "$value"; fi
+    done
     print_info "Files copied to sites/${new_name}"
 
     print_step "3/8 Creating Nginx configuration..."
@@ -2940,7 +3027,7 @@ cmd_clone() {
         FLUSH PRIVILEGES;
     " </dev/null 2>/dev/null
     docker compose exec -T mysql sh -c "mysqldump -uroot -p'${DB_ROOT_PASSWORD}' '${source_db_name}' | mysql -uroot -p'${DB_ROOT_PASSWORD}' '${new_db_name}'" </dev/null
-    echo "$new_db_pass" > "sites/${new_name}/.db-password"
+    site_set "$new_name" DB_PASSWORD "$new_db_pass"
     print_info "Database '${source_db_name}' cloned to '${new_db_name}'"
 
     print_step "5/8 Rewriting wp-config.php for the clone..."
@@ -2962,15 +3049,12 @@ cmd_clone() {
     # An admin domain belongs to one site, so the clone starts without one
     # (and without wpdev's mu-plugin, which names the source's domain).
     remove_admin_domain_plugin "$new_name" >/dev/null
-    if [ -f "sites/${new_name}/.admin-domain" ]; then
-        rm -f "sites/${new_name}/.admin-domain"
-        if [ -n "$(site_admin_domain "$source_name")" ]; then
-            print_warning "${source_name}'s admin domain isn't cloned. Give ${new_name} its own: wpdev admin-domain ${new_name} <domain>"
-        fi
+    if [ -n "$(site_admin_domain "$source_name")" ]; then
+        print_warning "${source_name}'s admin domain isn't cloned. Give ${new_name} its own: wpdev admin-domain ${new_name} <domain>"
     fi
     # A source with the media proxy on: the clone gets it too.
-    if [ -f "$(media_proxy_conf "$source_domain")" ] && [ -f "sites/${new_name}/.production-url" ]; then
-        render_media_proxy "$new_domain" "$(cat "sites/${new_name}/.production-url")"
+    if [ -f "$(media_proxy_conf "$source_domain")" ] && [ -n "$(site_get "$new_name" PRODUCTION_URL)" ]; then
+        render_media_proxy "$new_domain" "$(site_get "$new_name" PRODUCTION_URL)"
     fi
     print_info "wp-config.php updated"
 
@@ -3004,9 +3088,9 @@ cmd_clone() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo -e "  Site:        ${GREEN}${new_url}${NC}"
-    echo "  PHP version: $(cat "sites/${new_name}/.php-version" 2>/dev/null || echo "$DEFAULT_PHP_VERSION") (${php_svc})"
-    echo "  Admin login: same as ${source_domain} (wpdev creds ${source_name})"
-    echo "  Database:    ${new_db_name} / ${new_db_user} (password in sites/${new_name}/.db-password)"
+    echo "  PHP version: $(new_php="$(site_get "$new_name" PHP_VERSION)"; echo "${new_php:-$DEFAULT_PHP_VERSION}") (${php_svc})"
+    echo "  Admin login: same as ${source_domain} (wpdev creds ${new_name})"
+    echo "  Database:    ${new_db_name} / ${new_db_user} (password: wpdev creds ${new_name})"
     echo ""
 
     if grep -q "[[:space:]]${new_domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${new_domain}[[:space:]]" /etc/hosts 2>/dev/null; then
@@ -3381,12 +3465,12 @@ cmd_add() {
     db_user="wp_${db_slug}"
 
     # PHP version — only asked for a genuinely new site; re-running `add` on
-    # one that already has a .php-version marker reuses it silently, same as
+    # one that already has a PHP_VERSION saved reuses it silently, same as
     # every other idempotent step below (nginx conf, wp-config, cert). This
     # isn't how you'd change an existing site's PHP version — no config
     # regeneration happens here, so changing it later needs manual follow-up.
-    if [ -f "sites/${site_name}/.php-version" ]; then
-        php_version="$(cat "sites/${site_name}/.php-version")"
+    if [ -n "$(site_get "$site_name" PHP_VERSION)" ]; then
+        php_version="$(site_get "$site_name" PHP_VERSION)"
     elif [ -n "$php_version" ]; then
         case " $SUPPORTED_PHP_VERSIONS " in
             *" $php_version "*) ;;
@@ -3463,9 +3547,9 @@ cmd_add() {
     # 3. Download WordPress
     print_step "3/9 Downloading WordPress..."
     mkdir -p "sites/$site_name"
-    echo "$php_version" > "sites/${site_name}/.php-version"
+    site_set "$site_name" PHP_VERSION "$php_version"
 
-    if [ "$(ls -A "sites/$site_name" 2>/dev/null | grep -v '^\.gitkeep$' | grep -v '^\.php-version$')" ]; then
+    if [ "$(ls -A "sites/$site_name" 2>/dev/null | grep -v '^\.gitkeep$')" ]; then
         print_warning "Directory sites/$site_name is not empty. Skipping WordPress download."
         preexisting_site=1
     else
@@ -3506,13 +3590,12 @@ cmd_add() {
         fi
     fi
 
-    db_pass_file="sites/${site_name}/.db-password"
-    if [ -f "$db_pass_file" ]; then
-        db_pass="$(cat "$db_pass_file")"
+    db_pass="$(site_get "$site_name" DB_PASSWORD)"
+    if [ -n "$db_pass" ]; then
         print_info "Reusing existing database credentials"
     else
         db_pass="$(openssl rand -hex 16)"
-        echo "$db_pass" > "$db_pass_file"
+        site_set "$site_name" DB_PASSWORD "$db_pass"
     fi
 
     docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "
@@ -3573,15 +3656,13 @@ PHP
 
     # 7. WordPress install (skip the browser installer entirely)
     print_step "7/9 Installing WordPress..."
-    admin_pass_file="sites/${site_name}/.admin-password"
     if php_exec "$php_svc" wp core is-installed --path="/var/www/${site_name}" --allow-root </dev/null >/dev/null 2>&1; then
         print_info "WordPress already installed. Skipping."
     else
-        if [ -f "$admin_pass_file" ]; then
-            admin_pass="$(cat "$admin_pass_file")"
-        else
+        admin_pass="$(site_get "$site_name" ADMIN_PASSWORD)"
+        if [ -z "$admin_pass" ]; then
             admin_pass="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9')"
-            echo "$admin_pass" > "$admin_pass_file"
+            site_set "$site_name" ADMIN_PASSWORD "$admin_pass"
         fi
 
         php_exec "$php_svc" wp core install \
@@ -3596,7 +3677,8 @@ PHP
         print_info "WordPress installed"
     fi
 
-    admin_pass="$(cat "$admin_pass_file" 2>/dev/null || echo '(see sites/'"$site_name"'/.admin-password)')"
+    admin_pass="$(site_get "$site_name" ADMIN_PASSWORD)"
+    [ -z "$admin_pass" ] && admin_pass="(not saved — WordPress was already installed)"
 
     # 8. Object cache — install + activate the redis-cache plugin and drop in
     # its object-cache.php, then verify Redis actually responds. A failed
@@ -3673,12 +3755,11 @@ PHP
     echo -e "  Site:        ${GREEN}${url}${NC}"
     echo "  PHP version: ${php_version} (${php_svc})"
     echo -e "  Admin login: ${GREEN}${url}/wp-admin${NC}  (admin / ${admin_pass})"
-    echo "  Database:    ${db_name} / ${db_user} (password in sites/${site_name}/.db-password)"
+    echo "  Database:    ${db_name} / ${db_user} (password: wpdev creds ${site_name})"
     echo "  Object cache: Redis (check with: wpdev wp ${site_name} redis status)"
     echo "  Outgoing mail: caught by Mailpit — wpdev mailpit"
     echo ""
-    echo "Credentials are also saved in sites/${site_name}/.admin-password and .db-password"
-    echo "(both git-ignored, since sites/*/ is excluded)."
+    echo "Credentials are saved in $(site_config_file "$site_name") (git-ignored, readable only by you)."
     echo ""
 
     # Optional: /etc/hosts
@@ -3710,6 +3791,8 @@ PHP
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+migrate_site_configs
 
 case "${1:-help}" in
     up) cmd_up ;;
