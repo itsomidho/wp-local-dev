@@ -100,7 +100,7 @@ complete -c wpdev -n "$__wpdev_top" -a creds -d "Show a site's admin/DB credenti
 complete -c wpdev -n "$__wpdev_top" -a cert -d "Reissue a site's HTTPS certificate"
 complete -c wpdev -n "$__wpdev_top" -a fix-perms -d "Give a site's files back to you"
 complete -c wpdev -n "$__wpdev_top" -a media-proxy -d "Load uploads missing locally from production"
-complete -c wpdev -n "$__wpdev_top" -a admin-domain -d "Serve wp-admin on a separate domain"
+complete -c wpdev -n "$__wpdev_top" -a admin-domain -d "Move wp-admin to a separate domain"
 complete -c wpdev -n "$__wpdev_top" -a wp -d "Run a WP-CLI command against a site"
 complete -c wpdev -n "$__wpdev_top" -a help -d "Show usage"
 

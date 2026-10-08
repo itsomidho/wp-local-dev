@@ -34,7 +34,7 @@
 #   wpdev cert <name>         Reissue a site's HTTPS certificate from the current mkcert CA
 #   wpdev fix-perms <name>    Give a site's files back to you (owner + write); --all for every site
 #   wpdev media-proxy <name> [url|on|off]  Load uploads missing locally from production
-#   wpdev admin-domain <name> [domain|on|off]  Serve the site's wp-admin on a separate domain
+#   wpdev admin-domain <name> [domain|on|off]  Move the site's wp-admin to a separate domain
 #   wpdev wp <name> <args...> Run any WP-CLI command against a site, e.g.:
 #                               wpdev wp mysite plugin list
 #
@@ -259,7 +259,7 @@ show_help() {
     echo "  cert <name>               Reissue a site's HTTPS certificate from the current mkcert CA"
     echo "  fix-perms <name>|--all    Give a site's files back to you (owner + write), e.g. after copying a site in"
     echo "  media-proxy <name> [url|on|off]  Load uploads missing locally from production, through the local site"
-    echo "  admin-domain <name> [domain|on|off]  Serve wp-admin on a separate domain, like production's admin proxy"
+    echo "  admin-domain <name> [domain|on|off]  Move wp-admin to a separate domain, like production's admin proxy"
     echo "  wp <name> <args...>       Run a WP-CLI command against a site"
     echo ""
     echo "Examples:"
@@ -1629,21 +1629,33 @@ location @wpdev_production_media {
 CONF
 }
 
-# Vhosts generated before the media proxy existed lack its include line;
-# add it in front of the main location so a regenerated vhost and an old
-# one end up identical.
-ensure_media_proxy_include() {
+# Vhosts generated before the media proxy / admin domain existed lack
+# their include lines; add them in front of the main location so a
+# regenerated vhost and an old one end up identical.
+ensure_vhost_includes() {
     local vhost="nginx/sites/$1.conf"
-    grep -q 'sites/media-proxy/' "$vhost" && return 0
-    awk -v d="$1" '
-        !done && /^    location \/ \{/ {
-            print "    # Production media proxy (`wpdev media-proxy`)."
-            print "    include /etc/nginx/sites/media-proxy/" d ".con[f];"
-            print ""
-            done = 1
-        }
-        { print }
-    ' "$vhost" > "${vhost}.new" && mv "${vhost}.new" "$vhost"
+    if ! grep -q 'sites/media-proxy/' "$vhost"; then
+        awk -v d="$1" '
+            !done && /^    location \/ \{/ {
+                print "    # Production media proxy (`wpdev media-proxy`)."
+                print "    include /etc/nginx/sites/media-proxy/" d ".con[f];"
+                print ""
+                done = 1
+            }
+            { print }
+        ' "$vhost" > "${vhost}.new" && mv "${vhost}.new" "$vhost"
+    fi
+    if ! grep -q 'sites/admin-domain/frontend/' "$vhost"; then
+        awk -v d="$1" '
+            !done && /^    location \/ \{/ {
+                print "    # Admin domain (`wpdev admin-domain`)."
+                print "    include /etc/nginx/sites/admin-domain/frontend/" d ".con[f];"
+                print ""
+                done = 1
+            }
+            { print }
+        ' "$vhost" > "${vhost}.new" && mv "${vhost}.new" "$vhost"
+    fi
 }
 
 reload_nginx_or_fail() {
@@ -1709,7 +1721,7 @@ cmd_media_proxy() {
 
     echo "$prod" > "$url_file"
     render_media_proxy "$domain" "$prod"
-    ensure_media_proxy_include "$domain"
+    ensure_vhost_includes "$domain"
     if ! reload_nginx_or_fail; then
         rm -f "$conf"
         reload_nginx_or_fail || true
@@ -1731,16 +1743,37 @@ cmd_media_proxy() {
 # project (e.g. a mu-plugin reading a WP_ADMIN_DOMAIN setting) rewrites
 # admin/login/asset URLs to the admin domain when that header is present.
 #
-# This mirrors the proxy half locally: a server block for the admin domain
-# in the same nginx, forwarding to the site's own vhost. WordPress itself
-# isn't touched -- the URL rewriting stays the project's job, exactly as on
-# production. Only admin paths go through; everything else on the admin
-# domain is a 404, apart from post previews and ?rest_route= REST calls.
+# This mirrors that locally, in three parts:
+# - a server block for the admin domain in the same nginx, forwarding to
+#   the site's own vhost. Only admin paths go through; everything else is
+#   a 404, apart from post previews and ?rest_route= REST calls;
+# - on the site domain, wp-admin and wp-login.php redirect to the admin
+#   domain (except admin-ajax.php/admin-post.php, which public pages use);
+# - the URL rewriting: the project's own code when it has some (it defines
+#   WP_ADMIN_DOMAIN), else wpdev's mu-plugin, wordpress/mu-plugins/
+#   wpdev-admin-domain.php, installed into the site.
 #
-# The blocks live in nginx/sites/admin-domain/, loaded by an include in
-# nginx/sites/default.conf (not nginx/sites/*.conf, where every file is a
-# site to wpdev).
+# The server blocks live in nginx/sites/admin-domain/, loaded by an include
+# in nginx/sites/default.conf (not nginx/sites/*.conf, where every file is
+# a site to wpdev); the redirects in nginx/sites/admin-domain/frontend/,
+# included by the site's vhost.
 admin_domain_conf() { echo "nginx/sites/admin-domain/$1.conf"; }
+admin_domain_frontend_conf() { echo "nginx/sites/admin-domain/frontend/$1.conf"; }
+ADMIN_DOMAIN_PLUGIN="wpdev-admin-domain.php"
+ADMIN_DOMAIN_PLUGIN_MARK="wpdev:managed admin-domain"
+
+# wpdev's mu-plugin in <site-name>, if installed, under any mu-plugins dir.
+admin_domain_plugin_path() {
+    find "sites/$1" -maxdepth 5 -path "*mu-plugins/${ADMIN_DOMAIN_PLUGIN}" -type f 2>/dev/null \
+        | while read -r f; do grep -q "$ADMIN_DOMAIN_PLUGIN_MARK" "$f" && echo "$f"; done | head -1
+}
+
+remove_admin_domain_plugin() {
+    local f
+    f="$(admin_domain_plugin_path "$1")"
+    [ -n "$f" ] && rm -f "$f" && echo "$f"
+    return 0
+}
 admin_domain_file() { echo "sites/$1/.admin-domain"; }
 
 # The admin domain currently served for <site-name>, or nothing.
@@ -1885,6 +1918,30 @@ server {
     }
 }
 CONF
+
+    conf="$(admin_domain_frontend_conf "$site_domain")"
+    mkdir -p "$(dirname "$conf")"
+    cat > "$conf" <<CONF
+# Managed by \`wpdev admin-domain\` for ${site_domain}: wp-admin and the
+# login live on ${admin}, so send the browser there. 302, not 301, so
+# browsers don't remember it after \`wpdev admin-domain ${site_name} off\`.
+set \$wpdev_to_admin "";
+if (\$uri ~ "^/(wp-admin(/.*)?|wp-login\.php)\$") {
+    set \$wpdev_to_admin 1;
+}
+# Public pages post to these, so they stay on this domain.
+if (\$uri ~ "^/wp-admin/(admin-ajax|admin-post)\.php\$") {
+    set \$wpdev_to_admin "";
+}
+# Requests the admin domain forwards here (from this nginx itself).
+set \$wpdev_from_admin "\$http_x_forwarded_host|\$remote_addr";
+if (\$wpdev_from_admin = "${admin}|127.0.0.1") {
+    set \$wpdev_to_admin "";
+}
+if (\$wpdev_to_admin) {
+    return 302 $(site_url "$admin")\$request_uri;
+}
+CONF
 }
 
 cmd_admin_domain() {
@@ -1919,9 +1976,11 @@ cmd_admin_domain() {
             return 0
             ;;
         off)
-            rm -f "$conf"
+            rm -f "$conf" "$(admin_domain_frontend_conf "$domain")"
             reload_nginx_or_fail || print_warning "nginx didn't reload (is it running?) — takes effect on its next start: wpdev up"
-            print_info "Admin domain off for ${domain}${current:+ (${current} is no longer served)}."
+            removed="$(remove_admin_domain_plugin "$site_name")"
+            [ -n "$removed" ] && print_info "Removed wpdev's mu-plugin (${removed})"
+            print_info "Admin domain off for ${domain}${current:+ (${current} is no longer served)}; wp-admin is on ${domain} again."
             return 0
             ;;
         on)
@@ -1947,29 +2006,57 @@ cmd_admin_domain() {
     fi
 
     echo "$admin" > "$state_file"
-    [ -f "$conf" ] && cp "$conf" "${conf}.bak"
+    fconf="$(admin_domain_frontend_conf "$domain")"
+    for f in "$conf" "$fconf"; do
+        if [ -f "$f" ]; then cp "$f" "${f}.bak"; else rm -f "${f}.bak"; fi
+    done
     render_admin_domain "$domain" "$admin"
+    ensure_vhost_includes "$domain"
     if ! reload_nginx_or_fail; then
-        if [ -f "${conf}.bak" ]; then mv -f "${conf}.bak" "$conf"; else rm -f "$conf"; fi
+        for f in "$conf" "$fconf"; do
+            if [ -f "${f}.bak" ]; then mv -f "${f}.bak" "$f"; else rm -f "$f"; fi
+        done
         reload_nginx_or_fail || true
         print_error "nginx rejected the admin-domain config, so it was rolled back. Check: docker exec wp-nginx nginx -t"
     fi
-    rm -f "${conf}.bak"
+    rm -f "${conf}.bak" "${fconf}.bak"
     print_info "Admin domain on: $(site_url "$admin")  →  $(site_url "$domain") (wp-admin, wp-login.php, wp-includes, wp-content, wp-json, previews)"
+    print_info "${domain}/wp-admin and /wp-login.php now redirect to ${admin} (admin-ajax.php and admin-post.php stay)"
 
     if ! in_hosts_file "$admin"; then
         print_warning "${admin} isn't in /etc/hosts yet: echo '127.0.0.1    ${admin}' | sudo tee -a /etc/hosts"
     fi
 
-    # The URL rewriting is the project's job; say so if nothing seems set up
-    # for this domain, since wp-admin links then lead back to the site.
-    configured="$(php_exec "$(site_php_service "$site_name")" wp eval \
-        'echo defined("WP_ADMIN_DOMAIN") ? WP_ADMIN_DOMAIN : "";' \
-        --path="/var/www/${site_name}" </dev/null 2>/dev/null | tail -1 | tr -d '\r')" || true
-    if [ -z "$configured" ]; then
-        print_warning "WP_ADMIN_DOMAIN isn't defined in ${site_name}: unless something else in the project rewrites admin URLs when X-Forwarded-Host is ${admin}, wp-admin's links lead back to ${domain}."
-    elif [ "$configured" != "$admin" ]; then
-        print_warning "${site_name} has WP_ADMIN_DOMAIN=${configured}, not ${admin}: its URL rewriting won't kick in for this domain."
+    # The URL rewriting: the project's own code if it has some (it defines
+    # WP_ADMIN_DOMAIN -- wpdev's plugin doesn't), else wpdev's mu-plugin.
+    # wpdev's is removed first, so the check sees only the project.
+    php_svc="$(site_php_service "$site_name")"
+    removed="$(remove_admin_domain_plugin "$site_name")"
+    info="$(php_exec "$php_svc" wp eval \
+        'echo "WPDEV|", defined("WP_ADMIN_DOMAIN") ? WP_ADMIN_DOMAIN : "", "|", WPMU_PLUGIN_DIR, "\n";' \
+        --path="/var/www/${site_name}" </dev/null 2>/dev/null | grep '^WPDEV|' | tail -1 | tr -d '\r')" || true
+    project_domain="$(echo "$info" | cut -d'|' -f2)"
+    mu_dir="$(echo "$info" | cut -d'|' -f3)"
+    if [ -z "$info" ]; then
+        if [ -n "$removed" ]; then
+            print_warning "Removed wpdev's mu-plugin but couldn't check the site with WP-CLI to put it back — re-run once ${site_name} works: wpdev admin-domain ${site_name} on"
+        else
+            print_warning "Couldn't check ${site_name} with WP-CLI, so wpdev's mu-plugin wasn't installed. Re-run once it works: wpdev admin-domain ${site_name} on"
+        fi
+    elif [ "$project_domain" = "$admin" ]; then
+        print_info "${site_name} handles ${admin} itself (WP_ADMIN_DOMAIN=${admin}), so wpdev's mu-plugin isn't installed"
+    elif [ -n "$project_domain" ]; then
+        print_warning "${site_name} defines WP_ADMIN_DOMAIN=${project_domain}, not ${admin}: its own admin-domain code won't kick in for ${admin}, and wpdev's mu-plugin isn't installed alongside it. Point WP_ADMIN_DOMAIN at ${admin}."
+    else
+        case "$mu_dir" in
+            "/var/www/${site_name}"|"/var/www/${site_name}/"*) ;;
+            *) print_error "${site_name}'s mu-plugins dir (${mu_dir}) isn't inside the site, so wpdev's mu-plugin can't be installed." ;;
+        esac
+        host_dir="sites/${site_name}${mu_dir#/var/www/${site_name}}"
+        mkdir -p "$host_dir"
+        sed -e "s#__WPDEV_ADMIN_DOMAIN__#${admin}#" -e "s#__WPDEV_ADMIN_ORIGIN__#$(site_url "$admin")#" \
+            wordpress/mu-plugins/${ADMIN_DOMAIN_PLUGIN} > "${host_dir}/${ADMIN_DOMAIN_PLUGIN}"
+        print_info "Installed wpdev's mu-plugin: ${host_dir}/${ADMIN_DOMAIN_PLUGIN} (rewrites wp-admin's URLs to ${admin}; removed by: wpdev admin-domain ${site_name} off)"
     fi
 }
 
@@ -2678,7 +2765,7 @@ cmd_remove() {
     if [ -n "$admin" ]; then
         rm -f "nginx/ssl/certs/${admin}.pem" "nginx/ssl/private/${admin}-key.pem"
     fi
-    rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem" "$(media_proxy_conf "$domain")" "$(admin_domain_conf "$domain")"
+    rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem" "$(media_proxy_conf "$domain")" "$(admin_domain_conf "$domain")" "$(admin_domain_frontend_conf "$domain")"
     print_info "Removed Nginx config and SSL certificate${admin:+ (and admin domain ${admin})}"
 
     # Nginx (running as root in-container) owns these on the host too, so a
@@ -2836,7 +2923,9 @@ cmd_clone() {
     php_exec "$php_svc" wp config set WP_SITEURL "${new_url}" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     php_exec "$php_svc" wp config set WP_REDIS_PREFIX "${new_name}:" --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
     php_exec "$php_svc" wp config set DISABLE_WP_CRON true --raw --path="/var/www/${new_name}" --allow-root </dev/null >/dev/null
-    # An admin domain belongs to one site, so the clone starts without one.
+    # An admin domain belongs to one site, so the clone starts without one
+    # (and without wpdev's mu-plugin, which names the source's domain).
+    remove_admin_domain_plugin "$new_name" >/dev/null
     if [ -f "sites/${new_name}/.admin-domain" ]; then
         rm -f "sites/${new_name}/.admin-domain"
         if [ -n "$(site_admin_domain "$source_name")" ]; then

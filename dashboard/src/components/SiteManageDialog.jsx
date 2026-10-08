@@ -356,11 +356,12 @@ function AdminDomainTab({ site }) {
   return (
     <div>
       <p className="muted">
-        Serves this site's wp-admin on a separate domain, like a production reverse proxy: requests
-        reach the site with its own Host and <code>X-Forwarded-Host</code> set to the admin domain.
-        Only wp-admin, wp-login.php, wp-includes, wp-content, wp-json and previews pass; everything
-        else is a 404. Rewriting wp-admin's links to the admin domain is up to the project (e.g. a
-        mu-plugin reading <code>WP_ADMIN_DOMAIN</code>); WordPress isn't changed.
+        Moves this site's wp-admin to a separate domain, like a production reverse proxy: requests
+        reach the site with its own Host and <code>X-Forwarded-Host</code> set to the admin domain,
+        and wp-admin/wp-login.php on {site.domain} redirect there. Only admin paths, wp-json and
+        previews pass. wp-admin's links follow the project's own admin-domain code if it defines{' '}
+        <code>WP_ADMIN_DOMAIN</code>, otherwise wpdev's mu-plugin, installed when you turn it on and
+        removed when you turn it off.
       </p>
       {error && <p className="error">{error}</p>}
       {status && (
@@ -376,7 +377,7 @@ function AdminDomainTab({ site }) {
               → {siteUrl(site.domain)}
             </>
           ) : (
-            'wp-admin is only served on the site domain.'
+            `wp-admin is on ${site.domain}.`
           )}
         </p>
       )}
@@ -400,7 +401,7 @@ function AdminDomainTab({ site }) {
       {confirmOff && (
         <ConfirmDialog
           title="Turn the admin domain off?"
-          message={`${status.domain} stops being served. The domain is kept for next time, and ${site.domain} is unaffected.`}
+          message={`wp-admin goes back to ${site.domain}, ${status.domain} stops being served, and wpdev's mu-plugin (if installed) is removed. The domain is kept for next time.`}
           confirmLabel="Turn off"
           onCancel={() => setConfirmOff(false)}
           onConfirm={() => run({ mode: 'off' })}

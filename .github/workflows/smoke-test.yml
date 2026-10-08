@@ -812,21 +812,29 @@ jobs:
       - name: >
           Feature test -- `wpdev admin-domain` serves a site's wp-admin on a
           second domain through a reverse proxy (site Host + X-Forwarded-Host),
-          passes only admin paths, survives a vhost regeneration, isn't
-          cloned, is cleaned up by remove, and turns off cleanly.
+          passes only admin paths, sends the site domain's wp-admin/login
+          there, installs wpdev's mu-plugin unless the project has its own,
+          survives a vhost regeneration, isn't cloned, is cleaned up by
+          remove, and turns off cleanly.
         run: |
           get() {
             curl -sk --noproxy '*' --resolve "$1:443:127.0.0.1" -o /dev/null \
               -w '%{http_code} %{redirect_url}' "https://$1$2"
           }
           code() { get "$1" "$2" | cut -d' ' -f1; }
+          page() { curl -sk --noproxy '*' --resolve "$1:443:127.0.0.1" "https://$1$2"; }
+          plugin=sites/citest/wp-content/mu-plugins/wpdev-admin-domain.php
 
           ./wpdev admin-domain citest | grep -q 'Off'
           ! ./wpdev admin-domain citest 'a;b'
           ! ./wpdev admin-domain citest citest.test
 
+          # A vhost from before this feature lacks the include; `on` adds it.
+          sed -i '/admin-domain\/frontend/d' nginx/sites/citest.test.conf
           out=$(./wpdev admin-domain citest citest-admin.test); echo "$out"
-          echo "$out" | grep -q "WP_ADMIN_DOMAIN isn't defined"
+          grep -q 'admin-domain/frontend/citest.test.con' nginx/sites/citest.test.conf
+          echo "$out" | grep -q "Installed wpdev's mu-plugin"
+          grep -q "const WPDEV_ADMIN_DOMAIN = 'citest-admin.test';" "$plugin"
           [ -f nginx/ssl/certs/citest-admin.test.pem ]
           ./wpdev admin-domain citest | grep -q 'On: https://citest-admin.test'
 
@@ -839,24 +847,55 @@ jobs:
           [ "$(code citest-admin.test /wp-includes/js/jquery/jquery.min.js)" = 200 ]
           [ "$(code citest-admin.test /sample-page/)" = 404 ]
 
-          # What PHP sees, through a throwaway mu-plugin that also defines
-          # WP_ADMIN_DOMAIN (so `on` stops warning).
-          mkdir -p sites/citest/wp-content/mu-plugins
-          cat > sites/citest/wp-content/mu-plugins/wpdev-ci-admin-domain.php <<'PHP'
+          # The site domain sends wp-admin and the login over, except the
+          # endpoints public pages use; a spoofed header doesn't get past.
+          [ "$(get citest.test /wp-admin/)" = "302 https://citest-admin.test/wp-admin/" ]
+          [ "$(get citest.test '/wp-login.php?action=lostpassword')" = "302 https://citest-admin.test/wp-login.php?action=lostpassword" ]
+          [ "$(code citest.test /wp-admin/admin-ajax.php)" = 400 ]
+          [ "$(code citest.test /)" = 200 ]
+          [ "$(curl -sk --noproxy '*' --resolve citest.test:443:127.0.0.1 -H 'X-Forwarded-Host: citest-admin.test' \
+            -o /dev/null -w '%{http_code}' https://citest.test/wp-admin/)" = 302 ]
+          get citest.test /wp-admin/ | grep -q 'citest-admin.test'
+
+          # wpdev's mu-plugin: the login page is all on the admin domain, and
+          # PHP sees the forwarded header, the admin Host, and rest_url() on
+          # the admin domain (a throwaway probe mu-plugin reports them).
+          lp=$(page citest-admin.test /wp-login.php)
+          echo "$lp" | grep -q 'action="https://citest-admin.test/wp-login.php'
+          ! echo "$lp" | grep -qE '(src|action)="https://citest.test'
+          cat > sites/citest/wp-content/mu-plugins/wpdev-ci-probe.php <<'PHP'
           <?php
-          define('WP_ADMIN_DOMAIN', 'citest-admin.test');
-          if (isset($_GET['wpdev_headers'])) {
-              header('X-Seen-Host: ' . $_SERVER['HTTP_HOST']);
-              header('X-Seen-Forwarded-Host: ' . ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? ''));
-              header('X-Seen-HTTPS: ' . (is_ssl() ? 'on' : 'off'));
-          }
+          add_action('init', function () {
+              if (isset($_GET['wpdev_headers'])) {
+                  header('X-Seen-Forwarded-Host: ' . ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? ''));
+                  header('X-Seen-Host: ' . $_SERVER['HTTP_HOST']);
+                  header('X-Seen-HTTPS: ' . (is_ssl() ? 'on' : 'off'));
+                  header('X-Seen-Rest: ' . rest_url());
+              }
+          });
           PHP
           h=$(curl -sk --noproxy '*' --resolve citest-admin.test:443:127.0.0.1 -D - -o /dev/null \
             'https://citest-admin.test/wp-login.php?wpdev_headers=1'); echo "$h"
-          echo "$h" | grep -qi '^x-seen-host: citest.test'
           echo "$h" | grep -qi '^x-seen-forwarded-host: citest-admin.test'
+          echo "$h" | grep -qi '^x-seen-host: citest-admin.test'
           echo "$h" | grep -qi '^x-seen-https: on'
-          ! ./wpdev admin-domain citest on | grep -q 'WP_ADMIN_DOMAIN'
+          echo "$h" | grep -qi '^x-seen-rest: https://citest-admin.test/'
+          # ...and only for requests through the admin domain.
+          h=$(curl -sk --noproxy '*' --resolve citest.test:443:127.0.0.1 -D - -o /dev/null \
+            'https://citest.test/?wpdev_headers=1')
+          echo "$h" | grep -qi '^x-seen-rest: https://citest.test/'
+
+          # A project with its own admin-domain code (WP_ADMIN_DOMAIN) keeps
+          # it: wpdev's plugin is removed, and a mismatch is flagged.
+          echo "<?php define('WP_ADMIN_DOMAIN', 'citest-admin.test');" > sites/citest/wp-content/mu-plugins/project-admin-domain.php
+          ./wpdev admin-domain citest on | grep -q 'handles citest-admin.test itself'
+          [ ! -e "$plugin" ]
+          echo "<?php define('WP_ADMIN_DOMAIN', 'other.test');" > sites/citest/wp-content/mu-plugins/project-admin-domain.php
+          ./wpdev admin-domain citest on | grep -q 'defines WP_ADMIN_DOMAIN=other.test'
+          [ ! -e "$plugin" ]
+          rm sites/citest/wp-content/mu-plugins/project-admin-domain.php
+          ./wpdev admin-domain citest on | grep -q "Installed wpdev's mu-plugin"
+          [ -f "$plugin" ]
 
           # hosts, cert and doctor know about it.
           ./wpdev hosts | grep -q 'citest-admin.test'
@@ -864,21 +903,26 @@ jobs:
           d=$(./wpdev doctor 2>&1 || true)
           echo "$d" | grep -q 'Admin domain citest-admin.test'
 
-          # Regenerating the site's vhost (cache on/off) must keep it.
+          # Regenerating the site's vhost (cache on/off) must keep both sides.
           ./wpdev cache citest on
           [ "$(code citest-admin.test /wp-login.php)" = 200 ]
+          [ "$(get citest.test /wp-admin/)" = "302 https://citest-admin.test/wp-admin/" ]
           ./wpdev cache citest off
           [ "$(code citest-admin.test /wp-login.php)" = 200 ]
+          [ "$(get citest.test /wp-admin/)" = "302 https://citest-admin.test/wp-admin/" ]
 
-          # A clone starts without one (the domain is taken); remove cleans up.
+          # A clone starts without one (or wpdev's plugin); remove cleans up.
           ./wpdev clone citest adclone --yes </dev/null
           [ ! -e sites/adclone/.admin-domain ]
+          [ ! -e sites/adclone/wp-content/mu-plugins/wpdev-admin-domain.php ]
           ./wpdev admin-domain adclone | grep -qx '.*Off'
+          ! get adclone.test /wp-admin/ | grep -q 'admin.test'
           ! ./wpdev admin-domain adclone citest-admin.test
           ./wpdev admin-domain adclone adclone-admin.test
           [ "$(code adclone-admin.test /wp-login.php)" = 200 ]
           ./wpdev remove adclone --yes </dev/null
           [ ! -e nginx/sites/admin-domain/adclone.test.conf ]
+          [ ! -e nginx/sites/admin-domain/frontend/adclone.test.conf ]
           [ ! -e nginx/ssl/certs/adclone-admin.test.pem ]
 
           # Through the api (the dashboard's Admin domain tab).
@@ -893,9 +937,13 @@ jobs:
           [ "$(post '{"domain":"a;b"}')" = 400 ]
           [ "$(post '{"mode":"maybe"}')" = 400 ]
 
+          # off: everything back on the site domain, wpdev's plugin gone.
           ./wpdev admin-domain citest off
           [ ! -e nginx/sites/admin-domain/citest.test.conf ]
-          rm -f sites/citest/wp-content/mu-plugins/wpdev-ci-admin-domain.php sites/citest/.admin-domain \
+          [ ! -e nginx/sites/admin-domain/frontend/citest.test.conf ]
+          [ ! -e "$plugin" ]
+          ! get citest.test /wp-admin/ | grep -q 'citest-admin.test'
+          rm -f sites/citest/wp-content/mu-plugins/wpdev-ci-probe.php sites/citest/.admin-domain \
             nginx/ssl/certs/citest-admin.test.pem nginx/ssl/private/citest-admin.test-key.pem
 
       - name: >

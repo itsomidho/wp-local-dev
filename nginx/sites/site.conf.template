@@ -31,6 +31,10 @@ server {
     # a glob, which nginx skips silently when no file matches -- i.e. off.
     include /etc/nginx/sites/media-proxy/DOMAIN.con[f];
 
+    # Admin domain (`wpdev admin-domain`): sends wp-admin and the login on
+    # this domain over to the admin domain. Same [f] glob: off = no file.
+    include /etc/nginx/sites/admin-domain/frontend/DOMAIN.con[f];
+
     # Main WordPress rewrite logic
     location / {
         try_files $uri $uri/ /index.php?$args;

@@ -66,7 +66,7 @@ _wpdev() {
         "cert:Reissue a site's HTTPS certificate"
         "fix-perms:Give a site's files back to you"
         "media-proxy:Load uploads missing locally from production"
-        "admin-domain:Serve wp-admin on a separate domain"
+        "admin-domain:Move wp-admin to a separate domain"
         'wp:Run a WP-CLI command against a site'
         'help:Show usage'
     )
