@@ -30,6 +30,9 @@ import Terminal, { stripAnsiToLines } from './Terminal';
 import { Avatar, Chip, EmptyState, Skeleton, StatusDot, useFollowPage } from './ui';
 import { idlePhpVersions, mergeServices, serviceInfo } from '../lib/services';
 
+// How many sites the Overview lists before "+N more" (two columns of 4).
+const OVERVIEW_SITES = 8;
+
 function phpInUse(sites) {
   return [...new Set(sites.map((s) => s.php).filter(Boolean))];
 }
@@ -123,36 +126,9 @@ export function OverviewPage({ sites, sitesLoading, statusBySite, services, stat
         </button>
       </section>
 
+      {/* The two fixed-size cards side by side; Sites, the one that grows
+          with every site, gets its own full-width row below them. */}
       <div className="overview-grid">
-        <section className="card">
-          <div className="card-head">
-            <div>
-              <h2>Sites</h2>
-              <p>Every site this stack serves</p>
-            </div>
-            <div className="card-head-actions">
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNavigate('sites')}>
-                View all <ArrowRight size={14} />
-              </button>
-              <button type="button" className="btn btn-primary btn-sm" onClick={onAdd}>
-                <Plus size={15} /> Add site
-              </button>
-            </div>
-          </div>
-          {sitesLoading ? (
-            <RowSkeletons />
-          ) : sites.length === 0 ? (
-            <EmptyState icon={Globe} title="No sites yet" action={<button className="btn btn-primary" onClick={onAdd}><Plus size={15} /> Add your first site</button>}>
-              Provision a WordPress site with its own database, HTTPS certificate and PHP version.
-            </EmptyState>
-          ) : (
-            <ul className="site-rows">
-              {sites.slice(0, 6).map((site) => (
-                <SiteRow key={site.name} site={site} status={statusBySite[site.domain]} onManage={onManage} />
-              ))}
-            </ul>
-          )}
-        </section>
         <section className="card">
           <div className="card-head">
             <div>
@@ -160,33 +136,69 @@ export function OverviewPage({ sites, sitesLoading, statusBySite, services, stat
               <p>The host running Docker</p>
             </div>
           </div>
-          <MachineStats stats={stats} error={statsError} />
+          <MachineStats stats={stats} error={statsError} layout="row" />
+        </section>
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <h2>Services</h2>
+              <p>{loadingStatus ? 'Checking containers…' : `${running} of ${merged.length} containers running`}</p>
+            </div>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNavigate('services')}>
+              Details <ArrowRight size={14} />
+            </button>
+          </div>
+          <div className="service-strip service-strip-compact">
+            {merged.map((svc) => {
+              const info = serviceInfo(svc.service);
+              const Icon = info.icon;
+              return (
+                <div key={svc.service} className={`service-mini state-${loadingStatus ? 'unknown' : svc.state}`} title={svc.status}>
+                  <Icon size={15} />
+                  <span>{info.label}</span>
+                  <StatusDot tone={loadingStatus ? 'muted' : stateTone(svc.state)} />
+                </div>
+              );
+            })}
+          </div>
         </section>
       </div>
 
       <section className="card">
         <div className="card-head">
           <div>
-            <h2>Services</h2>
-            <p>{loadingStatus ? 'Checking containers…' : `${running} of ${merged.length} containers running`}</p>
+            <h2>Sites</h2>
+            <p>Every site this stack serves</p>
           </div>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNavigate('services')}>
-            Details <ArrowRight size={14} />
-          </button>
+          <div className="card-head-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNavigate('sites')}>
+              View all <ArrowRight size={14} />
+            </button>
+            <button type="button" className="btn btn-primary btn-sm" onClick={onAdd}>
+              <Plus size={15} /> Add site
+            </button>
+          </div>
         </div>
-        <div className="service-strip">
-          {merged.map((svc) => {
-            const info = serviceInfo(svc.service);
-            const Icon = info.icon;
-            return (
-              <div key={svc.service} className={`service-mini state-${loadingStatus ? 'unknown' : svc.state}`} title={svc.status}>
-                <Icon size={15} />
-                <span>{info.label}</span>
-                <StatusDot tone={loadingStatus ? 'muted' : stateTone(svc.state)} />
-              </div>
-            );
-          })}
-        </div>
+        {sitesLoading ? (
+          <RowSkeletons />
+        ) : sites.length === 0 ? (
+          <EmptyState icon={Globe} title="No sites yet" action={<button className="btn btn-primary" onClick={onAdd}><Plus size={15} /> Add your first site</button>}>
+            Provision a WordPress site with its own database, HTTPS certificate and PHP version.
+          </EmptyState>
+        ) : (
+          <>
+            <ul className="site-rows site-rows-2col">
+              {sites.slice(0, OVERVIEW_SITES).map((site) => (
+                <SiteRow key={site.name} site={site} status={statusBySite[site.domain]} onManage={onManage} />
+              ))}
+            </ul>
+            {sites.length > OVERVIEW_SITES && (
+              <button type="button" className="btn btn-ghost btn-sm more-sites" onClick={() => onNavigate('sites')}>
+                +{sites.length - OVERVIEW_SITES} more <ArrowRight size={14} />
+              </button>
+            )}
+          </>
+        )}
       </section>
     </div>
   );
