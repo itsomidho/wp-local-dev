@@ -27,24 +27,24 @@ export const TOOLS = [
   { id: 'portainer', label: 'Portainer', icon: Container },
 ];
 
+// A terminal prompt typing a "w" -- WordPress, driven from the command
+// line, which is what wpdev is. Same mark as public/favicon.svg; keep
+// the two in sync.
 export function Logo() {
   return (
     <svg className="logo" viewBox="0 0 32 32" aria-hidden="true">
       <defs>
         <linearGradient id="logo-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="var(--brand-1)" />
-          <stop offset="1" stopColor="var(--brand-2)" />
+          <stop offset="0" stopColor="#8b5cf6" />
+          <stop offset="1" stopColor="#38bdf8" />
         </linearGradient>
       </defs>
-      <rect width="32" height="32" rx="9" fill="url(#logo-g)" />
-      <path
-        d="M7.5 10.5l3.8 11 4.7-8.6 4.7 8.6 3.8-11"
-        fill="none"
-        stroke="#fff"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+      <rect width="32" height="32" rx="8" fill="url(#logo-g)" />
+      <g fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M6.5 11.5 10.5 16l-4 4.5" strokeWidth="2.6" />
+        <path d="M13 12.5l2.2 8 2.6-5.6 2.6 5.6 2.2-8" strokeWidth="2.4" />
+      </g>
+      <rect className="logo-cursor" x="24.6" y="18.4" width="3.6" height="2.6" rx="0.8" fill="#fff" />
     </svg>
   );
 }

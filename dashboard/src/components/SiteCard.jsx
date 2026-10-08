@@ -3,10 +3,11 @@ import { siteUrl } from '../api';
 import { Avatar, Chip, StatusDot } from './ui';
 
 // Reachability from `wpdev status`'s HTTP column: what nginx answered for
-// the site's front page. 000 means nothing answered at all.
+// the site's front page. "down" (or an older wpdev's 000) means nothing
+// answered at all.
 export function httpTone(code) {
   if (!code) return { tone: 'muted', label: 'Not checked yet' };
-  if (code === '000') return { tone: 'danger', label: 'Unreachable (no response)' };
+  if (code === 'down' || code === '000') return { tone: 'danger', label: 'Unreachable (no response)' };
   if (/^[23]/.test(code)) return { tone: 'success', label: `Reachable (HTTP ${code})` };
   return { tone: 'warning', label: `HTTP ${code}` };
 }

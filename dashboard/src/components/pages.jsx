@@ -391,15 +391,28 @@ export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefre
         })}
       </div>
 
-      {status.raw && (
-        <details className="raw-output">
-          <summary>
-            <TerminalIcon size={14} /> Raw <code>wpdev status</code> output
-          </summary>
-          <Terminal lines={stripAnsiToLines(status.raw)} />
-        </details>
-      )}
+      {status.raw && <RawOutput command="wpdev status" text={status.raw} />}
     </div>
+  );
+}
+
+// The untouched terminal output behind a toggle. Opening it scrolls it
+// into view -- it sits below a page of cards, so otherwise nothing on
+// screen changes and the click looks like it did nothing.
+function RawOutput({ command, text }) {
+  return (
+    <details
+      className="raw-output"
+      onToggle={(e) => {
+        const el = e.currentTarget;
+        if (el.open) requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      }}
+    >
+      <summary>
+        <TerminalIcon size={14} /> Raw <code>{command}</code> output
+      </summary>
+      <Terminal lines={stripAnsiToLines(text)} />
+    </details>
   );
 }
 
@@ -421,7 +434,7 @@ export function DoctorPage({ doctor, onRun }) {
         : { tone: 'success', icon: CheckCircle2, title: 'Everything checks out', text: `All ${counts.ok} checks passed.` };
 
   return (
-    <div className="page page-narrow">
+    <div className="page">
       <section className={`doctor-hero${verdict ? ` tone-${verdict.tone}` : ''}`}>
         <span className="doctor-hero-icon">
           {verdict ? <verdict.icon size={26} /> : <Stethoscope size={26} />}
@@ -484,14 +497,7 @@ export function DoctorPage({ doctor, onRun }) {
         </section>
       ))}
 
-      {raw && (
-        <details className="raw-output">
-          <summary>
-            <TerminalIcon size={14} /> Raw <code>wpdev doctor</code> output
-          </summary>
-          <Terminal lines={stripAnsiToLines(raw)} />
-        </details>
-      )}
+      {raw && <RawOutput command="wpdev doctor" text={raw} />}
     </div>
   );
 }
