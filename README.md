@@ -14,8 +14,9 @@ touches `docker-compose.yml`.
 ## Features
 
 - **Multi-site, multi-PHP** — any number of sites, each genuinely running
-  its own PHP version (8.1–8.4) in its own PHP-FPM container, not just a
-  label. See [Multiple PHP versions](#multiple-php-versions).
+  its own PHP version (7.4–8.5) in its own PHP-FPM container, not just a
+  label — and only the versions your sites use are running. See
+  [Multiple PHP versions](#multiple-php-versions).
 - **One-command provisioning** — `wpdev add` creates the vhost, database,
   SSL certificate, WordPress install, and default plugins in one
   interactive step. See [Getting started](#getting-started).
@@ -164,7 +165,7 @@ wpdev uninstall
 
 Three separately-confirmed stages, each safe to stop after:
 
-1. Stops and removes containers, volumes, and the `wp-local-dev-php8x`
+1. Stops and removes containers, volumes, and the `wp-local-dev-phpXX`
    images built from this repo (`docker compose down -v --rmi local`) —
    asks `yes`/`no` first, since this deletes every site's database.
 2. Removes the `wpdev` symlink from `~/.local/bin` or `/usr/local/bin` —
@@ -218,7 +219,7 @@ and update bookmarks (the dashboard is at `http://localhost:39006` now).
 
 ```bash
 wpdev install-mkcert     # 1. one-time: sets up a local trusted SSL CA
-wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, api, dashboard
+wpdev up                 # 2. start mysql, redis, mailpit, nginx, adminer, api, dashboard (+ PHP for your sites)
 wpdev add                 # 3. provision your first site
 ```
 
@@ -228,7 +229,7 @@ wpdev add                 # 3. provision your first site
 $ wpdev add
 Enter domain name (e.g., mysite.test): mysite.test
 
-PHP version [8.2] (choices: 8.1 8.2 8.3 8.4): 8.3
+PHP version [8.2] (choices: 7.4 8.0 8.1 8.2 8.3 8.4 8.5): 8.3
 WordPress version [latest]: 6.4.3
 
 Domain:          mysite.test
@@ -490,15 +491,38 @@ Each site genuinely runs its own PHP — not a label, an actual separate
 PHP-FPM container per version. `wpdev add` prompts for one:
 
 ```
-PHP version [8.2] (choices: 8.1 8.2 8.3 8.4): 8.4
+PHP version [8.2] (choices: 7.4 8.0 8.1 8.2 8.3 8.4 8.5): 8.4
 ```
 
 Press enter for the default (8.2). The choice is saved as `PHP_VERSION` in
 `config/sites/<name>.env` and baked into that site's Nginx vhost
-(`fastcgi_pass php84:9000`, etc.) — `docker-compose.yml` runs one service
-per version (`php81`/`php82`/`php83`/`php84`), all sharing the same `sites/`
+(`fastcgi_pass php84:9000`, etc.) — `docker-compose.yml` has one service
+per version (`php74` through `php85`), all sharing the same `sites/`
 directory; which container actually handles a given site is entirely down
 to which one its vhost points at.
+
+**Only the versions your sites use run.** Seven idle PHP containers would
+cost memory and seven image builds for nothing, so:
+
+- `wpdev up` starts the core services plus exactly the PHP versions some
+  site uses, and stops any other PHP container that's still running.
+- `wpdev add` / `clone` start the version they need. The first site on a
+  version builds its image first, which takes a few minutes; after that
+  it starts in seconds.
+- Removing the last site on a version stops its container (the image is
+  kept, so it comes back quickly).
+- `wpdev shell php 7.4` starts that version for the shell if no site uses
+  it; the next `wpdev up` stops it again.
+- Doctor lists the versions in use, and warns about a PHP container that's
+  running with no site on it.
+
+A plain `docker compose up -d` would start every version — use `wpdev up`.
+
+**7.4, 8.0 and 8.1 are end of life** (no security fixes from php.net any
+more). They're here to match an old production server locally; the
+dashboard marks them EOL when you pick a version. Check that the
+WordPress version you install still supports the PHP you choose — recent
+WordPress releases keep raising their minimum.
 
 ```bash
 wpdev shell php 8.4          # shell into a specific version's container
@@ -527,7 +551,7 @@ Site configs use `resolver 127.0.0.11 valid=10s ipv6=off;` (Docker's
 embedded DNS) plus `set $upstream_php ...; fastcgi_pass $upstream_php:9000;`
 instead of a bare `fastcgi_pass phpXX:9000;`. A bare hostname is resolved
 once, at worker startup, and cached for the worker's whole life — so
-restarting any `php8x` container (which gets a new IP) caused real,
+restarting any `phpXX` container (which gets a new IP) caused real,
 intermittent 500s until nginx was reloaded, found the hard way after a
 routine container restart broke a live site mid-session. The `set`
 + `resolver` combo forces a fresh lookup on every request instead.
@@ -1222,7 +1246,7 @@ link.
 
 ```
 wp-local-dev/
-├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, api, dashboard
+├── docker-compose.yml           # mysql, php74-85 (on demand), redis, mailpit, nginx, adminer, api, dashboard
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── .env.example                 # template for .env, copied by install.sh
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)

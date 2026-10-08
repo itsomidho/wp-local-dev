@@ -28,7 +28,11 @@ import MachineStats from './MachineStats';
 import SiteCard, { SiteChips, httpTone } from './SiteCard';
 import Terminal, { stripAnsiToLines } from './Terminal';
 import { Avatar, Chip, EmptyState, Skeleton, StatusDot, useFollowPage } from './ui';
-import { mergeServices, serviceInfo } from '../lib/services';
+import { idlePhpVersions, mergeServices, serviceInfo } from '../lib/services';
+
+function phpInUse(sites) {
+  return [...new Set(sites.map((s) => s.php).filter(Boolean))];
+}
 
 // ---------------------------------------------------------------------------
 // Overview
@@ -50,7 +54,7 @@ function Kpi({ icon: Icon, label, value, hint, tone = 'brand', loading }) {
 }
 
 export function OverviewPage({ sites, sitesLoading, statusBySite, services, status, stats, statsError, onManage, onAdd, onNavigate, onOpenTool }) {
-  const merged = mergeServices(services);
+  const merged = mergeServices(services, phpInUse(sites));
   const running = merged.filter((s) => s.state === 'running').length;
   const reachable = sites.filter((s) => /^[23]/.test(statusBySite[s.domain]?.http || '')).length;
   const statusRows = Object.values(statusBySite);
@@ -332,8 +336,9 @@ export function stateTone(state) {
   return 'danger';
 }
 
-export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefresh, onRestart, onShowDetails, restarting }) {
-  const merged = mergeServices(services);
+export function ServicesPage({ sites, services, status, onOpenTool, onShowLogs, onRefresh, onRestart, onShowDetails, restarting }) {
+  const merged = mergeServices(services, phpInUse(sites));
+  const idlePhp = idlePhpVersions(services, phpInUse(sites));
   const loading = !status.checkedAt;
 
   return (
@@ -415,6 +420,13 @@ export function ServicesPage({ services, status, onOpenTool, onShowLogs, onRefre
           );
         })}
       </div>
+
+      {!loading && idlePhp.length > 0 && (
+        <p className="muted small idle-php">
+          <Info size={14} /> PHP {idlePhp.join(', ')} {idlePhp.length === 1 ? 'is' : 'are'} available too, not running: a PHP
+          version starts when a site uses it, and stops when its last site is removed.
+        </p>
+      )}
 
       {status.raw && <RawOutput command="wpdev status" text={status.raw} />}
     </div>

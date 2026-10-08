@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { Globe, Sparkles } from 'lucide-react';
+import { Globe, Sparkles, Info } from 'lucide-react';
 import { siteUrl } from '../api';
 import { Modal, ModalHeader } from './ui';
+import { PHP_EOL, PHP_VERSIONS, phpSlug } from '../lib/services';
 
-const PHP_VERSIONS = ['8.1', '8.2', '8.3', '8.4'];
 
-export default function AddSiteDialog({ onSubmit, onClose }) {
+export default function AddSiteDialog({ runningPhp = [], onSubmit, onClose }) {
   const [domain, setDomain] = useState('');
   const [php, setPhp] = useState('8.2');
   const [wpVersion, setWpVersion] = useState('');
@@ -34,11 +34,26 @@ export default function AddSiteDialog({ onSubmit, onClose }) {
           <span className="field-label">PHP version</span>
           <div className="choice-row" role="radiogroup" aria-label="PHP version">
             {PHP_VERSIONS.map((v) => (
-              <button key={v} type="button" role="radio" aria-checked={php === v} className={`choice${php === v ? ' is-active' : ''}`} onClick={() => setPhp(v)}>
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={php === v}
+                className={`choice${php === v ? ' is-active' : ''}`}
+                onClick={() => setPhp(v)}
+                title={PHP_EOL.has(v) ? `PHP ${v} is end of life: no more security fixes` : undefined}
+              >
                 <span className="mono">{v}</span>
+                {PHP_EOL.has(v) && <span className="choice-tag">EOL</span>}
               </button>
             ))}
           </div>
+          {!runningPhp.includes(phpSlug(php)) && (
+            <span className="field-hint field-hint-icon">
+              <Info size={13} /> No site uses PHP {php} yet, so its container is built and started first. The first time, that
+              takes a few minutes.
+            </span>
+          )}
         </div>
 
         <label className="field">

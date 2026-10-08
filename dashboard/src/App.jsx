@@ -441,6 +441,7 @@ export default function App() {
           {page === 'sites' && <SitesPage sites={siteList} sitesLoading={sites === null} statusBySite={statusBySite} onManage={setManageSite} onAdd={() => setShowAdd(true)} />}
           {page === 'services' && (
             <ServicesPage
+              sites={siteList}
               services={status.services}
               status={status}
               onOpenTool={openTool}
@@ -459,7 +460,13 @@ export default function App() {
 
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
 
-      {showAdd && <AddSiteDialog onSubmit={startAdd} onClose={() => setShowAdd(false)} />}
+      {showAdd && (
+        <AddSiteDialog
+          runningPhp={(status.services || []).filter((s) => s.state === 'running').map((s) => s.service)}
+          onSubmit={startAdd}
+          onClose={() => setShowAdd(false)}
+        />
+      )}
 
       {manageSite && (
         <SiteManageDialog

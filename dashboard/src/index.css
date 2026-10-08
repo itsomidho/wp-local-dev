@@ -3668,6 +3668,45 @@ input::placeholder {
   word-break: break-all;
 }
 
+/* PHP version picker: seven versions, end-of-life ones tagged. */
+.choice-row {
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+}
+
+.choice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.choice-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
+.field-hint-icon {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.field-hint-icon svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.idle-php {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
 /* Tabular command output (WP-CLI lists) -- see Output in ui.jsx. */
 .output-block {
   display: flex;

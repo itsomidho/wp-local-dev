@@ -10,6 +10,19 @@ FROM wordpress:php${PHP_VERSION}-fpm
 ARG PHP_VERSION
 ENV PHP_VERSION=${PHP_VERSION}
 
+# PHP 7.4 and 8.0 (end of life) are built on Debian 11 "bullseye", whose
+# support has ended too: its security updates are moving off the normal
+# mirrors, so packages the index still lists come back 404. Debian keeps
+# every retired release on archive.debian.org, so a base on bullseye
+# installs from there (Check-Valid-Until off: an archived release's
+# signatures are never refreshed). Newer bases are left untouched.
+RUN . /etc/os-release; \
+    if [ "$VERSION_CODENAME" = "bullseye" ]; then \
+        printf 'deb http://archive.debian.org/debian bullseye main\ndeb http://archive.debian.org/debian bullseye-updates main\ndeb http://archive.debian.org/debian-security bullseye-security main\n' > /etc/apt/sources.list; \
+        rm -f /etc/apt/sources.list.d/*; \
+        echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive; \
+    fi
+
 COPY --chmod=0755 php/install-php-extensions /usr/local/bin/install-php-extensions
 
 # apt-get update first: install-php-extensions doesn't reliably run it itself,

@@ -386,8 +386,12 @@ jobs:
           nginx-helper couldn't delete nginx's cache files.
         run: |
           me=$(id -u)
-          for svc in php81 php82 php83 php84; do
-            [ "$(docker exec wp-$svc id -u www-data)" = "$me" ]
+          # Every PHP container that's running (only the versions sites
+          # use are, see the on-demand test).
+          php_containers=$(docker ps --format '{{.Names}}' | grep '^wp-php')
+          [ -n "$php_containers" ]
+          for c in $php_containers; do
+            [ "$(docker exec "$c" id -u www-data)" = "$me" ]
           done
           [ "$(docker exec wp-nginx id -u nginx)" = "$me" ]
           grep -q ' www-data /usr/local/bin/wp-cron-runner.sh' <(docker exec wp-php82 cat /etc/cron.d/wp-cron)
@@ -593,6 +597,7 @@ jobs:
           ! ./wpdev logs redis --tail=abc </dev/null
 
           out=$(curl -sN -m 5 "http://127.0.0.1:39005/api/logs/redis?tail=2" || true)
+          echo "$out"
           [ "$(echo "$out" | grep -c '^event: line')" -eq 2 ]
 
           sleep 2
@@ -697,6 +702,36 @@ jobs:
           before=$(md5sum < .env)
           ./wpdev list >/dev/null 2>&1
           [ "$(md5sum < .env)" = "$before" ]
+
+      - name: >
+          Feature test -- PHP runs on demand: only the versions sites use are
+          running; a site on an unused version builds and starts it (and
+          really runs that PHP); removing its last site stops it, and `up`
+          doesn't bring it back.
+        run: |
+          running_php() { docker ps --format '{{.Names}}' | grep '^wp-php' | sort; }
+          used_php() { for f in config/sites/*.env; do sed -n 's/^PHP_VERSION=//p' "$f"; done | sort -u | sed 's/\.//; s/^/wp-php/' | sort; }
+          [ "$(running_php)" = "$(used_php)" ]
+          ! docker inspect wp-php85 >/dev/null 2>&1
+
+          ./wpdev add --domain=php85test.test --php=8.5 </dev/null
+          [ "$(docker exec wp-php85 php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')" = "8.5" ]
+          code=""
+          for i in $(seq 1 10); do
+            code=$(curl -sk --noproxy '*' --resolve php85test.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://php85test.test/ || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          [ "$code" = "200" ]
+          [ "$(running_php)" = "$(used_php)" ]
+
+          ./wpdev remove php85test --yes </dev/null
+          ! docker inspect wp-php85 >/dev/null 2>&1
+
+          ./wpdev up </dev/null
+          ! docker inspect wp-php85 >/dev/null 2>&1
+          [ "$(running_php)" = "$(used_php)" ]
+          ./wpdev doctor | grep -q "PHP in use:"
 
       - name: >
           Regression test -- `wpdev add --wp-version=` actually installs
