@@ -113,11 +113,31 @@ function computeProjectFootprint(projectDir) {
   });
 }
 
+// Stale-while-revalidate: once there's a number, a request never waits on
+// `du` again -- it gets the cached one, and an expired cache starts one
+// background refresh for the next poll. Only the very first request waits.
+// On a few GB of sites `du` takes seconds, and every stats poll used to
+// stall that long once a minute.
+let footprintRefresh = null;
+
+function refreshFootprint(projectDir) {
+  if (!footprintRefresh) {
+    footprintRefresh = computeProjectFootprint(projectDir)
+      .then((bytes) => {
+        footprintCache = { bytes, at: Date.now() };
+        return bytes;
+      })
+      .finally(() => {
+        footprintRefresh = null;
+      });
+  }
+  return footprintRefresh;
+}
+
 async function getProjectFootprint(projectDir) {
-  if (Date.now() - footprintCache.at < FOOTPRINT_TTL_MS) return footprintCache.bytes;
-  const bytes = await computeProjectFootprint(projectDir);
-  footprintCache = { bytes, at: Date.now() };
-  return bytes;
+  if (footprintCache.at === 0) return refreshFootprint(projectDir);
+  if (Date.now() - footprintCache.at >= FOOTPRINT_TTL_MS) refreshFootprint(projectDir).catch(() => {});
+  return footprintCache.bytes;
 }
 
 async function getSystemStats(diskPath) {

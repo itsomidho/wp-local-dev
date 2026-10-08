@@ -45,7 +45,6 @@ function __wpdev_services
     echo mailpit
     echo nginx
     echo adminer
-    echo portainer
 end
 
 # True when the command line has exactly N tokens so far (`wpdev` itself
@@ -60,14 +59,18 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update update-check status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help
+set -l __wpdev_cmds up down restart update update-check status doctor logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help
 
 complete -c wpdev -f
 
 set -l __wpdev_top "not __fish_seen_subcommand_from $__wpdev_cmds"
 complete -c wpdev -n "$__wpdev_top" -a up -d "Start all containers"
 complete -c wpdev -n "$__wpdev_top" -a down -d "Stop all containers"
-complete -c wpdev -n "$__wpdev_top" -a restart -d "Restart all containers"
+complete -c wpdev -n "$__wpdev_top" -a stats -d "Live CPU/memory/network/disk I/O per container"
+complete -c wpdev -n "$__wpdev_top" -a images -d "This project's images: list, rm <id>, prune"
+complete -c wpdev -n "$__wpdev_top" -a volumes -d "This project's volumes: list, rm <name>"
+complete -c wpdev -n "$__wpdev_top" -a inspect -d "A service's container details (secrets masked)"
+complete -c wpdev -n "$__wpdev_top" -a restart -d "Restart all containers, or the named services"
 complete -c wpdev -n "$__wpdev_top" -a update -d "git pull, then rebuild + recreate all containers"
 complete -c wpdev -n "$__wpdev_top" -a update-check -d "Fetch and report whether an update is available"
 complete -c wpdev -n "$__wpdev_top" -a status -d "Show container status"
@@ -76,7 +79,6 @@ complete -c wpdev -n "$__wpdev_top" -a logs -d "Tail logs (all services, or one)
 complete -c wpdev -n "$__wpdev_top" -a shell -d "Shell into a container"
 complete -c wpdev -n "$__wpdev_top" -a db -d "Open a MySQL prompt"
 complete -c wpdev -n "$__wpdev_top" -a adminer -d "Open Adminer in the browser"
-complete -c wpdev -n "$__wpdev_top" -a portainer -d "Open Portainer in the browser"
 complete -c wpdev -n "$__wpdev_top" -a mailpit -d "Open Mailpit in the browser"
 complete -c wpdev -n "$__wpdev_top" -a reload-nginx -d "Test and reload Nginx config"
 complete -c wpdev -n "$__wpdev_top" -a cache -d "Toggle nginx full-page cache for a site"
@@ -115,6 +117,12 @@ complete -c wpdev -f -n "__fish_seen_subcommand_from shell; and __wpdev_shell_ph
 
 # `logs [service]`
 complete -c wpdev -f -n "__fish_seen_subcommand_from logs; and __wpdev_arg_n 2" -a "(__wpdev_services)"
+# `inspect <service>`, `images [rm|prune]`, `volumes [rm]`
+complete -c wpdev -f -n "__fish_seen_subcommand_from inspect; and __wpdev_arg_n 2" -a "(__wpdev_services)"
+complete -c wpdev -f -n "__fish_seen_subcommand_from images; and __wpdev_arg_n 2" -a "rm prune --json"
+complete -c wpdev -f -n "__fish_seen_subcommand_from volumes; and __wpdev_arg_n 2" -a "rm --json"
+# `restart [service...]`
+complete -c wpdev -f -n "__fish_seen_subcommand_from restart" -a "(__wpdev_services)"
 
 # `cache <site> on|off`
 complete -c wpdev -f -n "__fish_seen_subcommand_from cache; and __wpdev_arg_n 3" -a "on off"

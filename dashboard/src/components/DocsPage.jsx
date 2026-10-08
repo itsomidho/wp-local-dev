@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeSlug from 'rehype-slug';
 import rehypeHighlight from 'rehype-highlight';
 import GithubSlugger from 'github-slugger';
+import { Search } from 'lucide-react';
 // The real README, not a copy -- imported as raw text, so this page can
 // never drift out of sync with the actual docs, and (in `npm run dev`
 // specifically) editing README.md hot-reloads this page via Vite the same
@@ -82,7 +83,7 @@ function CodeBlock({ node: _node, ...rest }) {
   );
 }
 
-export default function DocsPage({ onClose }) {
+export default function DocsPage() {
   const [query, setQuery] = useState('');
 
   const toc = useMemo(() => buildToc(readmeRaw), []);
@@ -104,18 +105,10 @@ export default function DocsPage({ onClose }) {
   return (
     <div className="docs-page">
       <aside className="docs-sidebar">
-        <div className="docs-sidebar-head">
-          <button className="ghost small" onClick={onClose}>
-            ← Back
-          </button>
-        </div>
-        <input
-          name="docsSearch"
-          className="docs-search"
-          placeholder="Search docs…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <label className="input-search">
+          <Search size={15} />
+          <input name="docsSearch" placeholder="Search docs…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </label>
         <nav className="docs-toc">
           {toc.map((entry) => {
             const visible = !matchedSlugs || matchedSlugs.has(entry.slug);
@@ -131,7 +124,7 @@ export default function DocsPage({ onClose }) {
             );
           })}
           {matchedSlugs && matchedSlugs.size === 0 && (
-            <p className="muted docs-no-results">No matches.</p>
+            <p className="muted small docs-no-results">No matches.</p>
           )}
         </nav>
       </aside>

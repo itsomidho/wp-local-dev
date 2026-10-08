@@ -61,10 +61,9 @@ touches `docker-compose.yml`.
   [Status dashboard](#status-dashboard) and [Doctor](#doctor).
 - **Xdebug on demand** — installed but only attaches when triggered, so
   normal page loads stay fast. See [Xdebug](#xdebug).
-- **Portainer and Adminer included** — container/image management and
-  database browsing in the browser, no extra setup. See
-  [Portainer](#portainer-containerimage-dashboard) and
-  [Access points](#access-points).
+- **Adminer included** — database browsing in the browser, no extra setup.
+  Container stats, images and volumes are on the dashboard's Docker page.
+  See [Access points](#access-points) and [Web dashboard](#web-dashboard).
 - **Tab completion** — fish, bash, and zsh, completing subcommands, PHP
   versions, and site names. See [Tab completion](#tab-completion).
 - **HTTP API** — every `wpdev` command available over HTTP (with live
@@ -197,15 +196,29 @@ wpdev update
   `php/xdebug.ini`, etc.), so a pulled fix could otherwise sit on disk
   unapplied until something else happened to restart that container.
   Site data isn't touched either way — only the stack's own containers.
-- Works the same from the dashboard's "Update available" badge, including
+- Works the same from the dashboard's "Update available" card, including
   for the api service itself, which can't rebuild and recreate its own
   container mid-request. See [API service](#api-service).
+
+**Portainer was removed** in favour of the dashboard's Docker page (live
+stats, images, volumes, container details — scoped to this project, no
+separate account). The first `wpdev up` after updating removes the old
+`wp-portainer` container and, if nothing else uses it, its image (the
+update itself still runs the previous `wpdev`, which doesn't know to). Its settings volume (`wp_portainer_data`) is left in place; delete
+it from the Docker page's Volumes tab once you don't need it.
+
+**Ports were renumbered** to close the gap Portainer left: Mailpit's
+inbox is now `39003` and its SMTP `39004`, the API `39005` and the
+dashboard `39006` (MySQL, Redis and Adminer are unchanged). `wpdev` moves
+these in your `.env` by itself, once, but only the ones still on their old
+default; any port you set yourself stays put. Run `wpdev up` afterwards,
+and update bookmarks (the dashboard is at `http://localhost:39006` now).
 
 ## Getting started
 
 ```bash
 wpdev install-mkcert     # 1. one-time: sets up a local trusted SSL CA
-wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api, dashboard
+wpdev up                 # 2. start mysql, php81-84, redis, mailpit, nginx, adminer, api, dashboard
 wpdev add                 # 3. provision your first site
 ```
 
@@ -322,17 +335,20 @@ Everything is `wpdev <command> [argument]`:
 |---|---|
 | `wpdev up` | Start all containers |
 | `wpdev down` | Stop all containers |
-| `wpdev restart` | Restart all containers |
+| `wpdev restart [service...]` | Restart all containers, or just the named services (e.g. `wpdev restart nginx php83`) |
 | `wpdev update` | `git pull` (fast-forward only), then rebuild + recreate every container |
 | `wpdev update-check` | Fetch and report whether an update is available — no changes made |
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev fix-dns` | Repair container DNS when the host's resolver lives behind a VPN tunnel (needs sudo). `wpdev up` already does this for you — this is for running it on its own |
-| `wpdev logs [service]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`) |
+| `wpdev stats` | Live CPU, memory, network and disk I/O per container (`docker stats`, this project only) |
+| `wpdev images [rm <id> \| prune]` | This project's images with size, age and what uses them; remove an unused one, or `prune` its unused untagged leftovers (old builds, superseded pulls) |
+| `wpdev volumes [rm <name>]` | This project's volumes with size and what uses them; remove an unused one (asks you to type its name) |
+| `wpdev inspect <service>` | `docker inspect` for a service's container, with secret-looking environment variables (`*PASSWORD*`, `*TOKEN*`, `*KEY*`, ...) masked |
+| `wpdev logs [service] [--tail=N]` | Tail logs — all services, or one (`php`, `nginx`, `mysql`, `redis`); `--tail` starts from the last N lines instead of the whole history |
 | `wpdev shell php [ver]\|db\|nginx\|redis` | Shell into a container — `php` defaults to 8.2, or specify e.g. `php 8.4` (as you, not root) |
 | `wpdev db [name]` | Open a MySQL prompt (CLI) — root by default, or scoped straight into one site's own DB |
 | `wpdev adminer [name]` | Open Adminer in the browser — root by default, or deep-linked to one site's DB |
-| `wpdev portainer` | Open Portainer in the browser (Docker container/image management) |
 | `wpdev mailpit` | Open Mailpit in the browser — every site's outgoing mail, caught |
 | `wpdev dashboard` | Open the web dashboard in the browser (GUI for everything above) |
 | `wpdev reload-nginx` | Test + reload Nginx (after editing a vhost by hand) |
@@ -377,13 +393,12 @@ WP-CLI (site provisioning), nothing hidden behind it.
 | Adminer | `http://localhost:39002` (`ADMINER_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | MySQL (host) | `localhost:39000` (`MYSQL_PORT`) | `root` / `DB_ROOT_PASSWORD` in `.env` |
 | Redis (host) | `localhost:39001` (`REDIS_PORT`) | none (no auth configured — local dev only) |
-| Portainer | `http://localhost:39003` (`PORTAINER_PORT`) | Set your own admin account on first visit (see below) |
-| Mailpit | `http://localhost:39004` (`MAILPIT_UI_PORT`) | none — local only, nothing ever really sends |
-| API | `http://localhost:39006` (`API_PORT`) | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
-| Dashboard | `http://localhost:39007` (`DASHBOARD_PORT`) | none — API token (if set) entered in its own settings panel |
+| Mailpit | `http://localhost:39003` (`MAILPIT_UI_PORT`) | none — local only, nothing ever really sends |
+| API | `http://localhost:39005` (`API_PORT`) | none by default — set `API_TOKEN` in `.env` (see [API service](#api-service)) |
+| Dashboard | `http://localhost:39006` (`DASHBOARD_PORT`) | none — API token (if set) entered in its own settings panel |
 
 Every port above except nginx's 80/443 lives in one deliberately-uncommon
-block (39000–39007, see `.env.example`) specifically to avoid colliding with
+block (39000–39006, see `.env.example`) specifically to avoid colliding with
 another locally-installed MySQL/Redis or some other tool's web UI on 8080/
 9000 — the single most common reason a `docker compose up` fails on a dev
 machine that already has other things running. Change any one of them in
@@ -406,8 +421,11 @@ update their `WP_HOME`/`WP_SITEURL` in `wp-config.php` (plus a `wpdev wp
 wpdev status
 ```
 
+Sites are checked in parallel (up to 6 at once), so it takes about as long
+as the slowest site rather than the sum of all of them.
+
 Shows container health (`docker compose ps`) plus a per-site table — the
-WordPress-specific view Portainer's generic container UI can't give you:
+WordPress-specific view a generic container UI can't give you:
 
 ```
 DOMAIN                       PHP    WP        MYSQL     HTTP   DATABASE   CACHE
@@ -416,13 +434,16 @@ otherlab.test                8.3    6.7.2     8.0.44    200    OK         off
 ```
 
 - **PHP**/**WP** — the site's PHP version (`PHP_VERSION`) and
-  its real WordPress core version (`wp core version`) — different sites can
-  genuinely be on different versions of each
+  its real WordPress core version (read from its `wp-includes/version.php`,
+  the file `wp core version` reads) — different sites can genuinely be on
+  different versions of each
 - **MYSQL** — the one shared server's version; the same on every row, since
   there's only one `mysql` container for the whole stack
 - **HTTP** — the site's actual response code, checked directly against
   `127.0.0.1` (works even before you've added the `/etc/hosts` entry, and
-  ignores any proxy your shell has set)
+  ignores any proxy your shell has set). `down` means nothing answered;
+  `timeout` means the page didn't finish within 10 seconds — the site is
+  up, just slow
 - **DATABASE** — `OK`/`FAIL`/`down`, checked against that site's real
   `DB_NAME` from its own `wp-config.php`
 - **CACHE** — `Connected`/`off`/`n/a` — `off` just means that site predates
@@ -970,8 +991,8 @@ automatically for every site — including ones that predate this feature.
 wpdev mailpit
 ```
 
-Opens the web inbox at `http://localhost:39004`. Real SMTP too, at
-`localhost:39005`, if some tool wants to connect directly instead of going
+Opens the web inbox at `http://localhost:39003`. Real SMTP too, at
+`localhost:39004`, if some tool wants to connect directly instead of going
 through `mail()`.
 
 ## Real WP-Cron
@@ -1014,26 +1035,6 @@ A few things worth knowing if you ever touch `php/crontab` or
   than cron's one-minute interval, and without the lock, overlapping runs
   pile up.
 
-## Portainer (container/image dashboard)
-
-```bash
-wpdev portainer
-```
-
-Opens a web UI showing every container's state, logs, resource usage, plus
-images, volumes, and networks — for this project and anything else on your
-Docker daemon.
-
-**First visit:** it asks for a one-time setup token instead of a bare login
-screen — get it with `docker logs wp-portainer`, paste it in, then create
-your own admin account.
-
-**Worth knowing:** Portainer works by mounting your host's `docker.sock`,
-which gives it — and anyone who can reach `localhost:39003` — full control of
-your *entire* Docker daemon, not just this project's four containers. That's
-inherent to how Portainer works, not a misconfiguration. Fine for a personal
-dev machine; worth remembering if this box is ever shared or exposed.
-
 ## API service
 
 A thin HTTP API wrapping `wpdev` — no reimplemented logic. Every endpoint
@@ -1042,13 +1043,13 @@ anything slow and step-by-step: `add`, `clone`, `snapshot`, `restore`,
 `update`, `backup`, `restore-all`) streams its output live as
 Server-Sent Events. It exists so a GUI or other automation can drive this
 stack without shelling out itself. Starts automatically with `wpdev up`,
-same as every other service, at `http://127.0.0.1:39006` by default
+same as every other service, at `http://127.0.0.1:39005` by default
 (`API_PORT` in `.env`).
 
 ```bash
-curl http://127.0.0.1:39006/api/status
-curl http://127.0.0.1:39006/api/sites
-curl -X POST http://127.0.0.1:39006/api/sites \
+curl http://127.0.0.1:39005/api/status
+curl http://127.0.0.1:39005/api/sites
+curl -X POST http://127.0.0.1:39005/api/sites \
   -H 'Content-Type: application/json' \
   -d '{"domain": "mysite.test", "php": "8.2"}'
 ```
@@ -1058,7 +1059,7 @@ Endpoints cover the stack (`status`, `doctor`, `up`/`down`/`restart`,
 passthrough, `cache`), snapshots/restore, database import/export, and
 `backup`/`restore-all`. A few just return a URL + login hint rather than
 duplicating wpdev's own credential-lookup logic (`/api/links/adminer`,
-`/api/links/portainer`, `/api/links/mailpit`) — open it yourself, since
+`/api/links/mailpit`) — open it yourself, since
 this container has no browser to open it for you.
 
 **Worth knowing:**
@@ -1068,8 +1069,7 @@ this container has no browser to open it for you.
   `.env` to also require `Authorization: Bearer <token>`; without it, any
   other local user/process on this machine can reach it.
 - **Docker-outside-of-Docker.** This container has no Docker daemon of its
-  own — it talks to the host's daemon over a bind-mounted socket (same as
-  Portainer) and runs real `wpdev`/`docker compose` commands against it. It
+  own — it talks to the host's daemon over a bind-mounted socket and runs real `wpdev`/`docker compose` commands against it. It
   runs as your own user (`API_UID`/`API_GID`, auto-detected by `wpdev up`
   from `id -u`/`id -g`), not root, so files it writes directly — snapshots,
   nginx configs, SSL certificates, backups — land owned by you, same as if
@@ -1115,28 +1115,45 @@ wpdev dashboard
 ```
 
 A React GUI (`dashboard/`) for everything above — add/remove/clone sites,
-manage snapshots, toggle caching, run WP-CLI commands, and watch
-long-running actions stream live, all from the browser instead of the CLI.
-Starts automatically with `wpdev up`, at `http://localhost:39007` by default
-(`DASHBOARD_PORT` in `.env`).
+manage snapshots, toggle caching, run WP-CLI commands, follow container
+logs, and watch long-running actions stream live, all from the browser
+instead of the CLI. Starts automatically with `wpdev up`, at
+`http://localhost:39006` by default (`DASHBOARD_PORT` in `.env`).
+
+The sidebar has six pages:
+
+| Page | What it shows |
+|------|---------------|
+| **Overview** | Site, reachability, container and MySQL totals; your sites; every container's state; the machine's CPU, memory and disk; quick actions |
+| **Sites** | A card per site (grid or list, filter by name or PHP version) with its reachability, PHP and WordPress versions, database check and Redis state, plus Visit, Admin and Manage |
+| **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit, **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it — and **Restart** (`wpdev restart <service>`, after a confirmation saying what it interrupts) |
+| **Docker** | A container manager scoped to this project: live CPU/memory/network/disk per container, images (remove unused ones, clean up old builds) and volumes (delete an unused one after typing its name). Each container's **Details** (also on its Services card) shows its ports, networks, mounts and environment, secrets masked |
+| **Doctor** | `wpdev doctor` as a checklist grouped by section and site, with a pass/warning/fail summary |
+| **Docs** | This README (see below) |
+
+**Manage** on a site opens a side panel with its tabs: Overview
+(credentials, masked until you reveal or copy them, plus certificate and
+permission fixes), Cache, Media, Admin domain, Snapshots, Clone, WP-CLI
+and Remove. **⌘K / Ctrl+K** opens a command palette that can jump to any
+page, open, manage or wp-admin any site, start/restart/stop the stack,
+open the tools and switch theme, all from the keyboard. Escape closes
+whatever is on top.
 
 It's a thin client, same principle as the API: it's static files (no server
 logic of its own) that talk directly to the `api` service from your
-browser, rendering `wpdev`'s own colored output rather than re-deriving
-status text. `doctor`/`status` show up exactly as they would in a terminal,
-and every provisioning/removal action shows the real, live `wpdev` output as
-it happens.
+browser. Every value comes from `wpdev`'s own output: the Services and
+Doctor pages lay out what `status`/`doctor` printed instead of re-deriving
+it, and each keeps the untouched terminal output one click away under
+**Raw output**. Every provisioning/removal action shows the real, live
+`wpdev` output as it happens.
 
-Each site's row shows its real WordPress core version alongside its PHP
-version (both genuinely vary per site), and the shared MySQL version once
-near the "+ Add site" button rather than repeated on every row, since
-every site uses the same one server. This comes from `status`, not
-`list` — getting it means a real `wp core version` per site, so unlike
-the sites list itself (which polls every 15s) it's only refreshed on
-load, after an action that changes the site list, or an explicit click
-on the refresh icon.
+The per-site details (WordPress version, HTTP reachability, database and
+cache checks) and the container states come from `status`, not `list`.
+Getting them means a real `wp core version` per site, so unlike the sites
+list itself (which polls every 15s) they're only refreshed on load, after
+an action, or when you click refresh.
 
-A "Machine" panel at the top shows the host's CPU, memory, and disk usage —
+The "Machine" card on the Overview shows the host's CPU, memory, and disk usage —
 the one part of the dashboard not backed by `wpdev` at all, since there's no
 WordPress-domain judgment call in reading `/proc/meminfo`/`/proc/stat`/`df`
 for a second implementation to drift from. On Docker Desktop (Mac/Windows)
@@ -1144,7 +1161,7 @@ this reports the Linux VM's resources, not the raw host hardware — the more
 useful number anyway, since that VM is the real ceiling on what this stack
 can use.
 
-Disk shows two different numbers on purpose: the bar is the whole
+Disk shows two different numbers on purpose: the ring is the whole
 partition holding this project (`df` — "is this drive about to fill up"),
 while the smaller line under it is just wp-local-dev's own footprint
 (`sites/` + `snapshots/` + `backups/`, the same thing Doctor's own disk
@@ -1152,8 +1169,7 @@ line already reports) — "how much has this project itself used." They're
 easy to conflate but answer different questions, especially if this
 project shares a partition with anything else.
 
-A **Docs** button in the header opens this README itself, rendered in the
-dashboard — a searchable sidebar table of contents next to the full text,
+The **Docs** page is this README itself, rendered in the dashboard — a searchable sidebar table of contents next to the full text,
 so there's one explanation of this project instead of a second, shorter one
 duplicated into the UI. It's the real `README.md`, imported directly at
 build time (not copied), so it can't drift out of sync with this file; the
@@ -1164,7 +1180,8 @@ link.
 **Worth knowing:**
 
 - **Every action that stops a container, overwrites data, or runs an
-  arbitrary command asks for confirmation first** — Restart, Down, cache
+  arbitrary command asks for confirmation first** — Restart (the stack
+  or one service), Down, cache
   purge, clone, restore, and running a WP-CLI command all show a yes/no
   dialog describing exactly what's about to happen; removing a site asks
   you to type its domain, the same higher bar the CLI itself uses. Up,
@@ -1177,12 +1194,13 @@ link.
   and restarting (not rebuilding) the `dashboard` container picks it up —
   a small `config.js` is regenerated from the current `.env` on every
   container start.
-- **The small version badge next to "local-dev"** is `git describe` for
+- **The small version label at the bottom of the sidebar** is `git describe` for
   whatever commit is actually checked out (tag, commits-since, short
   hash — `-dirty` appended over uncommitted changes), re-detected on
   every `wpdev up` the same way `API_UID`/`PROJECT_DIR` are. Not a
   hand-maintained version number that can fall out of sync with reality.
-- **A green "Update available" badge** shows up next to it when `git
+- **An "Update available" card** shows up above it (and in the command
+  palette) when `git
   fetch` finds commits on `origin` this checkout doesn't have yet (`wpdev
   update-check`, checked on load and on every manual refresh — not on the
   15s poll, since that would mean a `git fetch` every 15 seconds).
@@ -1196,7 +1214,7 @@ link.
   `wpdev cert` for that site (after a confirmation). Use it when Doctor
   flags the cert, or your browser shows a certificate warning.
 - **The API token**, if you've set `API_TOKEN`, goes in the dashboard's own
-  settings panel (⚙ in the header) — it's stored in your browser's
+  settings panel (⚙ at the bottom of the sidebar) — it's stored in your browser's
   `localStorage`, sent as `Authorization: Bearer <token>` on every request,
   and never touches the image or the container.
 
@@ -1204,7 +1222,7 @@ link.
 
 ```
 wp-local-dev/
-├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, portainer, api, dashboard
+├── docker-compose.yml           # mysql, php81-84, redis, mailpit, nginx, adminer, api, dashboard
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── .env.example                 # template for .env, copied by install.sh
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)

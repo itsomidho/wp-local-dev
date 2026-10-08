@@ -14,11 +14,14 @@ import '@fontsource/fira-code/600.css'
 import './index.css'
 import { initTheme } from './theme';
 import App from './App.jsx'
+import { ToastProvider } from './components/ui'
 
 initTheme();
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    <ToastProvider>
+      <App />
+    </ToastProvider>
   </StrictMode>,
 )

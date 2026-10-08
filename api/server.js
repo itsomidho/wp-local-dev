@@ -74,9 +74,20 @@ app.get('/api/system/stats', async (req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/api/status', sync(() => ['status']));
 app.get('/api/doctor', sync(() => ['doctor']));
+// Same checks, streamed line by line -- the dashboard shows each check as
+// it finishes instead of a blank page for the whole run.
+app.get('/api/doctor/stream', stream(() => ['doctor']));
 app.post('/api/stack/up', sync(() => ['up']));
 app.post('/api/stack/down', sync(() => ['down']));
 app.post('/api/stack/restart', sync(() => ['restart']));
+// One compose service (the dashboard's Services page). wpdev validates
+// the name against the compose file; this only keeps it to a plain token.
+app.post('/api/services/:service/restart', (req, res, next) => {
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(req.params.service)) {
+    return res.status(400).json({ error: 'invalid service name' });
+  }
+  next();
+}, sync((req) => ['restart', req.params.service]));
 app.post('/api/stack/update', stream(() => ['update']));
 // Not sync() -- that maps any non-zero exit to HTTP 500, but
 // update-check's exit code is the result, not an error: 0 up to date, 2
@@ -88,11 +99,45 @@ app.get('/api/update-check', async (req, res) => {
   }
   res.json({ updateAvailable: code === 2, stdout, stderr });
 });
-app.get('/api/logs/:service', (req, res) => streamWpdev(['logs', req.params.service], res));
+// Starts from the last ?tail= lines (default 200) -- a long-running
+// container's full history can be megabytes, which the dashboard would
+// otherwise replay line by line before showing anything live.
+app.get('/api/logs/:service', (req, res) => {
+  const tail = /^\d{1,4}$/.test(req.query.tail || '') ? req.query.tail : '200';
+  streamWpdev(['logs', req.params.service, `--tail=${tail}`], res);
+});
 app.post('/api/reload-nginx', sync(() => ['reload-nginx']));
 app.post('/api/clean', sync(() => ['clean']));
 app.post('/api/clean-all', sync(() => ['clean-all', '--yes']));
 app.post('/api/install-mkcert', sync(() => ['install-mkcert']));
+
+// ---------------------------------------------------------------------------
+// Docker resources (the dashboard's Docker page) -- this project's own
+// containers, images and volumes only; wpdev enforces that, these routes
+// only keep the names to plain tokens.
+// ---------------------------------------------------------------------------
+const plainName = (param, re) => (req, res, next) =>
+  re.test(req.params[param]) ? next() : res.status(400).json({ error: `invalid ${param}` });
+
+app.get('/api/docker/stats', sync(() => ['stats', '--json']));
+app.get('/api/docker/images', sync(() => ['images', '--json']));
+app.post('/api/docker/images/prune', sync(() => ['images', 'prune']));
+app.post(
+  '/api/docker/images/:id/remove',
+  plainName('id', /^(sha256:)?[a-f0-9]{12,64}$/),
+  sync((req) => ['images', 'rm', req.params.id])
+);
+app.get('/api/docker/volumes', sync(() => ['volumes', '--json']));
+app.delete(
+  '/api/docker/volumes/:name',
+  plainName('name', /^[A-Za-z0-9][A-Za-z0-9_.-]*$/),
+  sync((req) => ['volumes', 'rm', req.params.name, '--yes'])
+);
+app.get(
+  '/api/services/:service/inspect',
+  plainName('service', /^[a-z0-9][a-z0-9_-]*$/),
+  sync((req) => ['inspect', req.params.service])
+);
 
 // ---------------------------------------------------------------------------
 // Sites
@@ -243,7 +288,6 @@ app.get('/api/hosts', sync(() => ['hosts']));
 // parsing/duplicating that lookup logic in JS.
 // ---------------------------------------------------------------------------
 app.get('/api/links/adminer', sync((req) => (req.query.site ? ['adminer', String(req.query.site)] : ['adminer'])));
-app.get('/api/links/portainer', sync(() => ['portainer']));
 app.get('/api/links/mailpit', sync(() => ['mailpit']));
 
 app.listen(PORT, () => {

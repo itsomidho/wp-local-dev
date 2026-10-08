@@ -33,7 +33,11 @@ _wpdev() {
     cmds=(
         'up:Start all containers'
         'down:Stop all containers'
-        'restart:Restart all containers'
+        'restart:Restart all containers, or the named services'
+        'stats:Live CPU/memory/network/disk I/O per container'
+        'images:This project'\''s images (list, rm, prune)'
+        'volumes:This project'\''s volumes (list, rm)'
+        'inspect:A service'\''s container details (secrets masked)'
         'update:git pull, then rebuild + recreate all containers'
         'update-check:Fetch and report whether an update is available'
         'status:Show container status'
@@ -42,7 +46,6 @@ _wpdev() {
         'shell:Shell into a container'
         'db:Open a MySQL prompt'
         'adminer:Open Adminer in the browser'
-        'portainer:Open Portainer in the browser'
         'mailpit:Open Mailpit in the browser'
         'reload-nginx:Test and reload Nginx config'
         'cache:Toggle nginx full-page cache for a site'
@@ -97,9 +100,21 @@ _wpdev() {
                 compadd 8.1 8.2 8.3 8.4
             fi
             ;;
+        inspect)
+            (( CURRENT == 3 )) && compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard
+            ;;
+        images)
+            (( CURRENT == 3 )) && compadd -- --json rm prune
+            ;;
+        volumes)
+            (( CURRENT == 3 )) && compadd -- --json rm
+            ;;
+        restart)
+            compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard
+            ;;
         logs)
             if (( CURRENT == 3 )); then
-                compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer
+                compadd mysql php81 php82 php83 php84 redis mailpit nginx adminer
             fi
             ;;
         restore-all)

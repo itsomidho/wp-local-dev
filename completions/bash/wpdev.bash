@@ -37,7 +37,7 @@ _wpdev_complete() {
     local cur prev cmds subcmd
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="up down restart update update-check status doctor logs shell db adminer portainer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help"
+    cmds="up down restart update update-check status doctor logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
@@ -65,9 +65,30 @@ _wpdev_complete() {
                 COMPREPLY=($(compgen -W "8.1 8.2 8.3 8.4" -- "$cur"))
             fi
             ;;
+        inspect)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard" -- "$cur"))
+            fi
+            ;;
+        images)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "--json rm prune" -- "$cur"))
+            fi
+            ;;
+        volumes)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "--json rm" -- "$cur"))
+            fi
+            ;;
+        stats)
+            COMPREPLY=($(compgen -W "--json" -- "$cur"))
+            ;;
+        restart)
+            COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer api dashboard" -- "$cur"))
+            ;;
         logs)
             if [ "$COMP_CWORD" -eq 2 ]; then
-                COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer portainer" -- "$cur"))
+                COMPREPLY=($(compgen -W "mysql php81 php82 php83 php84 redis mailpit nginx adminer" -- "$cur"))
             fi
             ;;
         restore-all)

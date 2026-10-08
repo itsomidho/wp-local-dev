@@ -2,7 +2,7 @@
 // beyond building requests and parsing SSE frames. Every value shown in the
 // UI comes straight from wpdev's own output.
 
-const DEFAULT_BASE = 'http://localhost:39006';
+const DEFAULT_BASE = 'http://localhost:39005';
 
 function apiBase() {
   return (window.__WPDEV_API_BASE__ && window.__WPDEV_API_BASE__.trim()) || DEFAULT_BASE;
@@ -83,11 +83,18 @@ export const api = {
   stackUp: () => request('POST', '/api/stack/up'),
   stackDown: () => request('POST', '/api/stack/down'),
   stackRestart: () => request('POST', '/api/stack/restart'),
+  restartService: (service) => request('POST', `/api/services/${encodeURIComponent(service)}/restart`),
   updateCheck: () => request('GET', '/api/update-check'),
+  dockerStats: () => request('GET', '/api/docker/stats'),
+  dockerImages: () => request('GET', '/api/docker/images'),
+  pruneImages: () => request('POST', '/api/docker/images/prune'),
+  removeImage: (id) => request('POST', `/api/docker/images/${encodeURIComponent(id)}/remove`),
+  dockerVolumes: () => request('GET', '/api/docker/volumes'),
+  removeVolume: (name) => request('DELETE', `/api/docker/volumes/${encodeURIComponent(name)}`),
+  inspectService: (service) => request('GET', `/api/services/${encodeURIComponent(service)}/inspect`),
   reloadNginx: () => request('POST', '/api/reload-nginx'),
   links: {
     adminer: (site) => request('GET', `/api/links/adminer${site ? `?site=${encodeURIComponent(site)}` : ''}`),
-    portainer: () => request('GET', '/api/links/portainer'),
     mailpit: () => request('GET', '/api/links/mailpit'),
   },
 };

@@ -10,7 +10,6 @@
 #   wpdev shell php[ version]|db|nginx|redis
 #   wpdev db [name]           Open a MySQL prompt (root, or scoped to one site's DB)
 #   wpdev adminer [name]      Open Adminer in the browser (root, or deep-linked to one site's DB)
-#   wpdev portainer           Open Portainer in the browser (Docker container/image management)
 #   wpdev mailpit             Open Mailpit in the browser (every site's outgoing mail, caught)
 #   wpdev dashboard           Open the web dashboard in the browser (GUI for everything above)
 #   wpdev reload-nginx
@@ -213,20 +212,28 @@ site_url() {
     if [ "$p" = "443" ]; then echo "https://$1"; else echo "https://$1:$p"; fi
 }
 
-# HTTP status of https://<domain><path>, or "down". --connect-to keeps the
-# URL (so Host and SNI) exactly what a browser sends while choosing where
-# to actually connect: the host's published port, or -- inside the api
-# container, whose loopback isn't nginx at all -- nginx's own :443 on the
-# compose network (#6). --noproxy: a shell-level http_proxy would
-# otherwise misroute it; no /etc/hosts entry needed either way. `|| true`:
-# a failed probe must report "down", not abort the caller under set -e.
+# HTTP status of https://<domain><path>, "down" (nothing answered) or
+# "timeout" (no answer within 10s). --connect-to keeps the URL (so Host
+# and SNI) exactly what a browser sends while choosing where to actually
+# connect: the host's published port, or -- inside the api container,
+# whose loopback isn't nginx at all -- nginx's own :443 on the compose
+# network (#6). --noproxy: a shell-level http_proxy would
+# otherwise misroute it; no /etc/hosts entry needed either way. A page
+# that's merely slow (a real site's uncached front page can take seconds)
+# is "timeout", not "down" -- those are different problems, and a 3s limit
+# once reported a working site as down. The `|| rc=$?`: a failed probe
+# must report, not abort the caller under set -e.
 site_http_code() {
-    local domain="$1" path="${2:-/}" port target code
+    local domain="$1" path="${2:-/}" port target code rc=0
     port="$(nginx_https_port)"
     if [ -n "${WPDEV_IN_API:-}" ]; then target="nginx:443"; else target="127.0.0.1:${port}"; fi
-    code="$(curl -sk --noproxy '*' --max-time 3 --connect-to "${domain}:${port}:${target}" \
-        -o /dev/null -w "%{http_code}" "https://${domain}:${port}${path}" 2>/dev/null || true)"
-    [ -z "$code" ] || [ "$code" = "000" ] && code="down"
+    code="$(curl -sk --noproxy '*' --connect-timeout 3 --max-time 10 --connect-to "${domain}:${port}:${target}" \
+        -o /dev/null -w "%{http_code}" "https://${domain}:${port}${path}" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 28 ] && [ "${code:-000}" = "000" ]; then
+        code="timeout"
+    elif [ -z "$code" ] || [ "$code" = "000" ]; then
+        code="down"
+    fi
     echo "$code"
 }
 
@@ -317,18 +324,21 @@ show_help() {
     echo "Stack:"
     echo "  up                        Start all containers"
     echo "  down                      Stop all containers"
-    echo "  restart                   Restart all containers"
+    echo "  restart [service...]      Restart all containers, or just the named services"
     echo "  update                    git pull, then rebuild + recreate all containers"
     echo "  update-check              Fetch and report whether an update is available (no changes made)"
     echo "  status                    Show container status"
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
     echo "  fix-dns                   Repair container DNS when the host resolver is behind a VPN tunnel (needs sudo;"
     echo "                            'up' does this automatically — this is for running it on its own)"
-    echo "  logs [service]            Tail logs (all services, or one)"
+    echo "  logs [service] [--tail=N] Tail logs (all services, or one; last N lines first)"
+    echo "  stats                     Live CPU/memory/network/disk I/O per container"
+    echo "  images [rm <id>|prune]    This project's images: list, remove one, or clean up unused untagged ones"
+    echo "  volumes [rm <name>]       This project's volumes: list with size and users, or remove an unused one"
+    echo "  inspect <service>         A service's container details (docker inspect, secrets masked)"
     echo "  shell php[ ver]|db|nginx|redis  Shell into a container (php defaults to $DEFAULT_PHP_VERSION; e.g. 'shell php 8.4')"
     echo "  db [name]                 Open a MySQL prompt (root, or scoped to one site's DB)"
     echo "  adminer [name]            Open Adminer in the browser (root, or deep-linked to one site's DB)"
-    echo "  portainer                 Open Portainer in the browser (Docker container/image management)"
     echo "  mailpit                   Open Mailpit in the browser (every site's outgoing mail, caught)"
     echo "  dashboard                 Open the web dashboard in the browser (GUI for everything above)"
     echo "  reload-nginx              Test and reload Nginx config"
@@ -922,11 +932,40 @@ cmd_up() {
         print_info "Removed container(s) left by an interrupted recreate: $(echo $stale)"
     fi
 
+    retire_services
     docker compose up -d $(stack_services)
     if [ -n "${WPDEV_IN_API:-}" ] && api_is_stale; then
         recreate_api_detached "up -d"
     fi
     echo "Containers started. Give MySQL 30 seconds to initialize if this is the first run."
+}
+
+# Containers of services this project no longer has (Portainer, removed
+# in favour of the dashboard's Docker page). Compose doesn't remove a
+# service's container just because the service left docker-compose.yml --
+# it would keep running, and doctor would report it as an orphan. Only a
+# container carrying this project's compose label is touched. Its image
+# goes too, unless something else still uses it (no --force, so Docker
+# refuses then) -- once the service is gone from docker-compose.yml, the
+# Docker page no longer counts that image as this project's. Its data
+# volume is left alone (the Docker page shows it as unused, to delete if
+# you want). Entries are service=image.
+RETIRED_SERVICES="portainer=portainer/portainer-ce:latest"
+retire_services() {
+    local entry svc image c project
+    project="$(compose_project)"
+    for entry in $RETIRED_SERVICES; do
+        svc="${entry%%=*}"
+        image="${entry#*=}"
+        c="wp-${svc}"
+        [ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c" 2>/dev/null)" = "$project" ] || continue
+        docker rm -f "$c" >/dev/null 2>&1 || continue
+        print_info "Removed ${c} (${svc} is no longer part of wp-local-dev)"
+        if docker rmi "$image" >/dev/null 2>&1; then
+            print_info "Removed its image ${image}"
+        fi
+    done
+    return 0
 }
 
 # Run from the dashboard, these commands execute inside the api container
@@ -1001,7 +1040,33 @@ cmd_down() {
         docker compose down
     fi
 }
-cmd_restart() { require_stack_services; docker compose restart $(stack_services); }
+# No arguments: the whole stack (minus the api when run from it). With
+# service names: just those, validated against the compose file so a typo
+# is an error rather than a silent no-op. Asked from inside the api to
+# restart the api itself, the restart is handed to the same detached
+# helper `up`/`update` use -- doing it in-process would kill the request
+# that asked for it.
+cmd_restart() {
+    if [ $# -eq 0 ]; then
+        require_stack_services
+        docker compose restart $(stack_services)
+        return
+    fi
+
+    local known svc others=() api=""
+    known="$(docker compose config --services 2>/dev/null)" || print_error "Couldn't list the compose services (docker compose config failed)."
+    for svc in "$@"; do
+        printf '%s\n' "$known" | grep -qx -- "$svc" || print_error "Unknown service '${svc}'. Services: $(echo $known)"
+        if [ "$svc" = "api" ] && [ -n "${WPDEV_IN_API:-}" ]; then api=1; else others+=("$svc"); fi
+    done
+
+    if [ ${#others[@]} -gt 0 ]; then
+        docker compose restart "${others[@]}"
+    fi
+    if [ -n "$api" ]; then
+        recreate_api_detached "restart"
+    fi
+}
 
 # Pull the latest wp-local-dev, then rebuild + fully recreate every
 # container. The rebuild picks up Dockerfile changes (anything baked into
@@ -1057,6 +1122,7 @@ cmd_update() {
 
     print_info "Rebuilding images and recreating containers to apply changes..."
     docker compose build $(stack_services)
+    retire_services
     docker compose up -d --force-recreate $(stack_services)
     # Always, not just when api_is_stale: the pull may have changed api's
     # code, which only a rebuild picks up -- its config hash can't show it.
@@ -1094,6 +1160,63 @@ cmd_update_check() {
     echo "Update available: ${latest_version} (currently ${current_version}, ${behind} commit(s) behind)."
     exit 2
 }
+# One row of `status`'s site table. Run once per site, in parallel (see
+# cmd_status) -- each row's checks are independent, and the slow one, `wp
+# redis status`, boots WordPress, so doing sites one after another made
+# status take seconds per site.
+status_site_row() {
+    local domain="$1" mysql_up="$2" mysql_version="$3"
+    local site_name config php_version php_svc http_code db_status db_name php_reachable cache_status wp_version
+    site_name="${domain%.test}"
+    site_name="${site_name//./-}"
+    config="sites/${site_name}/wp-config.php"
+    php_version="$(site_get "$site_name" PHP_VERSION)"
+    [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
+    php_svc="$(php_slug "$php_version")"
+
+    http_code="$(site_http_code "$domain")"
+
+    db_status="n/a"
+    if [ -f "$config" ] && [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
+        db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
+        if docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "USE \`${db_name}\`;" </dev/null >/dev/null 2>&1; then
+            db_status="OK"
+        else
+            db_status="FAIL"
+        fi
+    elif [ "$mysql_up" -ne 1 ]; then
+        db_status="down"
+    fi
+
+    php_reachable=0
+    if [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
+        php_reachable=1
+    fi
+
+    cache_status="n/a"
+    if [ "$php_reachable" -eq 1 ]; then
+        cache_status="$(php_exec "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
+        [ -z "$cache_status" ] && cache_status="off"
+    fi
+
+    # Straight from the core's own version.php when it's where WordPress
+    # keeps it -- the same answer `wp core version` gives (it reads this
+    # file), without starting a container process for it. WP-CLI only for
+    # a layout where it isn't.
+    wp_version="n/a"
+    if [ -f "sites/${site_name}/wp-includes/version.php" ]; then
+        wp_version="$(sed -n "s/^\$wp_version = '\([^']*\)';.*/\1/p" "sites/${site_name}/wp-includes/version.php" | head -1)"
+    fi
+    if [ -z "$wp_version" ] || [ "$wp_version" = "n/a" ]; then
+        wp_version="n/a"
+        if [ "$php_reachable" -eq 1 ]; then
+            wp_version="$(php_exec "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
+            [ -z "$wp_version" ] && wp_version="n/a"
+        fi
+    fi
+    printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "$domain" "$php_version" "$wp_version" "$mysql_version" "$http_code" "$db_status" "$cache_status"
+}
+
 cmd_status() {
     docker compose ps
     echo ""
@@ -1127,47 +1250,27 @@ cmd_status() {
     fi
 
     printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "DOMAIN" "PHP" "WP" "MYSQL" "HTTP" "DATABASE" "CACHE"
+    # Rows are checked in parallel, at most 6 sites at a time, each into its
+    # own file, then printed in the usual order.
+    # A row whose checks died part way (set -e in its subshell) still shows
+    # up, as unknowns, rather than silently dropping out of the table.
+    local rows i=0 j row_domains=()
+    rows="$(mktemp -d)"
     for domain in $domains; do
-        site_name="${domain%.test}"
-        site_name="${site_name//./-}"
-        config="sites/${site_name}/wp-config.php"
-        php_version="$(site_get "$site_name" PHP_VERSION)"
-        [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
-        php_svc="$(php_slug "$php_version")"
-
-        http_code="$(site_http_code "$domain")"
-
-        db_status="n/a"
-        if [ -f "$config" ] && [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
-            db_name="$(grep "DB_NAME" "$config" | sed -E "s/.*DB_NAME',[[:space:]]*'([^']*)'.*/\1/")"
-            if docker compose exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" -e "USE \`${db_name}\`;" </dev/null >/dev/null 2>&1; then
-                db_status="OK"
-            else
-                db_status="FAIL"
-            fi
-        elif [ "$mysql_up" -ne 1 ]; then
-            db_status="down"
-        fi
-
-        php_reachable=0
-        if [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
-            php_reachable=1
-        fi
-
-        cache_status="n/a"
-        if [ "$php_reachable" -eq 1 ]; then
-            cache_status="$(php_exec "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
-            [ -z "$cache_status" ] && cache_status="off"
-        fi
-
-        wp_version="n/a"
-        if [ "$php_reachable" -eq 1 ]; then
-            wp_version="$(php_exec "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
-            [ -z "$wp_version" ] && wp_version="n/a"
-        fi
-
-        printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "$domain" "$php_version" "$wp_version" "$mysql_version" "$http_code" "$db_status" "$cache_status"
+        row_domains+=("$domain")
+        status_site_row "$domain" "$mysql_up" "$mysql_version" >"${rows}/${i}" 2>/dev/null &
+        i=$((i + 1))
+        if [ $((i % 6)) -eq 0 ]; then wait; fi
     done
+    wait
+    for ((j = 0; j < i; j++)); do
+        if [ -s "${rows}/${j}" ]; then
+            cat "${rows}/${j}"
+        else
+            printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "${row_domains[$j]}" "?" "?" "$mysql_version" "?" "?" "?"
+        fi
+    done
+    rm -rf "$rows"
 }
 
 cmd_doctor() {
@@ -1199,13 +1302,13 @@ cmd_doctor() {
         warnings=$((warnings + 1))
     fi
 
-    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-portainer wp-api wp-dashboard"
+    expected_containers="wp-mysql wp-redis wp-mailpit wp-nginx wp-adminer wp-api wp-dashboard"
     for v in $SUPPORTED_PHP_VERSIONS; do
         expected_containers="$expected_containers wp-$(php_slug "$v")"
     done
     for c in $expected_containers; do
         # || true: docker inspect exits nonzero for a container that doesn't
-        # exist at all (e.g. adminer/portainer, which `wpdev add` never
+        # exist at all (e.g. adminer, which `wpdev add` never
         # starts) -- a bare assignment like this one is NOT exempt from
         # set -e the way `cmd1 && cmd2` is, so without this the whole
         # script aborts right here instead of reaching the `-z "$state"`
@@ -1444,11 +1547,212 @@ cmd_doctor() {
 }
 
 cmd_logs() {
-    if [ -n "$1" ]; then
-        docker compose logs -f "$1"
+    local service="" tail="all" arg
+    for arg in "$@"; do
+        case "$arg" in
+            --tail=*) tail="${arg#--tail=}" ;;
+            *) service="$arg" ;;
+        esac
+    done
+    case "$tail" in
+        all|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]) ;;
+        *) print_error "Invalid --tail value '${tail}' (a number, or all)" ;;
+    esac
+    # exec, so a SIGTERM to wpdev (the api does that when the dashboard
+    # closes its log view) reaches the follower itself -- without it bash
+    # exits and leaves `docker compose logs -f` running forever.
+    if [ -n "$service" ]; then
+        exec docker compose logs -f --tail="$tail" "$service"
     else
-        docker compose logs -f
+        exec docker compose logs -f --tail="$tail"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Docker resources (the dashboard's Docker page): stats, images, volumes and
+# container details, for this project only -- never another project's
+# images or volumes, so nothing here can delete something unrelated.
+# Everything reads Docker's own output; --json emits one JSON object per
+# line (built with Docker's own --format templates, so no jq needed).
+# ---------------------------------------------------------------------------
+
+compose_project() {
+    local name
+    name="$(docker compose config 2>/dev/null | sed -n 's/^name: //p' | head -1)"
+    [ -n "$name" ] || name="${COMPOSE_PROJECT_NAME:-$(basename "$SCRIPT_DIR")}"
+    echo "$name"
+}
+
+human_bytes() {
+    awk -v b="$1" 'BEGIN { split("B KB MB GB TB", u); i = 1; while (b >= 1000 && i < 5) { b /= 1000; i++ } printf (i == 1 ? "%d %s" : "%.1f %s"), b, u[i] }'
+}
+
+cmd_stats() {
+    local ids
+    ids="$(docker compose ps -q 2>/dev/null)"
+    [ -n "$ids" ] || print_error "No containers running. Start the stack with: wpdev up"
+    if [ "${1:-}" = "--json" ]; then
+        # shellcheck disable=SC2086
+        docker stats --no-stream --format '{{json .}}' $ids
+    else
+        # shellcheck disable=SC2086
+        docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}' $ids
+    fi
+}
+
+# Image IDs that belong to this project: what docker-compose.yml runs
+# (pulled or built), anything compose built for it (they carry its project
+# label, including old builds left dangling by a rebuild), and dangling
+# leftovers of the images it pulls (an old mysql:8.0 after a re-pull).
+project_image_ids() {
+    local project ref repo id repos
+    project="$(compose_project)"
+    {
+        docker images -q --filter "label=com.docker.compose.project=${project}"
+        # Asked for separately: newer Docker leaves untagged images out of
+        # a plain `docker images`, even with a label filter.
+        docker images -q --filter dangling=true --filter "label=com.docker.compose.project=${project}"
+        for ref in $(docker compose config --images 2>/dev/null); do
+            docker images -q "$ref"
+        done
+        repos=" $(docker compose config --images 2>/dev/null | sed -E 's/:[^:/]+$//' | tr '\n' ' ') "
+        for id in $(docker images -q --filter dangling=true); do
+            repo="$(docker image inspect --format '{{range .RepoDigests}}{{.}} {{end}}' "$id" 2>/dev/null | awk '{print $1}' | sed 's/@.*//')"
+            [ -n "$repo" ] && case "$repos" in *" ${repo} "*) echo "$id" ;; esac
+        done
+    } | sort -u
+}
+
+# Disk used by all images, in bytes, from `docker system df`.
+images_disk_bytes() {
+    docker system df --format '{{.Type}} {{.Size}}' 2>/dev/null | awk '$1 == "Images" {
+        v = $2; n = v + 0; u = v; sub(/^[0-9.]+/, "", u)
+        m = (u == "kB" || u == "KB") ? 1e3 : (u == "MB") ? 1e6 : (u == "GB") ? 1e9 : (u == "TB") ? 1e12 : 1
+        printf "%d\n", n * m }'
+}
+
+cmd_images() {
+    case "${1:-}" in
+        rm)
+            local id="${2:-}"
+            [ -n "$id" ] || print_error "Usage: wpdev images rm <image-id>"
+            local full
+            full="$(docker image inspect --format '{{.Id}}' "$id" 2>/dev/null)" || print_error "No image '${id}'."
+            project_image_ids | while read -r own; do
+                [ "$(docker image inspect --format '{{.Id}}' "$own")" = "$full" ] && echo yes
+            done | grep -q yes || print_error "Image '${id}' isn't one of this project's — wpdev only removes its own."
+            # No --force: Docker refuses an image a container still uses,
+            # which is exactly the protection wanted here.
+            docker rmi "$full"
+            print_info "Removed image ${id}."
+            return
+            ;;
+        prune)
+            # Freed space is measured, not summed: images share layers, so
+            # adding up their sizes overstates what removing them frees.
+            local before after id removed=0
+            before="$(images_disk_bytes)"
+            for id in $(project_image_ids); do
+                [ "$(docker image inspect --format '{{len .RepoTags}}' "$id" 2>/dev/null)" = "0" ] || continue
+                docker ps -aq --filter "ancestor=${id}" | grep -q . && continue
+                if docker rmi "$id" >/dev/null 2>&1; then
+                    removed=$((removed + 1))
+                    echo "Removed $(echo "$id" | sed 's/^sha256://' | cut -c1-12)"
+                fi
+            done
+            after="$(images_disk_bytes)"
+            print_info "Removed ${removed} unused untagged image(s) of this project, freed $(human_bytes $((before > after ? before - after : 0)))."
+            return
+            ;;
+        ""|--json) ;;
+        *) print_error "Usage: wpdev images [--json] | images rm <image-id> | images prune" ;;
+    esac
+
+    local ids usage
+    ids="$(project_image_ids)"
+    [ -n "$ids" ] || { echo "No images for this project yet."; return; }
+    # image id -> containers using it, one docker call for all of them.
+    usage="$(docker ps -aq | xargs -r docker inspect --format '{{.Image}} {{slice .Name 1}}' 2>/dev/null)"
+
+    if [ "${1:-}" = "--json" ]; then
+        local line id used
+        # shellcheck disable=SC2086
+        docker image inspect --format '{{.Id}}|{"id":{{json .Id}},"tags":{{json .RepoTags}},"size":{{.Size}},"created":{{json .Created}}' $ids |
+        while IFS='|' read -r id line; do
+            used="$(echo "$usage" | awk -v i="$id" '$1 == i { print $2 }' | paste -sd, -)"
+            echo "${line},\"usedBy\":\"${used}\"}"
+        done
+    else
+        printf "%-44s %-14s %-10s %-12s %s\n" "IMAGE" "ID" "SIZE" "CREATED" "USED BY"
+        local id tags size created used
+        # shellcheck disable=SC2086
+        docker image inspect --format '{{.Id}} {{if .RepoTags}}{{index .RepoTags 0}}{{else}}<untagged>{{end}} {{.Size}} {{slice .Created 0 10}}' $ids |
+        while read -r id tags size created; do
+            used="$(echo "$usage" | awk -v i="$id" '$1 == i { print $2 }' | paste -sd, -)"
+            printf "%-44s %-14s %-10s %-12s %s\n" "$tags" "$(echo "$id" | sed 's/^sha256://' | cut -c1-12)" "$(human_bytes "$size")" "$created" "${used:--}"
+        done
+    fi
+}
+
+cmd_volumes() {
+    local project
+    project="$(compose_project)"
+    case "${1:-}" in
+        rm)
+            local name="${2:-}" yes=""
+            [ "${3:-}" = "--yes" ] && yes=1
+            [ -n "$name" ] || print_error "Usage: wpdev volumes rm <volume> [--yes]"
+            [ "$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$name" 2>/dev/null)" = "$project" ] \
+                || print_error "Volume '${name}' isn't one of this project's — wpdev only removes its own."
+            if docker ps -aq --filter "volume=${name}" | grep -q .; then
+                print_error "Volume '${name}' is still used by: $(docker ps -a --filter "volume=${name}" --format '{{.Names}}' | paste -sd, -). Remove that container first."
+            fi
+            if [ -z "$yes" ]; then
+                print_warning "This permanently deletes everything stored in ${name}."
+                read -r -p "Type the volume name to confirm: " answer
+                [ "$answer" = "$name" ] || cancelled
+            fi
+            docker volume rm "$name" >/dev/null
+            print_info "Removed volume ${name}."
+            return
+            ;;
+        ""|--json) ;;
+        *) print_error "Usage: wpdev volumes [--json] | volumes rm <volume> [--yes]" ;;
+    esac
+
+    local names sizes
+    names="$(docker volume ls -q --filter "label=com.docker.compose.project=${project}")"
+    [ -n "$names" ] || { echo "No volumes for this project."; return; }
+    # Sizes come from `docker system df -v`'s volume table (name, links, size).
+    sizes="$(docker system df -v 2>/dev/null | awk '/^Local Volumes space usage:/ { on = 1; next } on && /^$/ && seen { exit } on && NF >= 3 && $1 != "VOLUME" { seen = 1; print $1, $NF }')"
+
+    local name size used short created
+    if [ "${1:-}" != "--json" ]; then
+        printf "%-36s %-10s %s\n" "VOLUME" "SIZE" "USED BY"
+    fi
+    for name in $names; do
+        size="$(echo "$sizes" | awk -v n="$name" '$1 == n { print $2 }')"
+        used="$(docker ps -a --filter "volume=${name}" --format '{{.Names}}' | paste -sd, -)"
+        if [ "${1:-}" = "--json" ]; then
+            short="$(docker volume inspect --format '{{index .Labels "com.docker.compose.volume"}}' "$name")"
+            created="$(docker volume inspect --format '{{.CreatedAt}}' "$name")"
+            printf '{"name":"%s","volume":"%s","size":"%s","usedBy":"%s","created":"%s"}\n' "$name" "$short" "${size:-}" "$used" "$created"
+        else
+            printf "%-36s %-10s %s\n" "$name" "${size:-?}" "${used:--}"
+        fi
+    done
+}
+
+# `docker inspect` for one service's container, with any environment
+# variable whose name looks like a secret masked -- the dashboard shows
+# this, and a password has no business reaching a browser.
+cmd_inspect() {
+    local svc="${1:-}" id
+    [ -n "$svc" ] || print_error "Usage: wpdev inspect <service>"
+    docker compose config --services 2>/dev/null | grep -qx -- "$svc" || print_error "Unknown service '${svc}'."
+    id="$(docker compose ps -aq "$svc" 2>/dev/null | head -1)"
+    [ -n "$id" ] || print_error "Service '${svc}' has no container. Start it with: wpdev up"
+    docker inspect "$id" | sed -E 's/^([[:space:]]*"[A-Za-z0-9_]*([Pp][Aa][Ss][Ss]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]|[Ss][Aa][Ll][Tt]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee])[A-Za-z0-9_]*=)[^"]*"/\1********"/'
 }
 
 cmd_shell() {
@@ -1561,27 +1865,11 @@ cmd_adminer() {
     fi
 }
 
+# Portainer used to ship with the stack; the dashboard's Docker page (and
+# `wpdev stats`/`images`/`volumes`/`inspect`) replaced it. Kept as a pointer
+# for anyone with the old command in their fingers.
 cmd_portainer() {
-    if [ -f .env ]; then
-        set -a
-        # shellcheck disable=SC1091
-        source .env
-        set +a
-    fi
-    port="${PORTAINER_PORT:-39003}"
-    url="http://localhost:${port}/"
-
-    echo "Opening ${url}"
-    echo "First visit: it'll ask for a setup token — get it with: docker logs wp-portainer"
-    echo "Note: Portainer manages your whole Docker daemon, not just this project's containers."
-
-    if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$url" >/dev/null 2>&1 &
-    elif command -v open >/dev/null 2>&1; then
-        open "$url" >/dev/null 2>&1 &
-    else
-        print_warning "No browser opener found (xdg-open/open) — open the URL above manually."
-    fi
+    print_error "Portainer was removed from wp-local-dev. Use the dashboard's Docker page (wpdev dashboard), or: wpdev stats | images | volumes | inspect <service>"
 }
 
 cmd_mailpit() {
@@ -1591,7 +1879,7 @@ cmd_mailpit() {
         source .env
         set +a
     fi
-    port="${MAILPIT_UI_PORT:-39004}"
+    port="${MAILPIT_UI_PORT:-39003}"
     url="http://localhost:${port}/"
 
     echo "Opening ${url}"
@@ -1613,7 +1901,7 @@ cmd_dashboard() {
         source .env
         set +a
     fi
-    port="${DASHBOARD_PORT:-39007}"
+    port="${DASHBOARD_PORT:-39006}"
     url="http://localhost:${port}/"
 
     echo "Opening ${url}"
@@ -3788,22 +4076,59 @@ PHP
     echo ""
 }
 
+# The host ports were renumbered when Portainer left (it had 39003):
+# Mailpit, the api and the dashboard each moved down one to close the gap.
+# An .env made from the old .env.example still holds the old defaults, so
+# a value that's still its old default moves; one you chose stays. Done
+# per key in ascending order (each new number was just vacated by the
+# previous key), skipped if the new number is taken by another setting,
+# Runs once per .env (the marker line below), so a move it had to skip
+# warns once rather than on every command. Reported on stderr, so it never
+# mixes into output a caller parses.
+ENV_PORTS_MARKER="# wpdev: ports renumbered (Mailpit 39003/39004, API 39005, dashboard 39006)"
+migrate_env_ports() {
+    [ -f .env ] || return 0
+    grep -qxF "$ENV_PORTS_MARKER" .env && return 0
+    local pair key old new moved=""
+    sed -i '/^PORTAINER_PORT=[0-9]*$/d' .env
+    for pair in MAILPIT_UI_PORT:39004:39003 MAILPIT_SMTP_PORT:39005:39004 API_PORT:39006:39005 DASHBOARD_PORT:39007:39006; do
+        IFS=: read -r key old new <<<"$pair"
+        grep -qx "${key}=${old}" .env || continue
+        if grep -qE "^[A-Z_]+=${new}\$" .env; then
+            print_warning "Not moving ${key} to ${new}: another setting in .env already uses it." >&2
+            continue
+        fi
+        sed -i "s/^${key}=${old}\$/${key}=${new}/" .env
+        moved="${moved} ${key} ${old}→${new},"
+    done
+    printf '\n%s\n' "$ENV_PORTS_MARKER" >>.env
+    if [ -n "$moved" ]; then
+        echo -e "${GREEN}✓${NC} Ports renumbered in .env (Portainer's 39003 is free now):${moved%,}. Run 'wpdev up' to apply them." >&2
+    fi
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 migrate_site_configs
+migrate_env_ports
 
 case "${1:-help}" in
     up) cmd_up ;;
     down) cmd_down ;;
-    restart) cmd_restart ;;
+    restart) shift; cmd_restart "$@" ;;
     update) cmd_update ;;
     update-check) cmd_update_check ;;
     status) cmd_status ;;
     doctor) cmd_doctor ;;
     fix-dns) cmd_fix_dns ;;
-    logs) cmd_logs "$2" ;;
+    logs) shift; cmd_logs "$@" ;;
+    stats) shift; cmd_stats "$@" ;;
+    images) shift; cmd_images "$@" ;;
+    volumes) shift; cmd_volumes "$@" ;;
+    inspect) shift; cmd_inspect "$@" ;;
     shell) cmd_shell "$2" ;;
     db) cmd_db "$2" ;;
     adminer) cmd_adminer "$2" ;;

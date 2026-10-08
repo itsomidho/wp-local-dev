@@ -1,13 +1,13 @@
 # Thin HTTP API wrapping `wpdev` -- see server.js. This container has no
 # Docker daemon of its own: it talks to the HOST's daemon over a
-# bind-mounted socket (docker-compose.yml), same pattern as Portainer.
+# bind-mounted socket (docker-compose.yml).
 FROM node:20-slim
 
 # Docker CLI + compose plugin, installed the official documented way
 # (https://docs.docker.com/engine/install/debian/) rather than downloading
 # a pinned static binary -- this matches the floating-tag philosophy this
-# project already uses for its other utility services (portainer, adminer,
-# mailpit all run :latest in docker-compose.yml), and the version this
+# project already uses for its other utility services (adminer and
+# mailpit both run :latest in docker-compose.yml), and the version this
 # installs is whatever's current, not something that goes stale in this
 # Dockerfile. $VERSION_CODENAME is read from the base image's own
 # /etc/os-release rather than hardcoded, so this doesn't silently break the
