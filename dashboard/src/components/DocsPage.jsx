@@ -83,6 +83,18 @@ function CodeBlock({ node: _node, ...rest }) {
   );
 }
 
+// The dashboard routes on the URL hash (#/docs), so a plain in-page link
+// (#some-heading) would replace the route with an unknown page and land on
+// Overview. Both the index and the README's own links point at headings,
+// so catch them here and scroll instead, leaving the hash alone.
+function scrollToAnchor(e) {
+  const link = e.target.closest('a[href^="#"]');
+  if (!link || link.getAttribute('href').startsWith('#/')) return;
+  e.preventDefault();
+  const id = decodeURIComponent(link.getAttribute('href').slice(1));
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 export default function DocsPage() {
   const [query, setQuery] = useState('');
 
@@ -103,7 +115,7 @@ export default function DocsPage() {
   }, [query, toc, sections]);
 
   return (
-    <div className="docs-page">
+    <div className="docs-page" onClick={scrollToAnchor}>
       <aside className="docs-sidebar">
         <label className="input-search">
           <Search size={15} />
