@@ -28,7 +28,7 @@ export const TOOLS = [
 ];
 
 // A terminal prompt typing a "w" -- WordPress, driven from the command
-// line, which is what wpdev is. Same mark as public/favicon.svg; keep
+// line, which is what wpdev is. Same mark as src/favicon.svg; keep
 // the two in sync.
 export function Logo() {
   return (
