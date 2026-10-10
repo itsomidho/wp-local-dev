@@ -64,6 +64,21 @@ set -e
 # entitlement instead -- hence both.) (#24)
 export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 
+# Every image build goes through here, never a bare `docker compose build`.
+# Compose 5.6 + buildx 0.38 still refuse the build even with the entitlement
+# declared ("additional privileges requested: pass --allow=network.host"):
+# Compose copies it into the bake target but never passes --allow. So ask
+# Compose for its bake definition and hand that to buildx ourselves, with
+# the grant. Compose versions without --print just build the old way.
+compose_build() {
+    local def
+    if def="$(docker compose build --print "$@" 2>/dev/null)" && [ -n "$def" ]; then
+        printf '%s\n' "$def" | docker buildx bake -f - --allow=network.host
+    else
+        docker compose build "$@"
+    fi
+}
+
 # readlink -f resolves the ~/.local/bin symlink to the real file first —
 # ${BASH_SOURCE[0]} alone would point at the symlink's own directory, not
 # this project, when invoked as the bare `wpdev` command.
@@ -325,7 +340,7 @@ show_help() {
     echo "  up                        Start all containers"
     echo "  down                      Stop all containers"
     echo "  restart [service...]      Restart all containers, or just the named services"
-    echo "  update                    git pull, then rebuild + recreate all containers"
+    echo "  update                    git pull, then rebuild + recreate all containers (rebuilds stale images even when already up to date)"
     echo "  update-check              Fetch and report whether an update is available (no changes made)"
     echo "  status                    Show container status"
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
@@ -938,6 +953,8 @@ cmd_up() {
 
     retire_services
     require_wanted_services
+    # Compose's own implicit build in `up` hits the same --allow refusal.
+    [ -z "$(pending_image_builds)" ] || compose_build $(wanted_services)
     docker compose up -d $(wanted_services)
     stop_unused_php
     if [ -n "${WPDEV_IN_API:-}" ] && api_is_stale; then
@@ -1059,7 +1076,7 @@ ensure_php_running() {
     image="$(compose_project)-${svc}"
     if ! docker image inspect "$image" >/dev/null 2>&1; then
         print_info "Building the ${svc} image (first site on this PHP version; takes a few minutes)..."
-        docker compose build "$svc"
+        compose_build "$svc"
     fi
     docker compose up -d "$svc" >/dev/null
 }
@@ -1177,7 +1194,8 @@ cmd_update() {
     fi
 
     if [ "$local_rev" = "$remote_rev" ]; then
-        print_info "Already up to date."
+        print_info "Already up to date -- checking the images were built from this code..."
+        rebuild_stale_images
         return
     fi
 
@@ -1194,14 +1212,48 @@ cmd_update() {
 
     print_info "Rebuilding images and recreating containers to apply changes..."
     require_wanted_services
-    docker compose build $(wanted_services)
+    if [ -n "${WPDEV_IN_API:-}" ]; then
+        # Building api's image from inside it is safe; only recreating
+        # wp-api isn't (see recreate_api_detached).
+        compose_build $(wanted_services) api
+    else
+        compose_build $(wanted_services)
+    fi
     retire_services
     docker compose up -d --force-recreate $(wanted_services)
     stop_unused_php
     # Always, not just when api_is_stale: the pull may have changed api's
     # code, which only a rebuild picks up -- its config hash can't show it.
-    [ -n "${WPDEV_IN_API:-}" ] && recreate_api_detached "up -d --build --force-recreate"
+    [ -n "${WPDEV_IN_API:-}" ] && recreate_api_detached "up -d --force-recreate"
     print_info "Update complete."
+}
+
+# The "already up to date" half of cmd_update. A pull that succeeded
+# followed by a build that didn't (network, DNS, Ctrl-C -- set -e stops
+# update right there) leaves new code on disk and old images running, and
+# nothing else ever rebuilds them: `up` only builds images that don't exist
+# yet, and a second `update` used to stop at "Already up to date". So build
+# everything again -- a no-op from cache when the images are current -- and
+# let a plain `up -d` recreate only the containers whose image changed.
+rebuild_stale_images() {
+    local api_image api_before=""
+    require_wanted_services
+    if [ -n "${WPDEV_IN_API:-}" ]; then
+        # Building api's image from inside it is safe; only recreating
+        # wp-api isn't, so compare image IDs and hand that off if needed.
+        api_image="$(docker inspect -f '{{.Config.Image}}' wp-api 2>/dev/null)" || true
+        api_before="$(docker inspect -f '{{.Image}}' wp-api 2>/dev/null)" || true
+        compose_build $(wanted_services) api
+    else
+        compose_build $(wanted_services)
+    fi
+    retire_services
+    docker compose up -d $(wanted_services)
+    stop_unused_php
+    if [ -n "$api_before" ] && [ "$(docker image inspect -f '{{.Id}}' "$api_image" 2>/dev/null)" != "$api_before" ]; then
+        recreate_api_detached "up -d"
+    fi
+    print_info "Images are current."
 }
 
 # Read-only counterpart to cmd_update -- fetches and reports whether
