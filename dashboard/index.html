@@ -2,7 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      From src/, not public/, so Vite emits it under a content-hashed name
+      (or inlines it). Browsers cache favicons apart from the page and
+      ignore a hard reload for them, so a fixed /favicon.svg kept showing
+      the old icon long after it changed.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/src/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>wp-local-dev</title>
     <!--
