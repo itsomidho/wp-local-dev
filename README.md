@@ -342,6 +342,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev fix-dns` | Repair container DNS when the host's resolver lives behind a VPN tunnel (needs sudo). `wpdev up` already does this for you — this is for running it on its own |
+| `wpdev fix-vpn-network` | Move Docker's networks out of the ranges a VPN (e.g. Cisco Secure Client) routes into its tunnel, so containers can reach the internet with the VPN connected (needs sudo). `wpdev up` already does this for you |
 | `wpdev stats` | Live CPU, memory, network and disk I/O per container (`docker stats`, this project only) |
 | `wpdev images [rm <id> \| prune]` | This project's images with size, age and what uses them; remove an unused one, or `prune` its unused untagged leftovers (old builds, superseded pulls) |
 | `wpdev volumes [rm <name>]` | This project's volumes with size and what uses them; remove an unused one (asks you to type its name) |
@@ -1441,6 +1442,26 @@ by peer` from the registry CDN. The fix is a `"proxies"` block in
 has none, but `up` does not do it for you: sending every registry pull on
 the machine through a personal proxy is a policy choice, not a broken
 setting, and plenty of people set `HTTP_PROXY` for builds alone on purpose.
+
+### VPNs that take over Docker's networks
+
+Some VPN clients — Cisco Secure Client is the usual one — route all of
+`172.16.0.0/12` into their tunnel, and that's exactly where Docker puts its
+networks. The host's replies to containers then go into the VPN instead of
+to the container, so with the VPN connected nothing inside a container can
+reach the internet: `wp plugin install`, plugin updates from wp-admin and
+`composer` all fail, while the sites themselves still load.
+
+`wpdev up` repairs it when it sees it: Docker's networks move to
+`100.64.0.0/10` (`"bip"` and `"default-address-pools"` in
+`/etc/docker/daemon.json`, backed up and merged), docker restarts, and the old
+networks are removed so they come back on the new range. It's a one-time
+change — the new range works with the VPN on or off. If containers from
+other projects are running, it asks first, since restarting docker stops them.
+
+```bash
+wpdev fix-vpn-network     # the same repair, on its own
+```
 
 ### Escape hatches
 
