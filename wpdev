@@ -602,8 +602,15 @@ container_reachability() {
         image="alpine:latest"
         docker pull -q "$image" >/dev/null 2>&1 || return 0
     fi
+    # Retried, because the first second of a container's life can lose a
+    # lookup: docker0 is down while nothing uses it, and a VPN client that
+    # watches interfaces (Cisco Secure Client does) rewrites its routes and
+    # firewall filters the moment this container brings it back up.
     docker run --rm --entrypoint sh "$image" -c '
-        nslookup deb.debian.org >/dev/null 2>&1 && exit 0
+        for _ in 1 2 3; do
+            nslookup deb.debian.org >/dev/null 2>&1 && exit 0
+            sleep 1
+        done
         gw="$(ip route | awk "/^default/ {print \$3; exit}")"
         [ -n "$gw" ] && ping -c 1 -W 2 "$gw" >/dev/null 2>&1 && exit 2
         exit 3
