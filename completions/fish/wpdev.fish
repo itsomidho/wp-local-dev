@@ -65,7 +65,7 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update update-check status doctor logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help
+set -l __wpdev_cmds up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help
 
 complete -c wpdev -f
 
@@ -81,6 +81,7 @@ complete -c wpdev -n "$__wpdev_top" -a update -d "git pull, then rebuild + recre
 complete -c wpdev -n "$__wpdev_top" -a update-check -d "Fetch and report whether an update is available"
 complete -c wpdev -n "$__wpdev_top" -a status -d "Show container status"
 complete -c wpdev -n "$__wpdev_top" -a doctor -d "Proactive health check"
+complete -c wpdev -n "$__wpdev_top" -a fix-vpn-network -d "Move Docker networks off VPN-routed ranges"
 complete -c wpdev -n "$__wpdev_top" -a logs -d "Tail logs (all services, or one)"
 complete -c wpdev -n "$__wpdev_top" -a shell -d "Shell into a container"
 complete -c wpdev -n "$__wpdev_top" -a db -d "Open a MySQL prompt"

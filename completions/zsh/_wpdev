@@ -42,6 +42,7 @@ _wpdev() {
         'update-check:Fetch and report whether an update is available'
         'status:Show container status'
         'doctor:Proactive health check'
+        'fix-vpn-network:Move Docker networks off VPN-routed ranges'
         'logs:Tail logs (all services, or one)'
         'shell:Shell into a container'
         'db:Open a MySQL prompt'

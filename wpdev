@@ -7,6 +7,8 @@
 #   wpdev doctor              Proactive health check — CA trust, orphan containers, per-site DB sanity
 #   wpdev fix-dns             Repair container DNS when the host resolver is behind a VPN tunnel (sudo);
 #                             `wpdev up` already does this automatically when it detects the problem
+#   wpdev fix-vpn-network     Move Docker's networks out of the ranges a VPN routes into its tunnel (sudo);
+#                             `wpdev up` already does this automatically when it detects the problem
 #   wpdev shell php[ version]|db|nginx|redis
 #   wpdev db [name]           Open a MySQL prompt (root, or scoped to one site's DB)
 #   wpdev adminer [name]      Open Adminer in the browser (root, or deep-linked to one site's DB)
@@ -346,6 +348,8 @@ show_help() {
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
     echo "  fix-dns                   Repair container DNS when the host resolver is behind a VPN tunnel (needs sudo;"
     echo "                            'up' does this automatically — this is for running it on its own)"
+    echo "  fix-vpn-network           Move Docker's networks out of the ranges a VPN (e.g. Cisco) routes into its tunnel"
+    echo "                            (needs sudo; 'up' does this automatically — this is for running it on its own)"
     echo "  logs [service] [--tail=N] Tail logs (all services, or one; last N lines first)"
     echo "  stats                     Live CPU/memory/network/disk I/O per container"
     echo "  images [rm <id>|prune]    This project's images: list, remove one, or clean up unused untagged ones"
@@ -611,6 +615,206 @@ container_reachability() {
     esac
 }
 
+# Echoes "network subnet device" for each Docker bridge network whose subnet
+# the host routes somewhere other than its own bridge, one per line; nothing
+# when every bridge owns its route.
+#
+# This is the usual reason for container_reachability's "offline", and it
+# has a fix that doesn't involve disconnecting. Cisco Secure Client pushes
+# routes for the private ranges (172.16.0.0/12 among them) and adds a copy of
+# every connected bridge's /16 pointing at cscotun0. Same prefix, same
+# metric, and inserted first, so the kernel picks the tunnel: the host's
+# replies to containers go into the VPN and vanish. Nothing on the Docker
+# side can outrank that route, and the client puts it back if it's deleted,
+# so the fix is to move the bridges to a range the VPN doesn't claim.
+#
+# Asked of `ip route get`, not read off the routing table, because the
+# kernel's choice is the only thing that matters, and it needs no container
+# and no sudo.
+hijacked_bridge_routes() {
+    docker network ls -q --filter driver=bridge 2>/dev/null | while read -r id; do
+        # '|'-separated: the bridge-name option is empty on most networks,
+        # and whitespace splitting would shift every field after it.
+        info="$(docker network inspect -f '{{.Name}}|{{index .Options "com.docker.network.bridge.name"}}|{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}' "$id" 2>/dev/null)" || continue
+        IFS='|' read -r name iface subnet gateway <<<"$info"
+        # Networks without the option are named br-<first 12 of the id>.
+        case "$iface" in
+            ""|"<no value>") iface="br-${id:0:12}" ;;
+        esac
+        case "$gateway" in
+            *.*.*.*) ;;
+            *) continue ;;   # IPv6-only or no IPAM config
+        esac
+        # Probe the first container address, not the gateway: the gateway
+        # is a local address and always resolves to the host itself.
+        last="${gateway##*.}"
+        [ "$last" -lt 254 ] || continue
+        probe="${gateway%.*}.$((last + 1))"
+        dev="$(ip -4 route get "$probe" 2>/dev/null | grep -o 'dev [^ ]*' | head -1 | cut -d' ' -f2)"
+        if [ -n "$dev" ] && [ "$dev" != "$iface" ]; then
+            echo "$name $subnet $dev"
+        fi
+    done
+}
+
+# Where fix_vpn_network moves Docker's bridges: docker0 gets the first /24,
+# and every network compose (or anything else) creates comes out of the
+# second /16. 100.64.0.0/10 is the carrier-grade NAT range -- not private
+# address space, so corporate VPNs don't claim it, and nothing on a home or
+# office LAN uses it either.
+VPN_SAFE_BIP="100.64.0.1/24"
+VPN_SAFE_GATEWAY="100.64.0.1"
+VPN_SAFE_POOL="100.65.0.0/16"
+VPN_SAFE_RANGE="100.64.0.0/10"
+
+# Echoes what already routes into VPN_SAFE_RANGE more specifically than the
+# default route (Tailscale, say, which lives in the same range); nothing
+# when it's free to use.
+vpn_safe_range_taken() {
+    for probe in 100.64.0.2 100.65.0.2; do
+        ip -4 route list match "$probe" 2>/dev/null | grep -v '^default'
+    done | head -1
+}
+
+# Moves every Docker bridge network out of the ranges a VPN has taken over
+# (see hijacked_bridge_routes) and into VPN_SAFE_RANGE. Mode "auto" is how
+# `wpdev up` calls it: it only asks first if other projects' containers are
+# running, since restarting dockerd stops them. Mode "manual" is
+# `wpdev fix-vpn-network`, which always asks.
+#
+# It's done once, not every time the VPN connects: the new ranges work with
+# the VPN on or off, so after this the problem simply doesn't come back.
+fix_vpn_network() {
+    mode="${1:-manual}"
+
+    hijacked="$(hijacked_bridge_routes)"
+    if [ -z "$hijacked" ]; then
+        [ "$mode" = "manual" ] && print_info "Nothing to repair: no VPN is routing Docker's networks away from them."
+        return 0
+    fi
+    tunnel="$(echo "$hijacked" | awk '{print $3; exit}')"
+
+    taken="$(vpn_safe_range_taken)"
+    if [ -n "$taken" ]; then
+        print_fail "${tunnel} is routing Docker's networks away from them, but the usual escape, ${VPN_SAFE_RANGE}, is in use too: ${taken}"
+        echo "  Pick a free range by hand: \"bip\" and \"default-address-pools\" in /etc/docker/daemon.json."
+        return 1
+    fi
+
+    foreign="$(foreign_running_containers)"
+
+    print_warning "Your VPN (${tunnel}) is routing Docker's networks into its tunnel, so containers can't reach the internet."
+    if [ "$mode" = "manual" ] || [ -n "$foreign" ]; then
+        echo "This will, with sudo:"
+        echo "  1. stop this stack"
+        echo "  2. move Docker's networks to ${VPN_SAFE_RANGE}, which the VPN leaves alone"
+        echo "     (in /etc/docker/daemon.json, backed up first)"
+        echo "  3. restart docker"
+        echo "  4. remove the old networks, so they're recreated on the new range"
+        echo "It's a one-time change: afterwards containers work with the VPN on or off."
+        if [ -n "$foreign" ]; then
+            echo ""
+            print_warning "Restarting docker will stop these containers, which aren't part of this stack:"
+            echo "$foreign" | sed 's/^/    /'
+        fi
+        echo ""
+        if [ ! -t 0 ]; then
+            print_fail "Needs confirmation but there's no terminal to ask on. Run 'wpdev fix-vpn-network' interactively, or set WPDEV_SKIP_DNS_FIX=1 to skip."
+            return 1
+        fi
+        read -r -p "Proceed? [y/N] " confirm
+        case "$confirm" in [yY]*) ;; *) echo "Aborted."; return 1 ;; esac
+    else
+        echo "Moving Docker's networks to ${VPN_SAFE_RANGE}, which the VPN leaves alone (one-time, needs sudo)..."
+    fi
+
+    if ! sudo -n true 2>/dev/null && [ ! -t 0 ]; then
+        print_fail "Needs sudo, with no cached credentials and no terminal to prompt on. Run 'wpdev fix-vpn-network' interactively first, or set WPDEV_SKIP_DNS_FIX=1."
+        return 1
+    fi
+    sudo -v || return 1
+
+    # Our network can only be removed once nothing is attached to it.
+    docker compose down >/dev/null 2>&1 || true
+    print_info "Stopped this stack"
+
+    old_gateway="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
+
+    sudo install -d /etc/docker || return 1
+    [ -f /etc/docker/daemon.json ] && { sudo cp /etc/docker/daemon.json "/etc/docker/daemon.json.bak-$(date +%Y%m%d%H%M%S)" || return 1; }
+    # Merged, not overwritten -- proxies, mirrors and log limits survive.
+    # "dns" follows docker0 only when fix-dns pointed it there; a resolver
+    # someone chose by hand is left alone.
+    dns_moved="$(sudo python3 - "$VPN_SAFE_BIP" "$VPN_SAFE_POOL" "$old_gateway" "$VPN_SAFE_GATEWAY" <<'PY'
+import json, os, sys
+bip, pool, old_gw, new_gw = sys.argv[1:]
+p = "/etc/docker/daemon.json"
+d = {}
+if os.path.exists(p):
+    with open(p) as f:
+        d = json.load(f)
+d["bip"] = bip
+d["default-address-pools"] = [{"base": pool, "size": 24}]
+moved = bool(old_gw) and d.get("dns") == [old_gw]
+if moved:
+    d["dns"] = [new_gw]
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+print("yes" if moved else "")
+PY
+)" || return 1
+    print_info "Set \"bip\": \"${VPN_SAFE_BIP}\" and \"default-address-pools\" base ${VPN_SAFE_POOL} in /etc/docker/daemon.json"
+
+    if [ -n "$dns_moved" ]; then
+        # The resolver containers use was on the old docker0 address; keep
+        # it with docker0 (see fix_container_dns).
+        printf '[Resolve]\nDNSStubListenerExtra=%s\n' "$VPN_SAFE_GATEWAY" | sudo tee /etc/systemd/resolved.conf.d/docker.conf >/dev/null || return 1
+        print_info "Container DNS now on ${VPN_SAFE_GATEWAY} (daemon.json and /etc/systemd/resolved.conf.d/docker.conf)"
+        if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "^Status: active"; then
+            sudo ufw allow from "$VPN_SAFE_RANGE" to "$VPN_SAFE_GATEWAY" port 53 proto udp >/dev/null
+            sudo ufw allow from "$VPN_SAFE_RANGE" to "$VPN_SAFE_GATEWAY" port 53 proto tcp >/dev/null
+            print_info "Opened port 53 from ${VPN_SAFE_RANGE} to ${VPN_SAFE_GATEWAY} (ufw)"
+        fi
+    fi
+
+    sudo systemctl restart docker || return 1
+    for _ in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && break
+        sleep 1
+    done
+    [ -n "$dns_moved" ] && { sudo systemctl restart systemd-resolved || return 1; }
+    print_info "Restarted docker"
+
+    # A network keeps the subnet it was created with, so the old ones have to
+    # go; whoever uses them creates them again, on the new range, at their
+    # next `up`. One that's still in use (a container with a restart policy
+    # came back on it) is left, and named.
+    stuck=""
+    for name in $(echo "$hijacked" | awk '{print $1}'); do
+        [ "$name" = "bridge" ] && continue   # docker0: moved by "bip" instead
+        docker network rm "$name" >/dev/null 2>&1 || stuck="${stuck} ${name}"
+    done
+    print_info "Removed the old networks"
+
+    case "$(container_reachability)" in
+        "")
+            print_info "Containers can reach the internet again"
+            ;;
+        *)
+            print_fail "Docker's networks moved, but a container still can't reach the internet — run 'wpdev doctor' to see what's left."
+            return 1
+            ;;
+    esac
+    if [ -n "$stuck" ]; then
+        print_warning "These networks are still in use, so they stayed on the old range:${stuck}"
+        echo "  In the project that owns each one, run 'docker compose down' and then 'docker compose up -d'."
+    fi
+    return 0
+}
+
+cmd_fix_vpn_network() { fix_vpn_network manual; }
+
 # Make container DNS work when the host's resolver lives behind a VPN
 # tunnel (see vpn_dns_unreachable_from_containers for the diagnosis).
 #
@@ -635,6 +839,28 @@ container_reachability() {
 #
 # Set WPDEV_SKIP_DNS_FIX=1 to suppress the automatic repair entirely, for a
 # machine whose container DNS is managed some other way.
+# Echoes the names of running containers that aren't part of this stack,
+# one per line. Anything that restarts dockerd stops them too, so they get
+# named before it happens.
+#
+# Asked as "running containers that aren't ours" rather than by matching a
+# project label against a hardcoded name -- the compose project name follows
+# the directory, so anyone who clones this somewhere else would silently have
+# every container of their own treated as ours. --no-trunc so these ids are
+# comparable with the full ones `docker compose ps -q` returns.
+foreign_running_containers() {
+    ours="$(docker compose ps -q 2>/dev/null)" || true
+    foreign=""
+    for cid in $(docker ps -q --no-trunc 2>/dev/null); do
+        case " $(echo $ours) " in
+            *" ${cid} "*) ;;
+            *) foreign="${foreign}$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+" ;;
+        esac
+    done
+    echo "$foreign" | grep -v '^$' || true
+}
+
 fix_container_dns() {
     mode="${1:-manual}"
 
@@ -661,22 +887,7 @@ fix_container_dns() {
     # projects entirely. Ours are fair game (this `up` is about to recreate
     # them anyway); somebody else's are not, so those get an explicit yes
     # even in auto mode.
-    # Asked as "running containers that aren't ours" rather than by
-    # matching a project label against a hardcoded name -- the compose
-    # project name follows the directory, so anyone who clones this
-    # somewhere else would silently have every container of their own
-    # treated as ours. --no-trunc so these ids are comparable with the full
-    # ones `docker compose ps -q` returns.
-    ours="$(docker compose ps -q 2>/dev/null)" || true
-    foreign=""
-    for cid in $(docker ps -q --no-trunc 2>/dev/null); do
-        case " $(echo $ours) " in
-            *" ${cid} "*) ;;
-            *) foreign="${foreign}$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-" ;;
-        esac
-    done
-    foreign="$(echo "$foreign" | grep -v '^$')" || true
+    foreign="$(foreign_running_containers)"
 
     if [ "$mode" = "manual" ] || [ -n "$foreign" ]; then
         print_warning "Host DNS is ${tunnel_dns}, which containers can't reach."
@@ -735,10 +946,13 @@ PY
     # the bridge gateway. Every docker bridge sits inside 172.16.0.0/12
     # (docker0 plus whatever subnets compose allocates), so one pair of
     # rules covers the networks that exist now and any added later.
+    # After fix-vpn-network the bridges live in VPN_SAFE_RANGE instead.
+    bridges="172.16.0.0/12"
+    [ "$gateway" = "$VPN_SAFE_GATEWAY" ] && bridges="$VPN_SAFE_RANGE"
     if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "^Status: active"; then
-        sudo ufw allow from 172.16.0.0/12 to "$gateway" port 53 proto udp >/dev/null
-        sudo ufw allow from 172.16.0.0/12 to "$gateway" port 53 proto tcp >/dev/null
-        print_info "Opened port 53 from 172.16.0.0/12 to ${gateway} (ufw)"
+        sudo ufw allow from "$bridges" to "$gateway" port 53 proto udp >/dev/null
+        sudo ufw allow from "$bridges" to "$gateway" port 53 proto tcp >/dev/null
+        print_info "Opened port 53 from ${bridges} to ${gateway} (ufw)"
     fi
 
     sudo systemctl restart systemd-resolved || return 1
@@ -840,6 +1054,16 @@ cmd_up() {
         print_warning "A build proxy is configured (${dead_proxy}) but nothing is listening there."
         echo "  Every build inherits it as HTTP_PROXY, and apt and npm won't fall back to a direct connection — they'll fail several minutes in."
         print_error "Start the proxy, or unset HTTP_PROXY/HTTPS_PROXY (shell environment and .env) to build directly, then re-run."
+    fi
+
+    # Before the DNS repair: this one moves docker0, and the DNS repair
+    # points containers at docker0's address, so it has to see the new one.
+    # Not refused on failure -- the stack still serves sites with no
+    # outbound access; only what containers fetch (plugins, composer) breaks.
+    if [ -z "${WPDEV_SKIP_DNS_FIX:-}" ] && [ -n "$(hijacked_bridge_routes)" ]; then
+        if ! fix_vpn_network auto; then
+            print_warning "Continuing without it: sites will load, but plugin installs, updates and composer inside containers will fail while the VPN is connected. Run 'wpdev fix-vpn-network' to try again."
+        fi
     fi
 
     if [ -z "${WPDEV_SKIP_DNS_FIX:-}" ]; then
@@ -1554,9 +1778,19 @@ cmd_doctor() {
     # resolver problem sends you off to fix the wrong thing.
     case "$(container_reachability)" in
         offline)
-            print_fail "Containers have no outbound connectivity — a bridge-network container can't reach its own gateway. Not a DNS problem: look at the host firewall, or a VPN client enforcing tunnel-all against 172.16.0.0/12."
-            if pgrep -x vpnagentd >/dev/null 2>&1; then
-                echo "    Cisco Secure Client (vpnagentd) is running — disconnect it and re-run this to confirm."
+            hijacked="$(hijacked_bridge_routes)"
+            if [ -n "$hijacked" ]; then
+                tunnel="$(echo "$hijacked" | awk '{print $3; exit}')"
+                print_fail "Containers have no outbound connectivity — the host routes Docker's bridge subnets into ${tunnel}, so replies to containers go into the VPN instead of the bridge. Not a DNS problem."
+                echo "$hijacked" | while read -r name subnet dev; do
+                    echo "    ${name} (${subnet}) → ${dev}"
+                done
+                echo "    Fix it (one-time, needs sudo): wpdev fix-vpn-network — 'wpdev up' also does this for you."
+            else
+                print_fail "Containers have no outbound connectivity — a bridge-network container can't reach its own gateway. Not a DNS problem: look at the host firewall, or a VPN client enforcing tunnel-all against 172.16.0.0/12."
+                if pgrep -x vpnagentd >/dev/null 2>&1; then
+                    echo "    Cisco Secure Client (vpnagentd) is running — disconnect it and re-run this to confirm."
+                fi
             fi
             fails=$((fails + 1))
             ;;
@@ -4278,6 +4512,7 @@ case "${1:-help}" in
     status) cmd_status ;;
     doctor) cmd_doctor ;;
     fix-dns) cmd_fix_dns ;;
+    fix-vpn-network) cmd_fix_vpn_network ;;
     logs) shift; cmd_logs "$@" ;;
     stats) shift; cmd_stats "$@" ;;
     images) shift; cmd_images "$@" ;;
