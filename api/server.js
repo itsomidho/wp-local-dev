@@ -43,6 +43,11 @@ app.use((req, res, next) => {
 // wpdev interpolates this into `--path=/var/www/${site}`, so an unchecked
 // "../../etc" would walk right out of the sites directory.
 const SITE_NAME_RE = /^[a-z0-9-]+$/;
+
+// A plain hostname, the same pattern wpdev's valid_domain enforces: it ends
+// up in nginx configs, /etc/hosts and a certificate, and WordPress rejects
+// an underscore (admin@my_site.test isn't a valid email address).
+const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 function requireValidSiteName(req, res, next) {
   if (!SITE_NAME_RE.test(req.params.name || '')) {
     return res.status(400).json({ error: `invalid site name '${req.params.name}'` });
@@ -60,6 +65,20 @@ const sync = (buildArgs) => async (req, res) => {
 const stream = (buildArgs) => (req, res) => streamWpdev(buildArgs(req), res);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// The .env settings the dashboard needs. domainSuffix is what a bare site
+// name gets (DOMAIN_SUFFIX, "test" if unset) -- the same default wpdev's
+// domain_suffix applies, read the same way: the last assignment wins.
+app.get('/api/settings', (req, res) => {
+  let env = '';
+  try {
+    env = fs.readFileSync(path.join(PROJECT_DIR, '.env'), 'utf8');
+  } catch {
+    // No .env yet: defaults.
+  }
+  const set = [...env.matchAll(/^DOMAIN_SUFFIX=\.?(.*)$/gm)].pop()?.[1].trim();
+  res.json({ domainSuffix: set && /^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(set) ? set : 'test' });
+});
 
 app.get('/api/system/stats', async (req, res) => {
   try {
@@ -144,9 +163,22 @@ app.get(
 // ---------------------------------------------------------------------------
 app.get('/api/sites', sync(() => ['list']));
 
+// Whether a domain is free for a new site (`wpdev check-domain`): the same
+// check `add` makes, for the dashboard to show while the user types.
+app.get('/api/check-domain', async (req, res) => {
+  const domain = String(req.query.domain || '').trim().toLowerCase();
+  if (!domain || domain.length > 253) return res.status(400).json({ error: 'domain is required' });
+  const { code, stdout } = await runWpdev(['check-domain', domain]);
+  const line = stdout.trim().split('\n').pop() || '';
+  res.json({ ok: code === 0, reason: code === 0 ? null : line.slice(line.indexOf(': ') + 2) });
+});
+
 app.post('/api/sites', (req, res) => {
   const { domain, php, wpVersion } = req.body || {};
   if (!domain) return res.status(400).json({ error: 'domain is required' });
+  if (!DOMAIN_RE.test(domain)) {
+    return res.status(400).json({ error: `'${domain}' isn't a usable domain: only lowercase letters, digits, hyphens and dots` });
+  }
   const args = ['add', `--domain=${domain}`];
   if (php) args.push(`--php=${php}`);
   if (wpVersion) args.push(`--wp-version=${wpVersion}`);
@@ -209,15 +241,14 @@ app.post('/api/sites/:name/media-proxy', requireValidSiteName, async (req, res) 
 });
 
 // Admin domain (`wpdev admin-domain`). GET returns wpdev's own status line.
-// POST takes {mode: 'on'|'off'} or {domain}; the domain is checked here
-// with the same pattern wpdev enforces (it ends up in an nginx config).
-const ADMIN_DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+// POST takes {mode: 'on'|'off'} or {domain}; the domain is checked with
+// DOMAIN_RE.
 app.get('/api/sites/:name/admin-domain', requireValidSiteName, sync((req) => ['admin-domain', req.params.name]));
 app.post('/api/sites/:name/admin-domain', requireValidSiteName, async (req, res) => {
   const { mode, domain } = req.body || {};
   let arg;
   if (mode === 'on' || mode === 'off') arg = mode;
-  else if (typeof domain === 'string' && ADMIN_DOMAIN_RE.test(domain.trim().toLowerCase())) arg = domain.trim().toLowerCase();
+  else if (typeof domain === 'string' && DOMAIN_RE.test(domain.trim().toLowerCase())) arg = domain.trim().toLowerCase();
   else {
     return res.status(400).json({
       error: "send {mode: 'on'|'off'} or {domain: 'admin-mysite.test'}",

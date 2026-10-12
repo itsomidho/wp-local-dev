@@ -23,13 +23,15 @@ _wpdev_root() {
 }
 
 _wpdev_sites() {
-    local root f name
+    local root f name site
     root="$(_wpdev_root)" || return
     for f in "$root"/nginx/sites/*.conf; do
         [ -e "$f" ] || continue
         name="$(basename "$f" .conf)"
         [ "$name" = "default" ] && continue
-        echo "${name%.test}"
+        # The site's name is the directory its vhost serves (any suffix).
+        site="$(sed -n 's|^[[:space:]]*root /var/www/\([^/;]*\);.*|\1|p' "$f" | head -1)"
+        echo "${site:-$name}"
     done
 }
 
@@ -37,7 +39,7 @@ _wpdev_complete() {
     local cur prev cmds subcmd
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts creds cert fix-perms media-proxy admin-domain wp help"
+    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts check-domain update-tlds creds cert fix-perms media-proxy admin-domain wp help"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))

@@ -649,13 +649,15 @@ function snapshotDate(id) {
 function CloneTab({ site, onRunAction }) {
   const [newName, setNewName] = useState('');
   const [confirmClone, setConfirmClone] = useState(false);
+  // wpdev gives the clone the source's suffix: shop.local -> copy.local.
+  const suffix = site.domain.slice(site.domain.lastIndexOf('.'));
 
   const clone = () => {
     setConfirmClone(false);
     const trimmed = newName.trim();
     if (!trimmed) return;
     onRunAction({
-      title: `Clone ${site.domain} -> ${trimmed}.test`,
+      title: `Clone ${site.domain} -> ${trimmed}${suffix}`,
       request: {
         method: 'POST',
         path: `/api/sites/${site.name}/clone`,
@@ -675,7 +677,7 @@ function CloneTab({ site, onRunAction }) {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
-          <span className="mono">.test</span>
+          <span className="mono">{suffix}</span>
         </div>
         <button className="btn btn-primary" disabled={!newName.trim()} onClick={() => setConfirmClone(true)}>
           <Copy size={15} /> Clone
@@ -684,7 +686,7 @@ function CloneTab({ site, onRunAction }) {
       {confirmClone && (
         <ConfirmDialog
           title="Clone this site?"
-          message={`Creates sites/${newName.trim()} and ${siteUrl(`${newName.trim()}.test`)} as a full copy of ${site.domain} (files + database).`}
+          message={`Creates sites/${newName.trim()} and ${siteUrl(`${newName.trim()}${suffix}`)} as a full copy of ${site.domain} (files + database).`}
           confirmLabel="Clone"
           onCancel={() => setConfirmClone(false)}
           onConfirm={clone}

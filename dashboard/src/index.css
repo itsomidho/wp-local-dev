@@ -511,6 +511,39 @@ input::placeholder {
   color: var(--dim);
 }
 
+.field-hint-error {
+  color: var(--danger);
+}
+
+/* A label with something on its right, e.g. a character count. */
+.field-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.field-count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--dim);
+}
+
+.field-count.is-over {
+  color: var(--danger);
+}
+
+/* wpdev's reasons read "it's ..." -- they follow "Can't add x:" there. */
+.field-hint-error::first-letter {
+  text-transform: uppercase;
+}
+
+.choice:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
 .choice-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -3671,6 +3704,11 @@ input::placeholder {
 /* PHP version picker: seven versions, end-of-life ones tagged. */
 .choice-row {
   grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+}
+
+/* Domain suffix picker: wider cells, so .localhost fits. */
+.choice-row.suffix-row {
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
 }
 
 .choice {

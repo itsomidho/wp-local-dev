@@ -31,6 +31,8 @@
 #   wpdev db-import <site> <file>   Replace that site's database from a .sql or .sql.gz dump
 #   wpdev list                List configured site domains
 #   wpdev hosts               Print /etc/hosts entries needed for all sites
+#   wpdev check-domain <domain>  Whether <domain> is free for a new site (and why not)
+#   wpdev update-tlds         Refresh the list of real top-level domains add refuses
 #   wpdev creds <name>        Show a site's admin/DB credentials
 #   wpdev cert <name>         Reissue a site's HTTPS certificate from the current mkcert CA
 #   wpdev fix-perms <name>    Give a site's files back to you (owner + write); --all for every site
@@ -53,8 +55,9 @@
 #   8. Install + activate the redis-cache plugin, enable the object cache
 #   9. Reload Nginx, offer to add the /etc/hosts entry
 #
-# Safe to re-run: every step in `add` is skipped if its output already
-# exists — including the PHP version prompt itself, once PHP_VERSION is saved.
+# Safe to re-run on an existing site (`--repair` when non-interactive):
+# every step is skipped if its output already exists — including the PHP
+# version prompt itself, once PHP_VERSION is saved.
 
 set -e
 
@@ -382,6 +385,8 @@ show_help() {
     echo "  db-import <site> <file> [--yes]  Replace that site's database from a .sql or .sql.gz dump"
     echo "  list                      List configured site domains"
     echo "  hosts                     Print /etc/hosts entries needed for all sites"
+    echo "  check-domain <domain>     Whether <domain> is free for a new site (and why not)"
+    echo "  update-tlds               Refresh the list of real top-level domains add refuses"
     echo "  creds <name>              Show a site's admin/DB credentials"
     echo "  cert <name>               Reissue a site's HTTPS certificate from the current mkcert CA"
     echo "  fix-perms <name>|--all    Give a site's files back to you (owner + write), e.g. after copying a site in"
@@ -1157,6 +1162,7 @@ cmd_up() {
         app_version="$(git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null)" || app_version="unknown"
         set_env_var APP_VERSION "$app_version"
 
+
         # Share the host's (browser-trusted) mkcert CA with the api
         # container, so sites created from the dashboard get trusted certs
         # too -- otherwise it issues them from a private CA of its own.
@@ -1257,7 +1263,7 @@ require_stack_services() {
 # site saved without one. Sorted, one per line; empty with no sites.
 php_versions_in_use() {
     local name v
-    for name in $(site_domains | sed 's/\.test$//; s/\./-/g'); do
+    for name in $(site_names); do
         v="$(site_get "$name" PHP_VERSION)"
         echo "${v:-$DEFAULT_PHP_VERSION}"
     done | sort -uV
@@ -1527,8 +1533,7 @@ cmd_update_check() {
 status_site_row() {
     local domain="$1" mysql_up="$2" mysql_version="$3"
     local site_name config php_version php_svc http_code db_status db_name php_reachable cache_status wp_version
-    site_name="${domain%.test}"
-    site_name="${site_name//./-}"
+    site_name="$(site_name_of "$domain")"
     config="sites/${site_name}/wp-config.php"
     php_version="$(site_get "$site_name" PHP_VERSION)"
     [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
@@ -1835,8 +1840,7 @@ cmd_doctor() {
         if docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then mysql_up=1; fi
 
         for domain in $domains; do
-            site_name="${domain%.test}"
-            site_name="${site_name//./-}"
+            site_name="$(site_name_of "$domain")"
             config="sites/${site_name}/wp-config.php"
 
             echo "${domain}:"
@@ -1868,7 +1872,7 @@ cmd_doctor() {
                     warnings=$((warnings + 1))
                 fi
             else
-                print_fail "  Missing SSL certificate — run: wpdev add (skips steps that already exist)"
+                print_fail "  Missing SSL certificate — run: wpdev add --domain=${domain} --repair"
                 fails=$((fails + 1))
             fi
 
@@ -2195,7 +2199,7 @@ cmd_db() {
     db_pass="$(site_get "$site" DB_PASSWORD)"
     if [ -z "$db_pass" ]; then
         print_warning "No saved DB credentials for '${site}' (checked DB_PASSWORD in $(site_config_file "$site"))."
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
@@ -2227,7 +2231,7 @@ cmd_adminer() {
         config="sites/${site}/wp-config.php"
         if [ ! -f "$config" ]; then
             print_warning "No wp-config.php for '${site}' (checked ${config})."
-            echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+            echo "Known sites: $(site_names | tr '\n' ' ')"
             return 1
         fi
 
@@ -2460,9 +2464,7 @@ cmd_media_proxy() {
         echo "  wpdev media-proxy mysite                            # show the current state"
         return 1
     fi
-    site_name="${arg%.test}"
-    site_name="${site_name//./-}"
-    domain="${site_name}.test"
+    resolve_site "$arg"
     [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
     conf="$(media_proxy_conf "$domain")"
     local_url="$(site_url "$domain")${MEDIA_PROXY_URI}"
@@ -2558,7 +2560,7 @@ remove_admin_domain_plugin() {
 # The admin domain currently served for <site-name>, or nothing.
 site_admin_domain() {
     local conf
-    conf="$(admin_domain_conf "$1.test")"
+    conf="$(admin_domain_conf "$(site_domain_of "$1")")"
     [ -f "$conf" ] && sed -n 's/^# admin-domain: //p' "$conf" | head -1
     return 0
 }
@@ -2575,6 +2577,84 @@ admin_domains() {
 # Whether <admin-domain> is served for a site other than <site-domain>.
 admin_domain_in_use() {
     grep -l "^# admin-domain: $1$" nginx/sites/admin-domain/*.conf 2>/dev/null | grep -qvx "$(admin_domain_conf "$2")"
+}
+
+# Whether <domain> is a plain hostname: lowercase letters, digits and
+# hyphens, in dot-separated labels. It ends up in nginx configs, the hosts
+# file and a certificate, and WordPress itself refuses an underscore
+# (admin@my_site.test isn't a valid email address), so anything else would
+# fail halfway through provisioning.
+valid_domain() {
+    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]
+}
+
+# Every top-level domain in the public DNS root (refresh: wpdev update-tlds).
+TLD_LIST="data/iana-tlds.txt"
+
+# Longest site name (the domain minus its suffix) a new site may have: it
+# becomes the database and MySQL user names, wp_<name>, and MySQL caps a
+# user name at 32 characters. Longer, and the name would be cut to fit, so
+# two long names starting alike would share one database.
+SITE_NAME_MAX=28
+
+# Whether <domain> is under a public top-level domain. home.arpa is in the
+# root zone, but reserved for exactly this kind of private use.
+is_real_domain() {
+    case "$1" in *.home.arpa) return 1 ;; esac
+    grep -qx "${1##*.}" "$TLD_LIST" 2>/dev/null
+}
+
+# Why <domain> can't be given to a new local site, or nothing if it can:
+# - malformed, or too long: over SITE_NAME_MAX for its name, or over DNS's
+#   own limits (63 characters a label, 253 in all)
+# - already a site (or would share another site's sites/<name>)
+# - on a real top-level domain: the hosts entry would hide the real site
+#   of that name from this machine
+# - already some site's admin domain
+# - already pointed somewhere other than this machine by /etc/hosts, i.e.
+#   in use for something else (the hosts line would just fight it)
+new_domain_problem() {
+    local domain="$1" tld="${1##*.}" name existing ip
+    if ! valid_domain "$domain"; then
+        if valid_domain "${domain//_/-}"; then
+            echo "only letters, digits, hyphens and dots (try ${domain//_/-})"
+        else
+            echo "only letters, digits, hyphens and dots"
+        fi
+        return 0
+    fi
+    name="$(site_name_of "$domain")"
+    if [ "${#name}" -gt "$SITE_NAME_MAX" ]; then
+        echo "its name, ${name}, is ${#name} characters; ${SITE_NAME_MAX} at most (it becomes the database name)"
+        return 0
+    fi
+    if [ "${#domain}" -gt 253 ] || [[ ".${domain}." =~ \.[^.]{64,}\. ]]; then
+        echo "too long for DNS: 63 characters at most between dots, 253 in all"
+        return 0
+    fi
+    if [ -f "nginx/sites/${domain}.conf" ]; then
+        echo "it's already a site"
+        return 0
+    fi
+    existing="$(site_domain_of "$name")"
+    if [ -f "nginx/sites/${existing}.conf" ]; then
+        echo "its site name, ${name}, already belongs to ${existing}"
+        return 0
+    fi
+    if is_real_domain "$domain"; then
+        echo "it's a real domain (.${tld} is a public top-level domain), and this machine would stop reaching the real ${domain}. Use a local suffix such as .test"
+        return 0
+    fi
+    if admin_domains | grep -qx "$domain"; then
+        echo "it's already a site's admin domain"
+        return 0
+    fi
+    # The first address /etc/hosts gives it, comments aside.
+    ip="$(awk -v d="$domain" '$1 !~ /^#/ { for (i = 2; i <= NF; i++) { if ($i ~ /^#/) break; if ($i == d) { print $1; exit } } }' /etc/hosts 2>/dev/null)"
+    case "$ip" in
+        ""|127.*|::1) ;;
+        *) echo "/etc/hosts already points it at ${ip}, so something else uses it"; return 0 ;;
+    esac
 }
 
 in_hosts_file() {
@@ -2663,7 +2743,7 @@ issue_cert() {
 # <site-domain>'s vhost.
 render_admin_domain() {
     local site_domain="$1" admin="$2" site_name port conf
-    site_name="${site_domain%.test}"
+    site_name="$(site_name_of "$site_domain")"
     port="$(nginx_https_port)"
     conf="$(admin_domain_conf "$site_domain")"
     mkdir -p "$(dirname "$conf")"
@@ -2806,9 +2886,7 @@ cmd_admin_domain() {
         echo "  wpdev admin-domain mysite                     # show the current state"
         return 1
     fi
-    site_name="${arg%.test}"
-    site_name="${site_name//./-}"
-    domain="${site_name}.test"
+    resolve_site "$arg"
     [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
     conf="$(admin_domain_conf "$domain")"
     current="$(site_admin_domain "$site_name")"
@@ -2835,7 +2913,7 @@ cmd_admin_domain() {
             ;;
         on)
             admin="$(site_get "$site_name" ADMIN_DOMAIN)"
-            [ -n "$admin" ] || print_error "No admin domain known for ${site_name}. Give it once: wpdev admin-domain ${site_name} admin-${site_name}.test"
+            [ -n "$admin" ] || print_error "No admin domain known for ${site_name}. Give it once: wpdev admin-domain ${site_name} admin-${site_name}.${domain##*.}"
             ;;
         *)
             admin="$mode"
@@ -2844,9 +2922,10 @@ cmd_admin_domain() {
 
     admin="$(echo "$admin" | tr 'A-Z' 'a-z')"
     # Becomes part of an nginx config, so only a plain hostname gets through.
-    [[ "$admin" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] \
+    valid_domain "$admin" \
         || print_error "Not a usable domain: '${admin}' (expected e.g. admin-${site_name}.test)"
     [ -f "nginx/sites/${admin}.conf" ] && print_error "${admin} is a site of its own — pick a domain no site uses."
+    is_real_domain "$admin" && print_error "${admin} is a real domain (.${admin##*.} is a public top-level domain), and this machine would stop reaching it. Use a local suffix such as .test"
     other="$(grep -l "^# admin-domain: ${admin}$" nginx/sites/admin-domain/*.conf 2>/dev/null | grep -vx "$conf" | head -1)" || true
     [ -n "$other" ] && print_error "${admin} is already the admin domain of $(basename "$other" .conf)."
 
@@ -2932,15 +3011,15 @@ cmd_fix_perms() {
     arg="$1"
     if [ -z "$arg" ]; then
         print_warning "Usage: wpdev fix-perms <site-name>|--all"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
     if [ "$arg" = "--all" ]; then
-        sites="$(site_domains | sed 's/\.test$//; s/\./-/g')"
+        sites="$(site_names)"
     else
-        sites="${arg%.test}"
-        sites="${sites//./-}"
-        [ -f "nginx/sites/${sites}.test.conf" ] || print_error "No such site: ${sites} (checked nginx/sites/${sites}.test.conf)"
+        resolve_site "$arg"
+        [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${arg} (checked nginx/sites/${domain}.conf)"
+        sites="$site_name"
     fi
 
     for site_name in $sites; do
@@ -2968,12 +3047,10 @@ cmd_cert() {
     arg="$1"
     if [ -z "$arg" ]; then
         print_warning "Usage: wpdev cert <site-name>"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
-    site_name="${arg%.test}"
-    site_name="${site_name//./-}"
-    domain="${site_name}.test"
+    resolve_site "$arg"
     [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
     command -v mkcert >/dev/null 2>&1 || print_error "mkcert isn't installed — run: wpdev install-mkcert"
 
@@ -3004,7 +3081,7 @@ cmd_cache() {
     mode="$2"
     if [ -z "$arg" ] || [ -z "$mode" ]; then
         print_warning "Usage: wpdev cache <site-name> <on|off>"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
     case "$mode" in
@@ -3012,9 +3089,7 @@ cmd_cache() {
         *) print_error "Mode must be 'on' or 'off', got '${mode}'" ;;
     esac
 
-    site_name="${arg%.test}"
-    site_name="${site_name//./-}"
-    domain="${site_name}.test"
+    resolve_site "$arg"
 
     if [ ! -f "nginx/sites/${domain}.conf" ]; then
         print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
@@ -3252,7 +3327,7 @@ cmd_restore_all() {
     echo "back up the current state first — run 'wpdev backup' before this if you"
     echo "want to keep what's there now."
     echo ""
-    echo "Known sites right now: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+    echo "Known sites right now: $(site_names | tr '\n' ' ')"
     echo ""
     if [ "$assume_yes" -eq 1 ]; then
         print_info "Skipping confirmation (--yes)."
@@ -3370,6 +3445,58 @@ site_domains() {
     done
 }
 
+# The suffix a bare site name gets (`wpdev add shop` -> shop.test):
+# DOMAIN_SUFFIX in .env, "test" if unset. Any suffix works for a single
+# site -- give the full domain (shop.local) -- this is only the default.
+domain_suffix() {
+    local suffix
+    suffix="$(sed -n 's/^DOMAIN_SUFFIX=//p' .env 2>/dev/null | tail -1)"
+    suffix="${suffix#.}"
+    echo "${suffix:-test}"
+}
+
+# A domain's site name, i.e. its directory under sites/. For an existing
+# site that's whatever its vhost serves; a new one gets the domain minus
+# its suffix, dots as dashes (shop.local -> shop, blog.shop.test ->
+# blog-shop). Looked up rather than recomputed, so a site keeps its name
+# whatever DOMAIN_SUFFIX later becomes.
+site_name_of() {
+    local conf="nginx/sites/$1.conf" name=""
+    [ -f "$conf" ] && name="$(sed -n 's|^[[:space:]]*root /var/www/\([^/;]*\);.*|\1|p' "$conf" | head -1)"
+    if [ -z "$name" ]; then
+        name="${1%.*}"
+        name="${name//./-}"
+    fi
+    echo "$name"
+}
+
+# A site's domain from its name: the vhost that serves sites/<name>, or
+# <name>.<DOMAIN_SUFFIX> if none does.
+site_domain_of() {
+    local d
+    for d in $(site_domains); do
+        [ "$(site_name_of "$d")" = "$1" ] && { echo "$d"; return 0; }
+    done
+    echo "$1.$(domain_suffix)"
+}
+
+# Every site's name, one per line.
+site_names() {
+    local d
+    for d in $(site_domains); do site_name_of "$d"; done
+}
+
+# Sets site_name and domain from a command's <site> argument, which may be
+# the site's name (shop) or its domain (shop.test, shop.local).
+resolve_site() {
+    if [ -f "nginx/sites/$1.conf" ]; then
+        domain="$1"
+    else
+        domain="$(site_domain_of "$(site_name_of "$1")")"
+    fi
+    site_name="$(site_name_of "$domain")"
+}
+
 # A freshly-created MySQL container (first-ever `up`, or any CI run, which
 # is always a cold start) takes a few seconds to accept connections after
 # `docker compose up` returns -- the container exists and is "Started" well
@@ -3427,8 +3554,7 @@ cmd_list() {
     fi
 
     for domain in $domains; do
-        site_name="${domain%.test}"
-        site_name="${site_name//./-}"
+        site_name="$(site_name_of "$domain")"
         if [ -d "sites/${site_name}" ]; then
             php_version="$(site_get "$site_name" PHP_VERSION)"
             [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
@@ -3439,6 +3565,43 @@ cmd_list() {
         echo "  $(site_url "$domain")  →  sites/${site_name}  ($wp_status)"
     done
     echo ""
+}
+
+# The same check `add` makes, on its own: "ok", or why not (exit 1). A bare
+# name gets DOMAIN_SUFFIX, as in `add`. For the dashboard, which asks as
+# you type.
+cmd_check_domain() {
+    local domain problem
+    domain="$(echo "$1" | tr 'A-Z' 'a-z')"
+    [ -n "$domain" ] || { print_warning "Usage: wpdev check-domain <domain>"; return 1; }
+    case "$domain" in *.*) ;; *) domain="${domain}.$(domain_suffix)" ;; esac
+    problem="$(new_domain_problem "$domain")"
+    if [ -n "$problem" ]; then
+        echo "${domain}: ${problem}"
+        return 1
+    fi
+    echo "${domain}: ok"
+}
+
+# Re-downloads data/iana-tlds.txt: new top-level domains still get
+# delegated now and then. Only replaced once the download is complete and
+# looks like the list.
+cmd_update_tlds() {
+    local tmp
+    tmp="$(mktemp)"
+    if ! curl -fsSL --max-time 30 https://data.iana.org/TLD/tlds-alpha-by-domain.txt -o "$tmp" \
+        || ! grep -qx "COM" "$tmp"; then
+        rm -f "$tmp"
+        print_error "Couldn't download the list from data.iana.org"
+    fi
+    {
+        sed -n '1,4p' "$TLD_LIST"
+        sed -n '1s/^# /# IANA /p' "$tmp"
+        grep -v '^#' "$tmp" | tr 'A-Z' 'a-z'
+    } > "${TLD_LIST}.new"
+    rm -f "$tmp"
+    mv -f "${TLD_LIST}.new" "$TLD_LIST"
+    print_info "$(grep -vc '^#' "$TLD_LIST") top-level domains ($(sed -n 's/^# IANA //p' "$TLD_LIST"))"
 }
 
 cmd_hosts() {
@@ -3462,7 +3625,7 @@ cmd_creds() {
     site="$1"
     if [ -z "$site" ]; then
         print_warning "Usage: wpdev creds <site-name>"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
@@ -3515,15 +3678,13 @@ cmd_remove() {
     arg="${args[0]:-}"
     if [ -z "$arg" ]; then
         print_warning "Usage: wpdev remove <site-name> [--yes]"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
     # Accept either the bare site name (matches `creds`/sites/<name>) or the
     # full domain (matches nginx/sites/<domain>.conf) — strip .test either way.
-    site_name="${arg%.test}"
-    site_name="${site_name//./-}"
-    domain="${site_name}.test"
+    resolve_site "$arg"
     # After `admin-domain off` only the setting remembers the domain whose
     # certificate is left.
     admin="$(site_admin_domain "$site_name")"
@@ -3658,16 +3819,19 @@ cmd_clone() {
     new_arg="${args[1]:-}"
     if [ -z "$source_arg" ] || [ -z "$new_arg" ]; then
         print_warning "Usage: wpdev clone <source-site> <new-site> [--yes]"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
-    source_name="${source_arg%.test}"
-    source_name="${source_name//./-}"
-    new_name="${new_arg%.test}"
-    new_name="${new_name//./-}"
-    source_domain="${source_name}.test"
-    new_domain="${new_name}.test"
+    resolve_site "$source_arg"
+    source_name="$site_name"
+    source_domain="$domain"
+    # A bare new name keeps the source's suffix (shop.local -> shop-copy.local).
+    new_domain="$new_arg"
+    case "$new_domain" in *.*) ;; *) new_domain="${new_domain}.${source_domain##*.}" ;; esac
+    problem="$(new_domain_problem "$new_domain")"
+    [ -z "$problem" ] || print_error "Can't clone to ${new_domain}: ${problem}"
+    new_name="$(site_name_of "$new_domain")"
 
     source_config="sites/${source_name}/wp-config.php"
     if [ ! -f "$source_config" ]; then
@@ -3844,12 +4008,11 @@ cmd_snapshot() {
     label="$2"
     if [ -z "$site_arg" ]; then
         print_warning "Usage: wpdev snapshot <site> [label]"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
-    site_name="${site_arg%.test}"
-    site_name="${site_name//./-}"
+    site_name="$(site_name_of "$site_arg")"
     config="sites/${site_name}/wp-config.php"
     if [ ! -f "$config" ]; then
         print_error "No such site: ${site_name} (checked ${config})"
@@ -3896,12 +4059,11 @@ cmd_snapshots() {
     site_arg="$1"
     if [ -z "$site_arg" ]; then
         print_warning "Usage: wpdev snapshots <site>"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
-    site_name="${site_arg%.test}"
-    site_name="${site_name//./-}"
+    site_name="$(site_name_of "$site_arg")"
 
     available="$(site_snapshots "$site_name")"
     if [ -z "$available" ]; then
@@ -3926,13 +4088,11 @@ cmd_restore() {
     snap_id="${args[1]:-}"
     if [ -z "$site_arg" ]; then
         print_warning "Usage: wpdev restore <site> [snapshot-id] [--yes]"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
-    site_name="${site_arg%.test}"
-    site_name="${site_name//./-}"
-    domain="${site_name}.test"
+    resolve_site "$site_arg"
 
     available="$(site_snapshots "$site_name")"
     if [ -z "$available" ]; then
@@ -4014,12 +4174,11 @@ cmd_db_export() {
     out_file="$2"
     if [ -z "$site_arg" ]; then
         print_warning "Usage: wpdev db-export <site> [output-file]"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
 
-    site_name="${site_arg%.test}"
-    site_name="${site_name//./-}"
+    site_name="$(site_name_of "$site_arg")"
     config="sites/${site_name}/wp-config.php"
     if [ ! -f "$config" ]; then
         print_error "No such site: ${site_name} (checked ${config})"
@@ -4061,16 +4220,14 @@ cmd_db_import() {
     in_file="${args[1]:-}"
     if [ -z "$site_arg" ] || [ -z "$in_file" ]; then
         print_warning "Usage: wpdev db-import <site> <file.sql[.gz]> [--yes]"
-        echo "Known sites: $(site_domains | sed 's/\.test$//' | tr '\n' ' ')"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
     if [ ! -f "$in_file" ]; then
         print_error "No such file: ${in_file}"
     fi
 
-    site_name="${site_arg%.test}"
-    site_name="${site_name//./-}"
-    domain="${site_name}.test"
+    resolve_site "$site_arg"
     config="sites/${site_name}/wp-config.php"
     if [ ! -f "$config" ]; then
         print_error "No such site: ${site_name} (checked ${config})"
@@ -4137,11 +4294,13 @@ cmd_add() {
     domain=""
     php_version=""
     wp_version=""
+    repair=0
     for a in "$@"; do
         case "$a" in
             --domain=*) domain="${a#--domain=}" ;;
             --php=*) php_version="${a#--php=}" ;;
             --wp-version=*) wp_version="${a#--wp-version=}" ;;
+            --repair) repair=1 ;;
         esac
     done
     non_interactive=0
@@ -4166,17 +4325,36 @@ cmd_add() {
     echo "======================================"
     echo ""
     if [ -z "$domain" ]; then
-        read -p "Enter domain name (e.g., mysite.test): " domain
+        read -p "Enter domain name (e.g., mysite.$(domain_suffix), or just mysite): " domain
     fi
 
     if [ -z "$domain" ]; then
         print_error "Domain name cannot be empty!"
     fi
+    domain="$(echo "$domain" | tr 'A-Z' 'a-z')"
+    # A bare name gets the default suffix (DOMAIN_SUFFIX in .env).
+    case "$domain" in *.*) ;; *) domain="${domain}.$(domain_suffix)" ;; esac
+    # An existing site is only re-run on purpose (every step skips what's
+    # already there, so that repairs one); anything else must be a domain
+    # that's free and not a real one -- see new_domain_problem.
+    if [ -f "nginx/sites/${domain}.conf" ]; then
+        if [ "$repair" -eq 1 ]; then
+            print_info "${domain} is already a site -- repairing: only missing steps run."
+        elif [ "$non_interactive" -eq 1 ]; then
+            print_error "${domain} is already a site. To redo any missing steps: wpdev add --domain=${domain} --repair"
+        else
+            print_warning "${domain} is already a site -- continuing only redoes missing steps."
+        fi
+    else
+        problem="$(new_domain_problem "$domain")"
+        [ -z "$problem" ] || print_error "Can't add ${domain}: ${problem}"
+    fi
 
-    site_name="${domain%.test}"
-    site_name="${site_name//./-}"  # Replace dots with dashes
+    site_name="$(site_name_of "$domain")"
 
-    # MySQL identifiers: no dots/dashes, capped at 32 chars (MySQL user limit)
+    # MySQL identifiers: no dots/dashes, capped at 32 chars (MySQL user limit).
+    # A new site's name already fits (SITE_NAME_MAX); the cut is for sites
+    # added before that limit.
     db_slug="${site_name//-/_}"
     db_slug="${db_slug:0:28}"
     db_name="wp_${db_slug}"
@@ -4565,6 +4743,8 @@ case "${1:-help}" in
     db-import) shift; cmd_db_import "$@" ;;
     list) cmd_list ;;
     hosts) cmd_hosts ;;
+    check-domain) cmd_check_domain "$2" ;;
+    update-tlds) cmd_update_tlds ;;
     creds) cmd_creds "$2" ;;
     cert) cmd_cert "$2" ;;
     fix-perms) cmd_fix_perms "$2" ;;

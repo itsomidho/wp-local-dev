@@ -64,6 +64,8 @@ async function request(method, path, body) {
 export const api = {
   base: apiBase,
   health: () => request('GET', '/api/health'),
+  settings: () => request('GET', '/api/settings'),
+  checkDomain: (domain) => request('GET', `/api/check-domain?domain=${encodeURIComponent(domain)}`),
   systemStats: () => request('GET', '/api/system/stats'),
   status: () => request('GET', '/api/status'),
   doctor: () => request('GET', '/api/doctor'),
