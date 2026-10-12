@@ -37,6 +37,13 @@ mkdir -p /var/log/wpdev
 touch /var/log/wpdev/cron.log
 chown www-data:www-data /var/log/wpdev/cron.log
 
+# wp-cli's cache volume (WP_CLI_CACHE_DIR, docker-compose.yml) starts out
+# root-owned, and wp-cli runs as www-data.
+if [ -n "${WP_CLI_CACHE_DIR:-}" ]; then
+    mkdir -p "$WP_CLI_CACHE_DIR"
+    chown -R www-data:www-data "$WP_CLI_CACHE_DIR"
+fi
+
 # The crontab is bind-mounted too, but cron ignores a file in /etc/cron.d
 # unless root owns it and it isn't group/world-writable -- which a host
 # checkout's file can't promise. So install a root-owned copy.
