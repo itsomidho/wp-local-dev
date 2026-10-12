@@ -161,20 +161,25 @@ export default function AddSiteDialog({ runningPhp = [], onSubmit, onClose }) {
 
         <div className="field">
           <span className="field-label">PHP version</span>
-          <div className="choice-row" role="radiogroup" aria-label="PHP version">
-            {PHP_VERSIONS.map((v) => (
-              <button
-                key={v}
-                type="button"
-                role="radio"
-                aria-checked={php === v}
-                className={`choice${php === v ? ' is-active' : ''}`}
-                onClick={() => setPhp(v)}
-                title={PHP_EOL.has(v) ? `PHP ${v} is end of life: no more security fixes` : undefined}
-              >
-                <span className="mono">{v}</span>
-                {PHP_EOL.has(v) && <span className="choice-tag">EOL</span>}
-              </button>
+          {/* End-of-life versions on one row, supported ones on the next. */}
+          <div className="choice-rows" role="radiogroup" aria-label="PHP version">
+            {[PHP_VERSIONS.filter((v) => PHP_EOL.has(v)), PHP_VERSIONS.filter((v) => !PHP_EOL.has(v))].map((row) => (
+              <div className="choice-row" key={row[0]}>
+                {row.map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    role="radio"
+                    aria-checked={php === v}
+                    className={`choice${php === v ? ' is-active' : ''}`}
+                    onClick={() => setPhp(v)}
+                    title={PHP_EOL.has(v) ? `PHP ${v} is end of life: no more security fixes` : undefined}
+                  >
+                    <span className="mono">{v}</span>
+                    {PHP_EOL.has(v) && <span className="choice-tag">EOL</span>}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
           {!runningPhp.includes(phpSlug(php)) && (
