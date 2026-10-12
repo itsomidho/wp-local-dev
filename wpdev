@@ -2578,6 +2578,68 @@ in_hosts_file() {
     grep -q "[[:space:]]$1$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]$1[[:space:]]" /etc/hosts 2>/dev/null
 }
 
+# Runs a sh script as root against the host's /etc/hosts, mounted at
+# /hosts, with $D set to <domain>. For the api container (the dashboard):
+# it runs unprivileged and sees the host file read-only, so it can't
+# write it directly. It does hold the Docker socket, though, which is
+# already root on the host, so a throwaway container makes the edit.
+# nginx:alpine because the stack already has it. Edits go through > and
+# >> only, never sed -i or mv: those swap the file's inode, which a
+# single-file bind mount (ours and wp-api's) can't follow.
+host_hosts_edit() {
+    docker run --rm --network none --user 0 --entrypoint sh -e D="$1" \
+        -v /etc/hosts:/hosts nginx:alpine -c "$2" </dev/null >/dev/null 2>&1
+}
+
+# Makes sure <domain> resolves to this machine. From the dashboard it's
+# added outright: nobody's there to ask, and a site that doesn't resolve
+# is useless (through a system proxy it even shows up as a TLS error, so
+# it looks like a broken certificate). From the CLI it's asked first,
+# unless <ask> is 0 (--domain/--yes), which only prints the command:
+# there may be no one to answer, and an open stdin that never sends EOF
+# (a backgrounded shell, a service) would block forever after the work
+# is done.
+ensure_hosts_entry() {
+    local domain="$1" ask="${2:-1}" answer=""
+    if in_hosts_file "$domain"; then
+        print_info "${domain} already in /etc/hosts"
+        return 0
+    fi
+    if [ -n "${WPDEV_IN_API:-}" ]; then
+        if host_hosts_edit "$domain" '[ -z "$(tail -c1 /hosts)" ] || echo >> /hosts; printf "127.0.0.1    %s\n" "$D" >> /hosts'; then
+            print_info "Added ${domain} to /etc/hosts"
+            return 0
+        fi
+        print_warning "Couldn't add ${domain} to /etc/hosts"
+    elif [ "$ask" -eq 1 ]; then
+        # || true: by now the work is done; EOF on this trailing prompt
+        # (scripted use) must not take set -e down with it. EOF leaves
+        # answer empty, i.e. "n".
+        read -p "Add '127.0.0.1 ${domain}' to /etc/hosts now? (y/n): " answer || true
+        if [[ "$answer" =~ ^[Yy]$ ]] && echo "127.0.0.1    ${domain}" | sudo tee -a /etc/hosts >/dev/null; then
+            print_info "Added ${domain} to /etc/hosts"
+            return 0
+        fi
+    fi
+    echo "  Remember: echo '127.0.0.1    ${domain}' | sudo tee -a /etc/hosts"
+}
+
+# Drops the entry ensure_hosts_entry would have written for <domain>. Only
+# that exact form -- a line the user wrote themselves (extra names, an
+# IPv6 address) is theirs to remove.
+remove_hosts_entry() {
+    local domain="$1" pattern
+    pattern="^127\.0\.0\.1[[:space:]]+$(printf '%s' "$domain" | sed 's/\./\\./g')[[:space:]]*$"
+    grep -Eq "$pattern" /etc/hosts 2>/dev/null || return 0
+    if [ -n "${WPDEV_IN_API:-}" ] \
+        && host_hosts_edit "$domain" "grep -Ev '${pattern}' /hosts > /tmp/h; cat /tmp/h > /hosts"; then
+        print_info "Removed ${domain} from /etc/hosts"
+        return 0
+    fi
+    echo "  It's still in /etc/hosts — remove it if you like:"
+    echo "  sudo sed -i -E '/${pattern}/d' /etc/hosts"
+}
+
 # mkcert a certificate for <domain> into nginx/ssl, replacing any existing
 # one only once the new one exists.
 issue_cert() {
@@ -2823,9 +2885,7 @@ cmd_admin_domain() {
     print_info "Admin domain on: $(site_url "$admin")  →  $(site_url "$domain") (wp-admin, wp-login.php, wp-includes, wp-content, wp-json, previews, Customizer)"
     print_info "${domain}/wp-admin and /wp-login.php now redirect to ${admin} (admin-ajax.php and admin-post.php stay)"
 
-    if ! in_hosts_file "$admin"; then
-        print_warning "${admin} isn't in /etc/hosts yet: echo '127.0.0.1    ${admin}' | sudo tee -a /etc/hosts"
-    fi
+    ensure_hosts_entry "$admin" 0
 
     # The URL rewriting: the project's own code if it has some (it defines
     # WP_ADMIN_DOMAIN -- wpdev's plugin doesn't), else wpdev's mu-plugin.
@@ -3579,10 +3639,7 @@ cmd_remove() {
 
     echo ""
     print_info "${domain} removed."
-    if grep -q "[[:space:]]${domain}" /etc/hosts 2>/dev/null; then
-        echo "  It's still in /etc/hosts — remove it if you like:"
-        echo "  sudo sed -i '/[[:space:]]${domain}\$/d' /etc/hosts"
-    fi
+    remove_hosts_entry "$domain"
 }
 
 cmd_clone() {
@@ -3775,31 +3832,7 @@ cmd_clone() {
     echo "  Database:    ${new_db_name} / ${new_db_user} (password: wpdev creds ${new_name})"
     echo ""
 
-    if grep -q "[[:space:]]${new_domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${new_domain}[[:space:]]" /etc/hosts 2>/dev/null; then
-        print_info "${new_domain} already in /etc/hosts"
-    else
-        # || true: everything above this already succeeded and printed its
-        # own success banner -- if stdin hits EOF here (scripted/non-
-        # interactive use that didn't expect this trailing optional prompt,
-        # e.g. CI), `read`'s nonzero exit would otherwise take set -e down
-        # with it this late, discarding a fully-completed clone over a
-        # cosmetic prompt. EOF leaves add_hosts empty, which the check
-        # below already treats the same as answering "n".
-        # Non-interactive (--yes) never asks: there may be no one to
-        # answer, and an open stdin that never sends EOF (a backgrounded
-        # shell, a service) would otherwise block here forever after the
-        # work is done. add_hosts stays empty, i.e. "n" -- just the hint.
-        add_hosts=""
-        if [ "$assume_yes" -ne 1 ]; then
-            read -p "Add '127.0.0.1 ${new_domain}' to /etc/hosts now? (y/n): " add_hosts || true
-        fi
-        if [[ "$add_hosts" =~ ^[Yy]$ ]]; then
-            echo "127.0.0.1    ${new_domain}" | sudo tee -a /etc/hosts >/dev/null
-            print_info "Added ${new_domain} to /etc/hosts"
-        else
-            echo "  Remember: echo '127.0.0.1    ${new_domain}' | sudo tee -a /etc/hosts"
-        fi
-    fi
+    ensure_hosts_entry "$new_domain" $(( assume_yes ? 0 : 1 ))
     echo ""
 }
 
@@ -4446,28 +4479,7 @@ PHP
     echo ""
 
     # Optional: /etc/hosts
-    if grep -q "[[:space:]]${domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${domain}[[:space:]]" /etc/hosts 2>/dev/null; then
-        print_info "${domain} already in /etc/hosts"
-    else
-        # || true: same reasoning as cmd_clone's identical prompt -- the
-        # site is already fully provisioned by this point, so EOF on this
-        # trailing optional prompt (scripted/non-interactive use) shouldn't
-        # take set -e down with it and discard an already-successful run.
-        # Non-interactive (--domain) never asks: there may be no one to
-        # answer, and an open stdin that never sends EOF (a backgrounded
-        # shell, a service) would otherwise block here forever after the
-        # work is done. add_hosts stays empty, i.e. "n" -- just the hint.
-        add_hosts=""
-        if [ "$non_interactive" -ne 1 ]; then
-            read -p "Add '127.0.0.1 ${domain}' to /etc/hosts now? (y/n): " add_hosts || true
-        fi
-        if [[ "$add_hosts" =~ ^[Yy]$ ]]; then
-            echo "127.0.0.1    ${domain}" | sudo tee -a /etc/hosts >/dev/null
-            print_info "Added ${domain} to /etc/hosts"
-        else
-            echo "  Remember: echo '127.0.0.1    ${domain}' | sudo tee -a /etc/hosts"
-        fi
-    fi
+    ensure_hosts_entry "$domain" $(( non_interactive ? 0 : 1 ))
     echo ""
 }
 

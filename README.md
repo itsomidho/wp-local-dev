@@ -264,7 +264,8 @@ one command:
 7. Installs + activates the `redis-cache` plugin and enables the object cache
 8. Removes Hello Dolly + Akismet, installs + activates Query Monitor and WP Crontrol
 9. Normalizes file permissions so wp-admin can install plugins/themes and uploads (see below)
-10. Reloads Nginx and offers to add the `/etc/hosts` entry for you
+10. Reloads Nginx and offers to add the `/etc/hosts` entry for you (from the
+    dashboard it's added without asking)
 
 Visit `https://mysite.test` — it's a working, logged-in-capable WordPress
 site with Redis object caching already on. The admin and database passwords
@@ -886,7 +887,8 @@ site domain. The cached vhost never caches requests that carry
 rule (and purges the cache).
 
 - **Certificate and hosts.** `on` issues an mkcert certificate for the
-  admin domain, and prints the `/etc/hosts` line when it's missing.
+  admin domain, and prints the `/etc/hosts` line when it's missing (from
+  the dashboard it adds the line itself).
   `wpdev hosts` lists admin domains too, and `wpdev cert <site>` reissues
   both certificates. `wpdev doctor` checks the certificate, the hosts
   entry, and that something rewrites wp-admin's URLs (the project's
@@ -1113,6 +1115,13 @@ this container has no browser to open it for you.
   while still sending the site's real hostname. A site shows the same code
   in the dashboard as in a terminal. `doctor`'s `/etc/hosts` check is
   accurate too (the host's `/etc/hosts` is bind-mounted in read-only).
+- **Sites added from the dashboard get their `/etc/hosts` entry.** The api
+  runs unprivileged and can't write that file, so `add`, `clone` and the
+  admin domain append `127.0.0.1    <domain>` through a throwaway root
+  `nginx:alpine` container (the Docker socket is already root on the host).
+  `remove` takes that exact line back out; anything you wrote yourself
+  stays. Without the entry the site doesn't resolve, and behind a system
+  proxy that shows up as a TLS error rather than "not found".
 - **The api never stops or recreates itself mid-request.** `up`, `down`,
   `restart` and `update` sent through the API (the dashboard's
   Up/Down/Restart/Update buttons) run inside `wp-api`, and stopping or
