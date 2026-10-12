@@ -1640,9 +1640,19 @@ input::placeholder {
 
 .site-card-title {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
+}
+
+/* The folder menu's button, tucked into the header's top-right corner so
+   it takes as little of the domain's width as it can. */
+.site-card-folder {
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin: -6px -8px 0 -8px;
+  color: var(--dim);
 }
 
 .site-note {
@@ -1660,6 +1670,40 @@ input::placeholder {
   padding-top: 14px;
   border-top: 1px solid var(--border);
   margin-top: auto;
+}
+
+/* A small popup menu under its button (the site card's folder menu),
+   placed by the component in viewport coordinates. */
+.menu {
+  position: fixed;
+  z-index: 60;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.28);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--surface-2);
 }
 
 .site-card-manage {

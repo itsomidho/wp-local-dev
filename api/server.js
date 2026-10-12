@@ -77,7 +77,12 @@ app.get('/api/settings', (req, res) => {
     // No .env yet: defaults.
   }
   const set = [...env.matchAll(/^DOMAIN_SUFFIX=\.?(.*)$/gm)].pop()?.[1].trim();
-  res.json({ domainSuffix: set && /^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(set) ? set : 'test' });
+  res.json({
+    domainSuffix: set && /^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(set) ? set : 'test',
+    // Mounted at the same path as on the host, so it's the host's path too
+    // (the dashboard's "Open in VS Code" / "Copy path").
+    projectDir: PROJECT_DIR,
+  });
 });
 
 app.get('/api/system/stats', async (req, res) => {
@@ -199,6 +204,18 @@ app.post('/api/sites/:name/clone', requireValidSiteName, (req, res) => {
 
 app.get('/api/sites/:name/creds', requireValidSiteName, sync((req) => ['creds', req.params.name]));
 app.post('/api/sites/:name/cert', requireValidSiteName, sync((req) => ['cert', req.params.name]));
+// {editor: 'nvim'} opens it in that editor instead of the file manager;
+// wpdev keeps the list of editors it knows.
+app.post(
+  '/api/sites/:name/open',
+  requireValidSiteName,
+  sync((req) => {
+    const editor = req.body?.editor;
+    return typeof editor === 'string' && /^[a-z]+$/.test(editor)
+      ? ['open', req.params.name, `--editor=${editor}`]
+      : ['open', req.params.name];
+  }),
+);
 app.post('/api/sites/:name/fix-perms', requireValidSiteName, sync((req) => ['fix-perms', req.params.name]));
 
 // Generic WP-CLI passthrough -- the escape hatch for anything not covered by

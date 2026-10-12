@@ -16,9 +16,11 @@ FROM node:20-slim
 # as everything else -- node:20-slim doesn't include it. buildx too: without
 # it compose falls back to the legacy builder, which rejects BuildKit-only
 # syntax like php/Dockerfile's `COPY --chmod`, so a dashboard Update could
-# pull new code but never build it. (#18)
+# pull new code but never build it. (#18) dbus-send (dbus-bin) and gdbus
+# (libglib2.0-bin) are for `wpdev open`: they ask the host desktop to show
+# a folder, or open it in a terminal editor.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg util-linux git \
+      ca-certificates curl gnupg util-linux git dbus-bin libglib2.0-bin \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
