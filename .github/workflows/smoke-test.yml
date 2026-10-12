@@ -441,6 +441,23 @@ jobs:
           ./wpdev cache citest off
 
       - name: >
+          add refuses a domain that's taken or real before creating
+          anything -- an existing site (unless --repair), another site's
+          name under a different suffix, a public top-level domain, an
+          underscore, a name over 28 characters -- and check-domain says the same.
+        run: |
+          for d in citest.test citest.local shop.com tbdl_landing.test abcdefghijklmnopqrstuvwxyz123.test; do
+            out=$(./wpdev add --domain="$d" </dev/null 2>&1) && { echo "$out"; echo "add accepted $d"; exit 1; }
+            echo "$out" | tail -1
+            ./wpdev check-domain "$d" && { echo "check-domain accepted $d"; exit 1; }
+          done
+          ./wpdev add --domain=citest.test </dev/null 2>&1 | grep -q -- "--repair"
+          ./wpdev check-domain shop | grep -qx "shop.test: ok"
+          ./wpdev check-domain abcdefghijklmnopqrstuvwxyz12.test | grep -q ": ok$"
+          ./wpdev check-domain shop.home.arpa | grep -qx "shop.home.arpa: ok"
+          [ ! -e nginx/sites/shop.com.conf ] && [ ! -e sites/citest-local ]
+
+      - name: >
           Regression test -- add/remove/restore/clone/db-import/snapshots
           accept --domain=/--php=/--yes for non-interactive (API-driven) use.
           Every one of these previously called a bare `read -p` with no

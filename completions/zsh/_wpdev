@@ -19,12 +19,14 @@ _wpdev_root() {
 }
 
 _wpdev_sites() {
-    local root f name
+    local root f name site
     root="$(_wpdev_root)" || return
     for f in "$root"/nginx/sites/*.conf(N); do
         name="${f:t:r}"
         [[ "$name" == default ]] && continue
-        print -r -- "${name%.test}"
+        # The site's name is the directory its vhost serves (any suffix).
+        site="$(sed -n 's|^[[:space:]]*root /var/www/\([^/;]*\);.*|\1|p' "$f" | head -1)"
+        print -r -- "${site:-$name}"
     done
 }
 
@@ -66,6 +68,8 @@ _wpdev() {
         "db-import:Replace that site's database from a dump"
         'list:List configured site domains'
         'hosts:Print /etc/hosts entries needed for all sites'
+        'check-domain:Whether a domain is free for a new site'
+        'update-tlds:Refresh the list of real top-level domains'
         "creds:Show a site's admin/DB credentials"
         "cert:Reissue a site's HTTPS certificate"
         "fix-perms:Give a site's files back to you"

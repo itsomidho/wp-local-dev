@@ -272,6 +272,59 @@ site with Redis object caching already on. The admin and database passwords
 are saved in `config/sites/mysite.env` if you need them again later (or
 just run `wpdev creds mysite`).
 
+### Domain suffix
+
+A site can use any local suffix: give the full domain (`shop.local`,
+`shop.localhost`, `shop.lan`) and that's what it gets. A bare name gets the default,
+`DOMAIN_SUFFIX` in `.env` (`test` if unset): `wpdev add --domain=shop`
+makes `shop.test`. The dashboard's New site dialog has a suffix field,
+filled with that default.
+
+The site's name, its directory under `sites/`, is the domain minus the
+suffix, dots as dashes (`shop.local` → `sites/shop`). Every command takes
+either (`wpdev cert shop` or `wpdev cert shop.local`), and wpdev finds the
+domain from the site's vhost, so changing `DOMAIN_SUFFIX` later leaves
+existing sites alone.
+
+- **`.test`** is reserved for exactly this and needs nothing else.
+- **`.localhost`** resolves to this machine in browsers even without the
+  `/etc/hosts` entry.
+- **`.local`** also belongs to mDNS (Bonjour/Avahi). It works, but on
+  macOS, and Linux with Avahi, a lookup can stall a few seconds before
+  `/etc/hosts` answers.
+- **A real top-level domain** (`.com`, `.dev`, `.app`, ...) is refused:
+  the hosts entry would hide the real site of that name from this
+  machine. "Real" means in IANA's list of top-level domains, kept in
+  `data/iana-tlds.txt`; `wpdev update-tlds` refreshes it. `home.arpa` is
+  the exception, being reserved for private networks.
+
+### Which domains `add` accepts
+
+Before creating anything, `add` (and `clone`, for the new domain) refuses
+a domain that:
+
+- isn't a plain hostname: letters, digits, hyphens and dots only, so no
+  underscores (WordPress rejects `admin@my_site.test` mid-install)
+- is too long: the site name (the domain minus its suffix) takes 28
+  characters at most, since it becomes the database and MySQL user name,
+  `wp_<name>`, which MySQL caps at 32. DNS's own limits apply too: 63
+  characters between dots, 253 in all. The dashboard counts as you type.
+- is already a site, or would share one's name (with `shop.test` in
+  place, `shop.local` would also be `sites/shop`)
+- is on a real top-level domain (above)
+- is already a site's admin domain
+- is already pointed somewhere other than this machine in `/etc/hosts`,
+  i.e. used for something else
+
+`wpdev check-domain <domain>` runs the same check on its own, and the
+dashboard's New site dialog asks it as you type, keeping **Create site**
+disabled with the reason shown.
+
+Re-running `add` on an existing site redoes only the steps that are
+missing (a deleted certificate, say). From the terminal it asks first;
+non-interactively it takes `--repair`:
+`wpdev add --domain=shop.test --repair`.
+
 ### Per-site settings
 
 Everything wpdev remembers about a site lives in one file per site,
@@ -363,7 +416,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev clean` | Remove containers (keeps data) |
 | `wpdev clean-all [--yes]` | Remove containers **and volumes** (⚠ deletes all data, asks to confirm) |
 | `wpdev uninstall` | Remove containers/volumes/images + the `wpdev` symlink, then optionally this whole directory (see below) |
-| `wpdev add` | Provision a new site (interactive — prompts for domain + PHP + WordPress version). Non-interactive: `wpdev add --domain=<domain> [--php=<version>] [--wp-version=<version>]` |
+| `wpdev add` | Provision a new site (interactive — prompts for domain + PHP + WordPress version). Non-interactive: `wpdev add --domain=<domain> [--php=<version>] [--wp-version=<version>] [--repair]` |
 | `wpdev remove <name> [--yes]` | Delete a site: WP files, DB, Nginx config, SSL cert, logs (asks you to confirm) |
 | `wpdev clone <src> <new> [--yes]` | Duplicate a site (files + DB) under a new domain, with URLs re-pointed and its own DB/cache |
 | `wpdev snapshot <site> [label]` | Save a files+DB snapshot of a site |
@@ -373,6 +426,8 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev db-import <site> <file> [--yes]` | Replace that site's database from a `.sql` or `.sql.gz` dump (asks you to confirm) |
 | `wpdev list` | List configured site domains |
 | `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
+| `wpdev check-domain <domain>` | Whether a domain is free for a new site, and why not (see [Which domains `add` accepts](#which-domains-add-accepts)) |
+| `wpdev update-tlds` | Refresh `data/iana-tlds.txt`, the real top-level domains `add` refuses |
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
 | `wpdev cert <name>` | Reissue a site's HTTPS certificate from the current mkcert CA, then reload nginx |
 | `wpdev media-proxy <name> [url\|on\|off]` | Load uploads missing locally from production, through the local site, with no plugin (see [Production media proxy](#production-media-proxy)) |
@@ -564,8 +619,9 @@ routine container restart broke a live site mid-session. The `set`
 wpdev clone mysite mysite-test
 ```
 
-Duplicates `mysite`'s files and database under a new domain
-(`mysite-test.test`), then:
+Duplicates `mysite`'s files and database under a new domain with the
+source's suffix (`mysite-test.test`; a `.local` site's clone is `.local`
+too), then:
 
 - Creates a fresh, dedicated database + user for the clone (never reuses or
   shares the source's database)
@@ -1267,6 +1323,9 @@ wp-local-dev/
 │   ├── fish/wpdev.fish
 │   ├── bash/wpdev.bash
 │   └── zsh/{_wpdev,wpdev.plugin.zsh}
+│
+├── data/
+│   └── iana-tlds.txt            # real top-level domains `add` refuses (`wpdev update-tlds`)
 │
 ├── api/                         # HTTP API wrapping wpdev — see "API service"
 │   ├── Dockerfile
