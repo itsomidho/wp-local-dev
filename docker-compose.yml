@@ -92,8 +92,15 @@ services:
     environment:
       HOST_UID: ${API_UID:-1000}
       HOST_GID: ${API_GID:-1000}
+      # wp-cli's download cache (WordPress core, plugin zips). Its default is
+      # ~/.wp-cli, and www-data's home is /var/www -- i.e. ./sites, where it
+      # showed up as a stray sites/.wp-cli. A volume shared by every phpXX
+      # keeps it out of there and still saves the downloads for the next
+      # `wpdev add`.
+      WP_CLI_CACHE_DIR: /var/cache/wp-cli
     volumes:
       - ./sites:/var/www
+      - wp_cli_cache:/var/cache/wp-cli
       # Both bind-mounted rather than baked in, so changes apply on the next
       # `wpdev up` without an image rebuild. The entrypoint installs a
       # root-owned copy of the crontab, which cron insists on.
@@ -396,6 +403,8 @@ volumes:
   wp_mysql_data:
     driver: local
   wp_fastcgi_cache:
+    driver: local
+  wp_cli_cache:
     driver: local
   wp_api_mkcert_ca:
     driver: local

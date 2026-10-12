@@ -1124,12 +1124,15 @@ cmd_up() {
     fi
 
     # Group-writable so www-data (PHP-FPM, inside every phpXX container) can
-    # create its own top-level dirs here too -- e.g. wp-cli's cache dir
-    # (/var/www/.wp-cli), which it otherwise warns about (non-fatal, just
-    # slower repeat downloads) every time a plugin install runs as www-data
-    # instead of root. A fresh git checkout gets ./sites at whatever mode
-    # the checkout's umask produced, so this can't just be committed once.
+    # create its own top-level dirs here too. A fresh git checkout gets
+    # ./sites at whatever mode the checkout's umask produced, so this can't
+    # just be committed once.
     chmod g+w sites 2>/dev/null || true
+
+    # wp-cli's download cache used to land here (www-data's home is
+    # /var/www); it lives in the wp_cli_cache volume now. Only a cache, so
+    # the old copy just goes.
+    rm -rf sites/.wp-cli 2>/dev/null || true
 
     # Auto-detected values the `api` service (docker-compose.yml) needs --
     # see that file's comments for why each one matters. Keyed off real
