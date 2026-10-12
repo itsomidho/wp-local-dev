@@ -74,6 +74,7 @@ export const api = {
   creds: (name) => request('GET', `/api/sites/${name}/creds`),
   cert: (name) => request('POST', `/api/sites/${name}/cert`),
   fixPerms: (name) => request('POST', `/api/sites/${name}/fix-perms`),
+  openFolder: (name, editor) => request('POST', `/api/sites/${name}/open`, editor ? { editor } : undefined),
   mediaProxyStatus: (name) => request('GET', `/api/sites/${name}/media-proxy`),
   mediaProxy: (name, body) => request('POST', `/api/sites/${name}/media-proxy`, body),
   adminDomainStatus: (name) => request('GET', `/api/sites/${name}/admin-domain`),

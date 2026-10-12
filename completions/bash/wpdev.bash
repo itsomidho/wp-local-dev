@@ -39,7 +39,7 @@ _wpdev_complete() {
     local cur prev cmds subcmd
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts check-domain update-tlds creds cert fix-perms media-proxy admin-domain wp help"
+    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain wp help"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
@@ -51,6 +51,13 @@ _wpdev_complete() {
         remove|snapshot|restore|db-export|db-import|creds|cert|fix-perms|media-proxy|admin-domain|wp|clone|db|adminer)
             if [ "$COMP_CWORD" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            fi
+            ;;
+        open)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                COMPREPLY=($(compgen -W "--editor=nvim" -- "$cur"))
             fi
             ;;
         cache)

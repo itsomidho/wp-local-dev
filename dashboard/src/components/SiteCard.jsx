@@ -1,6 +1,155 @@
-import { ArrowUpRight, LayoutDashboard, Settings2, Database, Layers } from 'lucide-react';
-import { siteUrl } from '../api';
-import { Avatar, Chip, StatusDot } from './ui';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import {
+  ArrowUpRight,
+  LayoutDashboard,
+  Settings2,
+  Database,
+  Layers,
+  FolderOpen,
+  Code2,
+  SquareTerminal,
+  Folder,
+  Copy,
+} from 'lucide-react';
+import { api, siteUrl } from '../api';
+import { stripAnsi } from '../lib/parse';
+import { Avatar, Chip, StatusDot, useToast } from './ui';
+
+// The project's path on the host, from /api/settings -- asked once, shared
+// by every card.
+let projectDirRequest;
+function useProjectDir() {
+  const [dir, setDir] = useState(null);
+  useEffect(() => {
+    projectDirRequest ||= api.settings().then((s) => s.projectDir);
+    projectDirRequest.then(setDir).catch(() => {
+      projectDirRequest = null;
+    });
+  }, []);
+  return dir;
+}
+
+// The last line wpdev printed, which for a failure is its ✗ message.
+function lastLine(text) {
+  return stripAnsi(text || '')
+    .trim()
+    .split('\n')
+    .pop()
+    .replace(/^✗\s*/, '');
+}
+
+// Open the site's folder: in VS Code (a vscode:// link, which the browser
+// hands to VS Code), in the file manager (`wpdev open`, through the api),
+// or copy its path for anything else.
+function FolderMenu({ site }) {
+  // Where the menu goes: under the button, right edges lined up, in the
+  // page's own layer (a card clips anything that sticks out), kept inside
+  // the window.
+  const [open, setOpen] = useState(null);
+  const buttonRef = useRef(null);
+  const menuRef = useRef(null);
+  const toast = useToast();
+  const projectDir = useProjectDir();
+  const path = projectDir ? `${projectDir}/sites/${site.name}` : null;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = () => setOpen(null);
+    const onPointer = (e) => !menuRef.current?.contains(e.target) && !buttonRef.current?.contains(e.target) && close();
+    const onKey = (e) => e.key === 'Escape' && close();
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  const toggle = () => {
+    if (open) return setOpen(null);
+    const r = buttonRef.current.getBoundingClientRect();
+    const width = 220;
+    setOpen({
+      top: r.bottom + 6,
+      left: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)),
+      width,
+    });
+  };
+
+  // The file manager, or with an editor (nvim) a terminal window running it.
+  const openOnDesktop = (editor) => {
+    setOpen(null);
+    api
+      .openFolder(site.name, editor)
+      .then(() => toast({ tone: 'success', title: `Opened sites/${site.name}${editor ? ` in ${editor}` : ''}` }))
+      .catch((e) =>
+        toast({
+          tone: 'error',
+          title: "Couldn't open the folder",
+          description: lastLine(e.data?.stdout) || e.message,
+          duration: 8000,
+        }),
+      );
+  };
+
+  const copyPath = () => {
+    setOpen(null);
+    navigator.clipboard
+      .writeText(path)
+      .then(() => toast({ tone: 'success', title: 'Copied the path', description: path }))
+      .catch(() =>
+        toast({
+          tone: 'error',
+          title: 'Clipboard unavailable',
+          description: path,
+        }),
+      );
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="btn btn-ghost btn-xs btn-icon site-card-folder"
+        aria-haspopup="menu"
+        aria-expanded={Boolean(open)}
+        aria-label="Project folder"
+        onClick={toggle}
+        title={path ? `Project folder: ${path}` : 'Project folder'}
+      >
+        <FolderOpen size={15} />
+      </button>
+      {open &&
+        createPortal(
+          <div className="menu" role="menu" ref={menuRef} style={open}>
+            {path && (
+              <a role="menuitem" className="menu-item" href={`vscode://file${path}`} onClick={() => setOpen(null)}>
+                <Code2 size={15} /> Open in VS Code
+              </a>
+            )}
+            <button type="button" role="menuitem" className="menu-item" onClick={() => openOnDesktop('nvim')}>
+              <SquareTerminal size={15} /> Open in Neovim
+            </button>
+            <button type="button" role="menuitem" className="menu-item" onClick={() => openOnDesktop()}>
+              <Folder size={15} /> Open in file manager
+            </button>
+            {path && (
+              <button type="button" role="menuitem" className="menu-item" onClick={copyPath}>
+                <Copy size={15} /> Copy path
+              </button>
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
 
 // Reachability from `wpdev status`'s HTTP column: what nginx answered for
 // the site's front page. "down" (or an older wpdev's 000) means nothing
@@ -62,6 +211,7 @@ export default function SiteCard({ site, status, onManage }) {
             {reach.tone === 'muted' ? site.note : reach.label}
           </span>
         </div>
+        <FolderMenu site={site} />
       </header>
 
       <SiteChips site={site} status={status} />

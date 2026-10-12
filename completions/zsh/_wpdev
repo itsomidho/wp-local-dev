@@ -70,6 +70,7 @@ _wpdev() {
         'hosts:Print /etc/hosts entries needed for all sites'
         'check-domain:Whether a domain is free for a new site'
         'update-tlds:Refresh the list of real top-level domains'
+        "open:Open a site's folder in the file manager or Neovim"
         "creds:Show a site's admin/DB credentials"
         "cert:Reissue a site's HTTPS certificate"
         "fix-perms:Give a site's files back to you"
@@ -89,6 +90,13 @@ _wpdev() {
         remove|snapshot|restore|db-export|db-import|creds|cert|fix-perms|media-proxy|admin-domain|wp|clone|db|adminer)
             if (( CURRENT == 3 )); then
                 compadd -- $(_wpdev_sites)
+            fi
+            ;;
+        open)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            elif (( CURRENT == 4 )); then
+                compadd -- --editor=nvim
             fi
             ;;
         cache)

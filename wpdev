@@ -34,6 +34,7 @@
 #   wpdev check-domain <domain>  Whether <domain> is free for a new site (and why not)
 #   wpdev update-tlds         Refresh the list of real top-level domains add refuses
 #   wpdev creds <name>        Show a site's admin/DB credentials
+#   wpdev open <name> [--editor=nvim]  Open a site's folder in the file manager, or in Neovim
 #   wpdev cert <name>         Reissue a site's HTTPS certificate from the current mkcert CA
 #   wpdev fix-perms <name>    Give a site's files back to you (owner + write); --all for every site
 #   wpdev media-proxy <name> [url|on|off]  Load uploads missing locally from production
@@ -385,6 +386,7 @@ show_help() {
     echo "  db-import <site> <file> [--yes]  Replace that site's database from a .sql or .sql.gz dump"
     echo "  list                      List configured site domains"
     echo "  hosts                     Print /etc/hosts entries needed for all sites"
+    echo "  open <name> [--editor=nvim]  Open a site's folder in the file manager, or in Neovim"
     echo "  check-domain <domain>     Whether <domain> is free for a new site (and why not)"
     echo "  update-tlds               Refresh the list of real top-level domains add refuses"
     echo "  creds <name>              Show a site's admin/DB credentials"
@@ -1162,6 +1164,17 @@ cmd_up() {
         app_version="$(git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null)" || app_version="unknown"
         set_env_var APP_VERSION "$app_version"
 
+        # This desktop session's D-Bus socket, for `wpdev open` from the
+        # api (the dashboard's "Open in file manager"); empty on a machine
+        # without one (headless, CI, macOS). Host only: in the api the
+        # path doesn't exist, and that's no reason to clear it.
+        if [ -z "${WPDEV_IN_API:-}" ]; then
+            if [ -S "/run/user/$(id -u)/bus" ]; then
+                set_env_var DESKTOP_BUS "/run/user/$(id -u)/bus"
+            elif grep -q '^DESKTOP_BUS=' .env; then
+                set_env_var DESKTOP_BUS ""
+            fi
+        fi
 
         # Share the host's (browser-trusted) mkcert CA with the api
         # container, so sites created from the dashboard get trusted certs
@@ -3567,6 +3580,94 @@ cmd_list() {
     echo ""
 }
 
+# Runs <program> [args...] against the host desktop's session bus, from the
+# api container: DESKTOP_BUS in .env (set by `wpdev up`), or exit 2 if
+# there's none. From a throwaway container of the api's own image (it has
+# dbus-send and gdbus), as you, without AppArmor: the session bus refuses
+# anything under Docker's default AppArmor profile, and this way only
+# that one call goes without it, never the api itself.
+desktop_bus_run() {
+    local bus
+    bus="$(sed -n 's/^DESKTOP_BUS=//p' .env 2>/dev/null | tail -1)"
+    [ -n "$bus" ] || return 2
+    docker run --rm --network none --security-opt apparmor=unconfined \
+        --user "$(id -u):$(id -g)" -v "${bus}:/bus" -e DBUS_SESSION_BUS_ADDRESS=unix:path=/bus \
+        --entrypoint "$1" "$(docker inspect -f '{{.Config.Image}}' wp-api)" "${@:2}" \
+        </dev/null >/dev/null 2>&1
+}
+
+# Terminal editors `wpdev open --editor=` can open a site in.
+OPEN_EDITORS="nvim"
+
+# Opens a site's folder: in the desktop's file manager, or with
+# --editor=nvim in Neovim, in a new terminal window
+# (scripts/edit-in-terminal.sh). From the host that's xdg-open (open on
+# macOS), or the script itself. From the api container -- the dashboard's
+# folder menu -- it goes over the host's session bus (desktop_bus_run):
+# org.freedesktop.FileManager1, which Nautilus, Nemo, Dolphin and others
+# answer, or the session's systemd, asked to start that script as you
+# (it has your display; the api has none). The project is mounted at the
+# same path in the api, so paths mean the same on the host.
+cmd_open() {
+    local arg="" editor="" a dir unit rc=0
+    for a in "$@"; do
+        case "$a" in
+            --editor=*) editor="${a#--editor=}" ;;
+            *) arg="$a" ;;
+        esac
+    done
+    if [ -z "$arg" ]; then
+        print_warning "Usage: wpdev open <site-name> [--editor=nvim]"
+        echo "Known sites: $(site_names | tr '\n' ' ')"
+        return 1
+    fi
+    if [ -n "$editor" ] && ! [[ " ${OPEN_EDITORS} " == *" ${editor} "* ]]; then
+        print_error "Unknown editor '${editor}'. Supported: ${OPEN_EDITORS}"
+    fi
+    resolve_site "$arg"
+    dir="${SCRIPT_DIR}/sites/${site_name}"
+    [ -d "$dir" ] || print_error "No such site: ${arg} (checked sites/${site_name})"
+
+    if [ -n "$editor" ]; then
+        if [ -n "${WPDEV_IN_API:-}" ]; then
+            # A transient user unit, like `systemd-run --user`; the unique
+            # name lets several be open at once.
+            unit="wpdev-edit-${site_name}-$(date +%s%N).service"
+            desktop_bus_run gdbus call --session --dest org.freedesktop.systemd1 \
+                --object-path /org/freedesktop/systemd1 --method org.freedesktop.systemd1.Manager.StartTransientUnit \
+                "$unit" replace \
+                "[('ExecStart', <[('/bin/sh', ['/bin/sh', '${SCRIPT_DIR}/scripts/edit-in-terminal.sh', '${dir}', '${editor}'], false)]>), ('CollectMode', <'inactive-or-failed'>)]" \
+                "[]" || rc=$?
+        else
+            setsid "${SCRIPT_DIR}/scripts/edit-in-terminal.sh" "$dir" "$editor" >/dev/null 2>&1 < /dev/null &
+        fi
+    elif [ -n "${WPDEV_IN_API:-}" ]; then
+        desktop_bus_run dbus-send --session --print-reply \
+            --dest=org.freedesktop.FileManager1 /org/freedesktop/FileManager1 \
+            org.freedesktop.FileManager1.ShowFolders "array:string:file://${dir// /%20}" string: || rc=$?
+    elif command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$dir" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then
+        open "$dir"
+    else
+        print_error "No way to open a folder here. It's ${dir}"
+    fi
+    case "$rc" in
+        0) ;;
+        2) print_error "No desktop session to open it in: that takes a Linux desktop, and a 'wpdev up' from it. The folder is ${dir}" ;;
+        *) if [ -n "$editor" ]; then
+               print_error "Your desktop session didn't start a terminal for ${editor}. The folder is ${dir}"
+           else
+               print_error "No file manager answered (org.freedesktop.FileManager1). The folder is ${dir}"
+           fi ;;
+    esac
+    if [ -n "$editor" ]; then
+        print_info "Opened ${dir} in ${editor}"
+    else
+        print_info "Opened ${dir}"
+    fi
+}
+
 # The same check `add` makes, on its own: "ok", or why not (exit 1). A bare
 # name gets DOMAIN_SUFFIX, as in `add`. For the dashboard, which asks as
 # you type.
@@ -4744,6 +4845,7 @@ case "${1:-help}" in
     list) cmd_list ;;
     hosts) cmd_hosts ;;
     check-domain) cmd_check_domain "$2" ;;
+    open) shift; cmd_open "$@" ;;
     update-tlds) cmd_update_tlds ;;
     creds) cmd_creds "$2" ;;
     cert) cmd_cert "$2" ;;

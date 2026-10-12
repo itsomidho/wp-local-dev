@@ -429,6 +429,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev check-domain <domain>` | Whether a domain is free for a new site, and why not (see [Which domains `add` accepts](#which-domains-add-accepts)) |
 | `wpdev update-tlds` | Refresh `data/iana-tlds.txt`, the real top-level domains `add` refuses |
 | `wpdev creds <name>` | Show a site's admin/DB credentials |
+| `wpdev open <name> [--editor=nvim]` | Open a site's folder (`sites/<name>`) in your file manager, or in Neovim in a new terminal window |
 | `wpdev cert <name>` | Reissue a site's HTTPS certificate from the current mkcert CA, then reload nginx |
 | `wpdev media-proxy <name> [url\|on\|off]` | Load uploads missing locally from production, through the local site, with no plugin (see [Production media proxy](#production-media-proxy)) |
 | `wpdev admin-domain <name> [domain\|on\|off]` | Move the site's wp-admin to a separate domain, like a production admin reverse proxy (see [Admin domain](#admin-domain)) |
@@ -1215,11 +1216,31 @@ The sidebar has six pages:
 | Page | What it shows |
 |------|---------------|
 | **Overview** | Site, reachability, container and MySQL totals; your sites; every container's state; the machine's CPU, memory and disk; quick actions |
-| **Sites** | A card per site (grid or list, filter by name or PHP version) with its reachability, PHP and WordPress versions, database check and Redis state, plus Visit, Admin and Manage |
+| **Sites** | A card per site (grid or list, filter by name or PHP version) with its reachability, PHP and WordPress versions, database check and Redis state, plus Visit, Admin, a folder menu (see below) and Manage |
 | **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit, **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it — and **Restart** (`wpdev restart <service>`, after a confirmation saying what it interrupts) |
 | **Docker** | A container manager scoped to this project: live CPU/memory/network/disk per container, images (remove unused ones, clean up old builds) and volumes (delete an unused one after typing its name). Each container's **Details** (also on its Services card) shows its ports, networks, mounts and environment, secrets masked |
 | **Doctor** | `wpdev doctor` as a checklist grouped by section and site, with a pass/warning/fail summary |
 | **Docs** | This README (see below) |
+
+The folder icon on a site card opens its project folder, `sites/<name>`:
+**Open in VS Code** (a `vscode://` link the browser hands to VS Code),
+**Open in Neovim** (`wpdev open --editor=nvim`), **Open in file manager**
+(`wpdev open`) or **Copy path**.
+
+Neovim and the file manager need a Linux desktop: `wpdev up` notes your
+session's D-Bus socket (`DESKTOP_BUS` in `.env`), and the api reaches your
+desktop over it. For the file manager it asks
+`org.freedesktop.FileManager1` (Nautilus, Nemo, Dolphin and others answer)
+to show the folder. For Neovim it asks your session's systemd to run
+`scripts/edit-in-terminal.sh` as you: it opens a terminal window
+(`$TERMINAL`, or the first of kitty, Alacritty, WezTerm, foot, Konsole,
+GNOME Terminal, Xfce Terminal, xterm) in the folder and runs `nvim .`
+through your login shell, so your own `PATH` and config apply. If `nvim`
+isn't installed, the window says so and waits for Enter. Your desktop's
+session bus refuses anything under Docker's default AppArmor profile, so
+those calls are made from a throwaway container without it; the api
+itself stays confined. Elsewhere (macOS, a headless machine) VS Code and
+Copy path still work.
 
 **Manage** on a site opens a side panel with its tabs: Overview
 (credentials, masked until you reveal or copy them, plus certificate and
@@ -1326,6 +1347,8 @@ wp-local-dev/
 │
 ├── data/
 │   └── iana-tlds.txt            # real top-level domains `add` refuses (`wpdev update-tlds`)
+├── scripts/
+│   └── edit-in-terminal.sh      # opens a site in Neovim in a terminal window (`wpdev open --editor=nvim`)
 │
 ├── api/                         # HTTP API wrapping wpdev — see "API service"
 │   ├── Dockerfile
