@@ -4,7 +4,10 @@ services:
     image: mysql:8.0
     container_name: wp-mysql
     restart: unless-stopped
-    env_file: .env
+    # No env_file: .env -- MySQL needs only the root password, below. With
+    # the whole file, any change to it (APP_VERSION on every update, a port)
+    # made compose recreate this container, restarting MySQL and taking
+    # every site down for a few seconds.
     ports:
       - "${MYSQL_PORT:-39000}:3306"
     environment:
