@@ -62,6 +62,9 @@ touches `docker-compose.yml`.
   [Status dashboard](#status-dashboard) and [Doctor](#doctor).
 - **Xdebug on demand** — installed but only attaches when triggered, so
   normal page loads stay fast. See [Xdebug](#xdebug).
+- **ionCube Loader** — for themes and plugins shipped as ionCube-encoded
+  PHP. Available on every PHP version except 8.0, which ionCube never
+  released a loader for.
 - **Adminer included** — database browsing in the browser, no extra setup.
   Container stats, images and volumes are on the dashboard's Docker page.
   See [Access points](#access-points) and [Web dashboard](#web-dashboard).
