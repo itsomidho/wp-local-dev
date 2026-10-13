@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowUpRight,
@@ -11,10 +11,14 @@ import {
   SquareTerminal,
   Folder,
   Copy,
+  Share2,
 } from 'lucide-react';
 import { api, siteUrl } from '../api';
 import { stripAnsi } from '../lib/parse';
 import { Avatar, Chip, StatusDot, useToast } from './ui';
+
+// Running shares (`wpdev share`) by domain, provided by App from its poll.
+export const SharesContext = createContext({});
 
 // The project's path on the host, from /api/settings -- asked once, shared
 // by every card.
@@ -168,8 +172,14 @@ function has(value) {
 
 export function SiteChips({ site, status }) {
   const php = status?.php || site.php;
+  const share = useContext(SharesContext)[site.domain];
   return (
     <div className="chips">
+      {share && (
+        <Chip tone="success" icon={Share2} title={`Shared until ${new Date(share.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${share.publicUrl ? `, also at ${share.publicUrl}` : ''}`}>
+          {share.publicUrl ? 'Shared publicly' : 'Shared'}
+        </Chip>
+      )}
       {php && (
         <Chip mono title="PHP version">
           PHP {php}
@@ -181,7 +191,11 @@ export function SiteChips({ site, status }) {
         </Chip>
       )}
       {status?.database && (
-        <Chip tone={status.database === 'OK' ? 'success' : 'danger'} icon={Database} title="Database check">
+        <Chip
+          tone={{ OK: 'success', starting: 'warning' }[status.database] || 'danger'}
+          icon={Database}
+          title={status.database === 'starting' ? 'MySQL is still starting up' : 'Database check'}
+        >
           {status.database === 'OK' ? 'DB' : `DB ${status.database}`}
         </Chip>
       )}
@@ -211,7 +225,18 @@ export default function SiteCard({ site, status, onManage }) {
             {reach.tone === 'muted' ? site.note : reach.label}
           </span>
         </div>
-        <FolderMenu site={site} />
+        <div className="site-card-tools">
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs btn-icon"
+            onClick={() => onManage(site, 'Share')}
+            title="Share with other devices"
+            aria-label={`Share ${site.domain} with other devices`}
+          >
+            <Share2 size={15} />
+          </button>
+          <FolderMenu site={site} />
+        </div>
       </header>
 
       <SiteChips site={site} status={status} />

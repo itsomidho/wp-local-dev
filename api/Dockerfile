@@ -20,7 +20,7 @@ FROM node:20-slim
 # (libglib2.0-bin) are for `wpdev open`: they ask the host desktop to show
 # a folder, or open it in a terminal editor.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg util-linux git dbus-bin libglib2.0-bin \
+      ca-certificates curl gnupg util-linux git dbus-bin libglib2.0-bin openssh-client qrencode \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \

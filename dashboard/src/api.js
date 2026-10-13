@@ -87,7 +87,7 @@ export const api = {
   stackDown: () => request('POST', '/api/stack/down'),
   stackRestart: () => request('POST', '/api/stack/restart'),
   restartService: (service) => request('POST', `/api/services/${encodeURIComponent(service)}/restart`),
-  updateCheck: () => request('GET', '/api/update-check'),
+  updateCheck: (refresh) => request('GET', `/api/update-check${refresh ? '?refresh=1' : ''}`),
   dockerStats: () => request('GET', '/api/docker/stats'),
   dockerImages: () => request('GET', '/api/docker/images'),
   pruneImages: () => request('POST', '/api/docker/images/prune'),
@@ -96,11 +96,119 @@ export const api = {
   removeVolume: (name) => request('DELETE', `/api/docker/volumes/${encodeURIComponent(name)}`),
   inspectService: (service) => request('GET', `/api/services/${encodeURIComponent(service)}/inspect`),
   reloadNginx: () => request('POST', '/api/reload-nginx'),
+  dbTables: (name) => request('GET', `/api/sites/${name}/db/tables`),
+  dbExport,
+  dbImport,
+  backups: (name) => request('GET', `/api/sites/${name}/backups`),
+  backupNow: (name) => request('POST', `/api/sites/${name}/backups`),
+  backupSchedule: (name, body) => request('PUT', `/api/sites/${name}/backups/schedule`, body),
+  restoreBackup: (name, file) => request('POST', `/api/sites/${name}/backups/${encodeURIComponent(file)}/restore`),
+  deleteBackup: (name, file) => request('DELETE', `/api/sites/${name}/backups/${encodeURIComponent(file)}`),
+  downloadBackup,
+  debug: (name) => request('GET', `/api/sites/${name}/debug`),
+  setDebug: (name, body) => request('PUT', `/api/sites/${name}/debug`, body),
+  debugLog: (name, lines) => request('GET', `/api/sites/${name}/debug/log?lines=${lines}`),
+  clearDebugLog: (name) => request('DELETE', `/api/sites/${name}/debug/log`),
+  downloadDebugLog,
+  shares: () => request('GET', '/api/shares'),
+  share: (name) => request('GET', `/api/sites/${name}/share`),
+  startShare: (name, body) => request('PUT', `/api/sites/${name}/share`, body),
+  stopShare: (name) => request('DELETE', `/api/sites/${name}/share`),
+  qrCode,
   links: {
     adminer: (site) => request('GET', `/api/links/adminer${site ? `?site=${encodeURIComponent(site)}` : ''}`),
     mailpit: () => request('GET', '/api/links/mailpit'),
   },
 };
+
+// The site's database as a .sql.gz, fetched rather than linked so the
+// Authorization header goes along, then handed to the browser to save.
+// `tables` limits it to those; omitted, it's every table.
+async function dbExport(name, tables) {
+  const query = tables ? `?tables=${encodeURIComponent(tables.join(','))}` : '';
+  const res = await fetch(`${apiBase()}/api/sites/${name}/db/export${query}`, { headers: authHeaders() });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.data = data;
+    throw err;
+  }
+  const blob = await res.blob();
+  // site_20261013-1530.sql.gz, in local time.
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name}_${stamp}.sql.gz`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  return { size: blob.size, filename: a.download };
+}
+
+// One of the site's backups, saved by the browser under its own name.
+async function downloadBackup(name, file) {
+  const res = await fetch(`${apiBase()}/api/sites/${name}/backups/${encodeURIComponent(file)}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = file;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// A QR code for <text> as an object URL for an <img> (fetched, so the
+// Authorization header goes along). The caller revokes it.
+async function qrCode(text) {
+  const res = await fetch(`${apiBase()}/api/qr?text=${encodeURIComponent(text)}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return URL.createObjectURL(await res.blob());
+}
+
+async function downloadDebugLog(name) {
+  const res = await fetch(`${apiBase()}/api/sites/${name}/debug/log/download`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(res.status === 404 ? 'There is no debug.log yet' : `HTTP ${res.status}`);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = `${name}-debug.log`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Uploads a .sql/.sql.gz dump over the site's database. XHR rather than
+// fetch, for upload progress: onProgress(0..1) while the file goes up,
+// then onProgress(null) while wpdev imports it.
+// `tables` replaces just those, keeping the rest; omitted, the whole
+// database is replaced.
+function dbImport(name, file, { tables, rewriteUrls, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('rewriteUrls', rewriteUrls ? '1' : '0');
+    form.append('filename', file.name);
+    if (tables) form.append('tables', tables.join(','));
+    form.append('file', file);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${apiBase()}/api/sites/${name}/db/import`);
+    for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+    xhr.upload.onload = () => onProgress?.(null);
+    xhr.onerror = () => reject(new Error('Upload failed: the API is unreachable'));
+    xhr.onload = () => {
+      let data;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        data = { raw: xhr.responseText };
+      }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+      const err = new Error(data.error || `HTTP ${xhr.status}`);
+      err.status = xhr.status;
+      err.data = data;
+      reject(err);
+    };
+    xhr.send(form);
+  });
+}
 
 // Streams a Server-Sent-Events endpoint via fetch + a manual reader -- the
 // browser's own EventSource can't send a POST body or an Authorization

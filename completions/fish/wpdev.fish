@@ -67,7 +67,7 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain wp help
+set -l __wpdev_cmds up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain wp help
 
 complete -c wpdev -f
 
@@ -105,6 +105,12 @@ complete -c wpdev -n "$__wpdev_top" -a snapshot -d "Save a files+DB snapshot of 
 complete -c wpdev -n "$__wpdev_top" -a restore -d "Restore a site from a snapshot"
 complete -c wpdev -n "$__wpdev_top" -a db-export -d "Dump just that site's database"
 complete -c wpdev -n "$__wpdev_top" -a db-import -d "Replace that site's database from a dump"
+complete -c wpdev -n "$__wpdev_top" -a db-tables -d "List that site's tables"
+complete -c wpdev -n "$__wpdev_top" -a db-backup -d "Back up databases now"
+complete -c wpdev -n "$__wpdev_top" -a db-backups -d "List, schedule or remove a site's backups"
+complete -c wpdev -n "$__wpdev_top" -a debug -d "Show or change WordPress debug settings"
+complete -c wpdev -n "$__wpdev_top" -a debug-log -d "Show, follow or clear a site's debug.log"
+complete -c wpdev -n "$__wpdev_top" -a share -d "Share a site with other devices for a while"
 complete -c wpdev -n "$__wpdev_top" -a list -d "List configured site domains"
 complete -c wpdev -n "$__wpdev_top" -a hosts -d "Print /etc/hosts entries needed for all sites"
 complete -c wpdev -n "$__wpdev_top" -a check-domain -d "Whether a domain is free for a new site"
@@ -119,7 +125,7 @@ complete -c wpdev -n "$__wpdev_top" -a wp -d "Run a WP-CLI command against a sit
 complete -c wpdev -n "$__wpdev_top" -a help -d "Show usage"
 
 # Site-name completion for commands taking <site>/<name> as their 2nd token
-for cmd in remove snapshot restore db-export db-import creds cert fix-perms media-proxy admin-domain wp clone db adminer cache open
+for cmd in remove snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share creds cert fix-perms media-proxy admin-domain wp clone db adminer cache open
     complete -c wpdev -f -n "__fish_seen_subcommand_from $cmd; and __wpdev_arg_n 2" -a "(__wpdev_sites)"
 end
 
@@ -144,3 +150,23 @@ complete -c wpdev -f -n "__fish_seen_subcommand_from cache; and __wpdev_arg_n 3"
 # fixed -a list every other rule above uses.
 complete -c wpdev -n "__fish_seen_subcommand_from restore-all; and __wpdev_arg_n 2"
 complete -c wpdev -n "__fish_seen_subcommand_from db-import; and __wpdev_arg_n 3"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-import db-export" -r -l tables -d "Only these tables (comma-separated)"
+complete -c wpdev -f -n "__fish_seen_subcommand_from update-check" -l porcelain -d "KEY=value lines, for scripts"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-backup" -l all -d "Every site"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-backup" -l due -d "Sites whose schedule says it's time"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-backups; and __wpdev_arg_n 3" -a "schedule rm"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-backups; and __fish_seen_subcommand_from schedule" -a "1h 6h 12h 1d 1w off"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-backups; and __fish_seen_subcommand_from schedule" -r -l keep -d "Automatic backups to keep"
+complete -c wpdev -f -n "__fish_seen_subcommand_from debug; and __wpdev_arg_n 3" -a "on off set"
+complete -c wpdev -f -n "__fish_seen_subcommand_from debug; and __fish_seen_subcommand_from set; and __wpdev_arg_n 4" -a "WP_DEBUG WP_DEBUG_LOG WP_DEBUG_DISPLAY SCRIPT_DEBUG SAVEQUERIES"
+complete -c wpdev -f -n "__fish_seen_subcommand_from debug; and __fish_seen_subcommand_from set; and __wpdev_arg_n 5" -a "true false"
+complete -c wpdev -f -n "__fish_seen_subcommand_from debug-log; and __wpdev_arg_n 3" -a "clear"
+complete -c wpdev -f -n "__fish_seen_subcommand_from share; and __wpdev_arg_n 3" -a "on off"
+complete -c wpdev -f -n "__fish_seen_subcommand_from share; and __fish_seen_subcommand_from on" -r -l for -d "How long: 30m, 2h, 1d"
+complete -c wpdev -f -n "__fish_seen_subcommand_from share; and __fish_seen_subcommand_from on" -l public -d "Also at a temporary public https:// address"
+complete -c wpdev -f -n "__fish_seen_subcommand_from share; and __fish_seen_subcommand_from on" -r -l password -d "Visitors sign in as preview"
+complete -c wpdev -f -n "__fish_seen_subcommand_from share; and __fish_seen_subcommand_from on" -l admin -d "Include wp-admin and the login page"
+complete -c wpdev -f -n "__fish_seen_subcommand_from debug-log" -l follow -d "Keep showing new lines"
+complete -c wpdev -f -n "__fish_seen_subcommand_from debug-log" -r -l lines -d "How many lines from the end"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-import" -l rewrite-urls -d "Re-point the dump's URLs to this site"
+complete -c wpdev -f -n "__fish_seen_subcommand_from db-import" -l yes -d "Don't ask to confirm"

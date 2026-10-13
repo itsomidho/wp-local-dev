@@ -66,6 +66,12 @@ _wpdev() {
         'restore:Restore a site from a snapshot'
         "db-export:Dump just that site's database"
         "db-import:Replace that site's database from a dump"
+        "db-tables:List that site's tables"
+        "db-backup:Back up databases now"
+        "db-backups:List, schedule or remove a site's backups"
+        "debug:Show or change WordPress debug settings"
+        "debug-log:Show, follow or clear a site's debug.log"
+        "share:Share a site with other devices for a while"
         'list:List configured site domains'
         'hosts:Print /etc/hosts entries needed for all sites'
         'check-domain:Whether a domain is free for a new site'
@@ -87,7 +93,7 @@ _wpdev() {
 
     local subcmd="${words[2]}"
     case "$subcmd" in
-        remove|snapshot|restore|db-export|db-import|creds|cert|fix-perms|media-proxy|admin-domain|wp|clone|db|adminer)
+        remove|snapshot|restore|db-tables|creds|cert|fix-perms|media-proxy|admin-domain|wp|clone|db|adminer)
             if (( CURRENT == 3 )); then
                 compadd -- $(_wpdev_sites)
             fi
@@ -135,9 +141,63 @@ _wpdev() {
                 _files
             fi
             ;;
+        # Not in the plain site-name branch above, which would match first.
         db-import)
-            if (( CURRENT == 4 )); then
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            elif (( CURRENT == 4 )); then
                 _files
+            else
+                compadd -- --tables= --rewrite-urls --yes
+            fi
+            ;;
+        db-export)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            else
+                compadd -- --tables=
+            fi
+            ;;
+        db-backup)
+            compadd -- $(_wpdev_sites) --all --due
+            ;;
+        update-check)
+            compadd -- --porcelain
+            ;;
+        debug)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            elif (( CURRENT == 4 )); then
+                compadd on off set
+            elif (( CURRENT == 5 )) && [[ "${words[4]}" == set ]]; then
+                compadd WP_DEBUG WP_DEBUG_LOG WP_DEBUG_DISPLAY SCRIPT_DEBUG SAVEQUERIES
+            elif (( CURRENT == 6 )); then
+                compadd true false
+            fi
+            ;;
+        share)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            elif (( CURRENT == 4 )); then
+                compadd on off
+            elif [[ "${words[4]}" == on ]]; then
+                compadd -- --for= --public --password= --admin
+            fi
+            ;;
+        debug-log)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            else
+                compadd -- --lines= --follow clear
+            fi
+            ;;
+        db-backups)
+            if (( CURRENT == 3 )); then
+                compadd -- $(_wpdev_sites)
+            elif (( CURRENT == 4 )); then
+                compadd schedule rm
+            elif [[ "${words[4]}" == schedule ]]; then
+                compadd -- 1h 6h 12h 1d 1w off --keep=
             fi
             ;;
     esac

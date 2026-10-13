@@ -150,6 +150,11 @@ server {
         access_log off;
     }
 
+    # Log files (wp-content/debug.log and its rotated .1) aren't for the web.
+    location ~* \.log(\.\d+)?$ {
+        deny all;
+    }
+
     # Hide hidden version control or config files
     location ~* /\.(git|svn|hg|env|env\.example|DS_Store|vscode|editorconfig) {
         deny all;

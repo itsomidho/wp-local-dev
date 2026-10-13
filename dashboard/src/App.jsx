@@ -14,6 +14,7 @@ import {
   Sparkles,
   ScrollText,
   Info,
+  Bug,
 } from 'lucide-react';
 import { api, getToken, setToken, siteUrl, streamSSE } from './api';
 import { parseDoctor, parseServices, parseSites, parseStatusSites, stripAnsi } from './lib/parse';
@@ -24,6 +25,9 @@ import { OverviewPage, SitesPage, ServicesPage, DoctorPage } from './components/
 import { serviceInfo, restartImpact } from './lib/services';
 import AddSiteDialog from './components/AddSiteDialog';
 import SiteManageDialog from './components/SiteManageDialog';
+import UpdateDialog from './components/UpdateDialog';
+import DebugPage from './components/DebugPage';
+import { SharesContext } from './components/SiteCard';
 import LogModal, { LogsDrawer } from './components/LogModal';
 import ConfirmDialog from './components/ConfirmDialog';
 import DocsPage from './components/DocsPage';
@@ -38,6 +42,7 @@ const PAGE_META = {
   services: { title: 'Services', subtitle: 'The containers behind every site' },
   docker: { title: 'Docker', subtitle: 'Resource use, images and volumes of this stack' },
   doctor: { title: 'Doctor', subtitle: 'Find and explain anything misconfigured' },
+  debug: { title: 'Debug', subtitle: "WordPress's debug settings and debug.log, site by site" },
   docs: { title: 'Docs', subtitle: 'The README, searchable' },
 };
 
@@ -75,14 +80,21 @@ function cachedStatus() {
   return { raw: null, sites: [], services: null, checkedAt: null, loading: false };
 }
 
+// #/<page>[/<sub>]: the page, and for some (debug) which site it shows.
+function hashParts() {
+  const [id, sub = null] = window.location.hash.replace(/^#\/?/, '').split('/');
+  return { id, sub: sub ? decodeURIComponent(sub) : null };
+}
+
 function pageFromHash() {
-  const id = window.location.hash.replace(/^#\/?/, '');
+  const { id } = hashParts();
   return PAGE_META[id] ? id : 'overview';
 }
 
 export default function App() {
   const toast = useToast();
   const [page, setPage] = useState(pageFromHash);
+  const [pageSub, setPageSub] = useState(() => hashParts().sub);
   const [theme, setThemeState] = useState(currentEffectiveTheme());
   const [health, setHealth] = useState('checking');
   const [sites, setSites] = useState(null); // null until the first `wpdev list` answers
@@ -102,25 +114,35 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [manageSite, setManageSite] = useState(null);
+  const [manageTab, setManageTab] = useState('Overview');
+  const openManage = useCallback((site, tab = 'Overview') => {
+    setManageTab(tab);
+    setManageSite(site);
+  }, []);
+  const [sharesByDomain, setSharesByDomain] = useState({});
   const [logsFor, setLogsFor] = useState(null);
   const [detailsFor, setDetailsFor] = useState(null); // service name
   const [log, setLog] = useState(null); // {title, request, onFinished}
   const [stackBusy, setStackBusy] = useState(null);
   const [confirmStack, setConfirmStack] = useState(null);
-  const [confirmUpdate, setConfirmUpdate] = useState(false);
+  const [showUpdates, setShowUpdates] = useState(false);
   const [confirmServiceRestart, setConfirmServiceRestart] = useState(null); // service name
   const [restarting, setRestarting] = useState([]); // service names mid-restart
 
   // --- navigation (hash-based, so a reload or bookmark keeps the page) ---
   useEffect(() => {
-    const onHash = () => setPage(pageFromHash());
+    const onHash = () => {
+      setPage(pageFromHash());
+      setPageSub(hashParts().sub);
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  const navigate = useCallback((id) => {
-    window.location.hash = `/${id}`;
+  const navigate = useCallback((id, sub = null) => {
+    window.location.hash = sub ? `/${id}/${encodeURIComponent(sub)}` : `/${id}`;
     setPage(id);
+    setPageSub(sub);
     setMenuOpen(false);
   }, []);
 
@@ -130,6 +152,10 @@ export default function App() {
 
   // --- data ---
   const refresh = useCallback(() => {
+    api
+      .shares()
+      .then((r) => setSharesByDomain(Object.fromEntries(r.shares.map((s) => [s.domain, s]))))
+      .catch(() => {});
     api
       .health()
       .then(() => setHealth('ok'))
@@ -166,6 +192,16 @@ export default function App() {
       });
   }, []);
 
+  // Status isn't polled, so a snapshot taken while MySQL was still starting
+  // (right after an up or restart) would stick until the next action.
+  // Check again shortly, until it has settled one way or the other.
+  const mysqlStarting = !status.loading && status.sites.some((s) => s.database === 'starting');
+  useEffect(() => {
+    if (!mysqlStarting) return undefined;
+    const id = setTimeout(refreshStatus, 5000);
+    return () => clearTimeout(id);
+  }, [mysqlStarting, status.checkedAt, refreshStatus]);
+
   // Streamed, so each check shows up as doctor prints it rather than a
   // blank page for the whole run. Doctor exits non-zero when it finds
   // problems -- that output is still the result, not an error.
@@ -192,7 +228,8 @@ export default function App() {
   useEffect(() => () => doctorAbort.current?.(), []);
 
   // Checks git's upstream, not GitHub's release API -- the right signal
-  // for "does `wpdev update` have anything to do". Best-effort.
+  // for "does `wpdev update` have anything to do". The api caches it
+  // (re-checking every 6 hours), so asking is cheap. Best-effort.
   const checkForUpdate = useCallback(() => {
     api.updateCheck().then(setUpdateInfo).catch(() => {});
   }, []);
@@ -202,7 +239,12 @@ export default function App() {
     refreshStatus();
     checkForUpdate();
     const id = setInterval(refresh, 15000);
-    return () => clearInterval(id);
+    // A dashboard left open for days still hears about a release.
+    const updates = setInterval(checkForUpdate, 30 * 60 * 1000);
+    return () => {
+      clearInterval(id);
+      clearInterval(updates);
+    };
   }, [refresh, refreshStatus, checkForUpdate]);
 
   useEffect(() => {
@@ -360,7 +402,8 @@ export default function App() {
     );
     list.push({ id: 'add-site', group: 'Sites', label: 'Add a new site', icon: Plus, keywords: 'create provision new', run: () => setShowAdd(true) });
     siteList.forEach((s) => {
-      list.push({ id: `manage-${s.name}`, group: 'Sites', label: `Manage ${s.domain}`, icon: Settings2, hint: 'settings', keywords: s.name, run: () => setManageSite(s) });
+      list.push({ id: `manage-${s.name}`, group: 'Sites', label: `Manage ${s.domain}`, icon: Settings2, hint: 'settings', keywords: s.name, run: () => openManage(s) });
+      list.push({ id: `debug-${s.name}`, group: 'Sites', label: `Debug log for ${s.domain}`, icon: Bug, hint: 'debug.log', keywords: `${s.name} errors php warnings`, run: () => navigate('debug', s.name) });
       list.push({ id: `visit-${s.name}`, group: 'Sites', label: `Visit ${s.domain}`, icon: Globe, hint: 'new tab', keywords: s.name, run: () => window.open(siteUrl(s.domain), '_blank') });
       list.push({ id: `admin-${s.name}`, group: 'Sites', label: `wp-admin for ${s.domain}`, icon: ArrowUpRight, hint: 'new tab', keywords: `${s.name} dashboard login`, run: () => window.open(`${siteUrl(s.domain)}/wp-admin/`, '_blank') });
     });
@@ -368,8 +411,9 @@ export default function App() {
     list.push({ id: 'stack-restart', group: 'Stack', label: 'Restart the stack', icon: RotateCw, hint: 'wpdev restart', run: () => requestStackAction('restart') });
     list.push({ id: 'stack-down', group: 'Stack', label: 'Stop the stack', icon: Square, hint: 'wpdev down', danger: true, run: () => requestStackAction('down') });
     if (updateInfo?.updateAvailable) {
-      list.push({ id: 'stack-update', group: 'Stack', label: 'Update wp-local-dev', icon: Sparkles, hint: 'wpdev update', run: () => setConfirmUpdate(true) });
+      list.push({ id: 'stack-update', group: 'Stack', label: 'Update wp-local-dev', icon: Sparkles, hint: 'wpdev update', run: () => setShowUpdates(true) });
     }
+    list.push({ id: 'stack-update-check', group: 'Stack', label: 'Check for updates', icon: RotateCw, hint: 'wpdev update-check', keywords: 'version release upgrade', run: () => setShowUpdates(true) });
     (status.services || []).forEach((svc) => {
       const { label } = serviceInfo(svc.service);
       list.push({ id: `restart-${svc.service}`, group: 'Services', label: `Restart ${label}`, icon: RotateCw, hint: `wpdev restart ${svc.service}`, keywords: svc.service, run: () => setConfirmServiceRestart(svc.service) });
@@ -381,11 +425,12 @@ export default function App() {
     list.push({ id: 'theme', group: 'Preferences', label: theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme', icon: theme === 'dark' ? Sun : Moon, run: toggleTheme });
     list.push({ id: 'settings', group: 'Preferences', label: 'API settings', icon: KeyRound, keywords: 'token', run: () => setShowSettings(true) });
     return list;
-  }, [siteList, status.services, navigate, requestStackAction, updateInfo, openTool, refreshAll, theme, toggleTheme]);
+  }, [siteList, status.services, navigate, openManage, requestStackAction, updateInfo, openTool, refreshAll, theme, toggleTheme]);
 
   const meta = PAGE_META[page];
 
   return (
+    <SharesContext.Provider value={sharesByDomain}>
     <div className={`shell${page === 'docs' ? ' shell-docs' : ''}`}>
       <Sidebar
         page={page}
@@ -394,7 +439,7 @@ export default function App() {
         onOpenTool={openTool}
         onOpenSettings={() => setShowSettings(true)}
         updateInfo={updateInfo}
-        onUpdate={() => setConfirmUpdate(true)}
+        onUpdate={() => setShowUpdates(true)}
         open={menuOpen}
         onDismiss={() => setMenuOpen(false)}
       />
@@ -432,13 +477,13 @@ export default function App() {
               status={status}
               stats={stats}
               statsError={statsError}
-              onManage={setManageSite}
+              onManage={openManage}
               onAdd={() => setShowAdd(true)}
               onNavigate={navigate}
               onOpenTool={openTool}
             />
           )}
-          {page === 'sites' && <SitesPage sites={siteList} sitesLoading={sites === null} statusBySite={statusBySite} onManage={setManageSite} onAdd={() => setShowAdd(true)} />}
+          {page === 'sites' && <SitesPage sites={siteList} sitesLoading={sites === null} statusBySite={statusBySite} onManage={openManage} onAdd={() => setShowAdd(true)} />}
           {page === 'services' && (
             <ServicesPage
               sites={siteList}
@@ -454,6 +499,7 @@ export default function App() {
           )}
           {page === 'docker' && <DockerPage onShowDetails={setDetailsFor} />}
           {page === 'doctor' && <DoctorPage doctor={doctor} onRun={runDoctor} />}
+          {page === 'debug' && <DebugPage sites={sites === null ? null : siteList} siteName={pageSub} onSelectSite={(name) => navigate('debug', name)} />}
           {page === 'docs' && <DocsPage />}
         </main>
       </div>
@@ -471,7 +517,15 @@ export default function App() {
       {manageSite && (
         <SiteManageDialog
           site={manageSite}
-          onClose={() => setManageSite(null)}
+          initialTab={manageTab}
+          onOpenDebug={(s) => {
+            setManageSite(null);
+            navigate('debug', s.name);
+          }}
+          onClose={() => {
+            setManageSite(null);
+            refresh();
+          }}
           onRunAction={runAction}
           onRemoved={() => {
             setManageSite(null);
@@ -514,19 +568,19 @@ export default function App() {
         />
       )}
 
-      {confirmUpdate && (
-        <ConfirmDialog
-          title="Update wp-local-dev?"
-          message="Pulls the latest code, rebuilds images, and recreates every container. Sites will be briefly unreachable."
-          confirmLabel="Update"
-          onCancel={() => setConfirmUpdate(false)}
-          onConfirm={() => {
-            setConfirmUpdate(false);
+      {showUpdates && (
+        <UpdateDialog
+          info={updateInfo}
+          onCheck={() => api.updateCheck(true).then(setUpdateInfo)}
+          onClose={() => setShowUpdates(false)}
+          onUpdate={() => {
+            setShowUpdates(false);
             startUpdate();
           }}
         />
       )}
     </div>
+    </SharesContext.Provider>
   );
 }
 
