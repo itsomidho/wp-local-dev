@@ -827,17 +827,21 @@ wpdev share                               # every shared site
 wpdev share mysite off
 ```
 
-Each shared site gets an nginx server of its own on a port from 39100-39109,
-published on every interface (`SHARE_BIND` in `.env` narrows that). It
-proxies to the site's own vhost with the site's own Host, so WordPress runs
+Each shared site gets a small proxy of its own (`wpdev-share-<site>`, an
+`nginx:alpine` container on the stack's network) that publishes the first
+free port from 39100 for as long as the share lasts, on every interface
+(`SHARE_BIND` in `.env` narrows that). The stack itself publishes no extra
+ports, so a port something else holds is just skipped. The proxy forwards
+to the site's own vhost with the site's own Host, so WordPress runs
 exactly as it always does, and rewrites the site's address in what comes
 back -- HTML, CSS, JS, JSON (escaped and URL-encoded forms too), redirects
 and cookies -- to whichever address the visitor used. Nothing is installed
 in WordPress and nothing in its database changes.
 
 `--public` adds a tunnel from [localhost.run](https://localhost.run) (free,
-no account) over SSH, in a container of its own (`wpdev-share-<site>`,
-the api image), with localhost.run's host key pinned. The free address
+no account) over SSH to that proxy, in a container of its own
+(`wpdev-share-tunnel-<site>`, the api image), with localhost.run's host key
+pinned. The free address
 can change if the tunnel reconnects; the dashboard shows the current one.
 Cloudflare's quick tunnels were the first choice, but their client can't
 reach Cloudflare through an HTTP proxy, which many networks need.
