@@ -72,3 +72,6 @@ Thumbs.db
 !nginx/ssl/.gitkeep
 !nginx/ssl/certs/.gitkeep
 !nginx/ssl/private/.gitkeep
+
+# wpdev's own state: the last update check (`wpdev update-check`)
+.wpdev/

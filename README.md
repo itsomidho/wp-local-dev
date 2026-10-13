@@ -182,8 +182,23 @@ Three separately-confirmed stages, each safe to stop after:
 ## Updating
 
 ```bash
-wpdev update
+wpdev update-check    # is there anything new? lists the incoming changes
+wpdev update          # install it
 ```
+
+**Knowing there's an update.** `wpdev update-check` fetches `origin` and
+lists what's new: one line per merged pull request (its title), and the
+latest release tag. `wpdev up` and `wpdev status` end with a one-line
+notice when there's something to install; they look at most once a day
+(the answer is kept in `.wpdev/update-check`) and give up after 15 seconds
+offline, so they never get slow. `WPDEV_UPDATE_CHECK=off` in `.env` turns
+the notice off. The dashboard's api checks when it starts and every 6
+hours; the sidebar then shows a "v2.2.0 available" card, and the dialog
+it opens (also from the version number under the sidebar, or "Check for
+updates" in the command palette) has the release notes from GitHub, the
+list of changes, whether local changes would stop the update, a **Check
+now** button and **Update now**. `wpdev update-check --porcelain` prints
+the same as `KEY=value` lines, for scripts.
 
 `git pull --ff-only`, then `docker compose build && docker compose up -d
 --force-recreate`. A few deliberate choices:
@@ -395,7 +410,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev down` | Stop all containers |
 | `wpdev restart [service...]` | Restart all containers, or just the named services (e.g. `wpdev restart nginx php83`) |
 | `wpdev update` | `git pull` (fast-forward only), then rebuild + recreate every container |
-| `wpdev update-check` | Fetch and report whether an update is available — no changes made |
+| `wpdev update-check [--porcelain]` | Fetch and report whether an update is available, and what's in it — no changes made |
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
 | `wpdev fix-dns` | Repair container DNS when the host's resolver lives behind a VPN tunnel (needs sudo). `wpdev up` already does this for you — this is for running it on its own |
@@ -425,8 +440,14 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev snapshot <site> [label]` | Save a files+DB snapshot of a site |
 | `wpdev snapshots <site>` | List saved snapshots for a site |
 | `wpdev restore <site> [snap-id] [--yes]` | Restore a site from a snapshot (asks you to confirm; defaults to the latest) |
-| `wpdev db-export <site> [file]` | Dump just that site's database (default: `backups/<site>_<time>.sql.gz`) |
-| `wpdev db-import <site> <file> [--yes]` | Replace that site's database from a `.sql` or `.sql.gz` dump (asks you to confirm) |
+| `wpdev db-export <site> [file] [--tables=a,b]` | Dump just that site's database (default: `backups/<site>_<time>.sql.gz`); `--tables`: only those tables |
+| `wpdev db-import <site> <file> [--tables=a,b] [--rewrite-urls] [--yes]` | Replace that site's database from a `.sql` or `.sql.gz` dump (asks you to confirm); `--tables` replaces only those, keeping the rest; `--rewrite-urls` re-points the dump's URLs to this site |
+| `wpdev db-tables <site>` | List that site's tables: name, rows, bytes |
+| `wpdev share [<site> [on [--for=1h] [--public] [--password=X] [--admin] \| off]]` | Share a site with other devices for a while: on your network, and with `--public` at a temporary https:// address |
+| `wpdev debug <site> [on\|off\|set <KEY> true\|false]` | Show or change `WP_DEBUG`, `WP_DEBUG_LOG`, `WP_DEBUG_DISPLAY`, `SCRIPT_DEBUG`, `SAVEQUERIES` |
+| `wpdev debug-log <site> [--lines=N] [--follow] \| <site> clear` | Show, follow or empty its `debug.log` (rotated to `.1` past 50 MB) |
+| `wpdev db-backup <site>... \| --all \| --due` | Back up those databases now into `backups/<site>/`; `--due`: whichever sites' schedules say it's time |
+| `wpdev db-backups <site> [schedule <interval\|off> [--keep=N] \| rm <file>]` | List a site's backups, set its automatic schedule (`6h`, `1d`...), or remove one |
 | `wpdev list` | List configured site domains |
 | `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
 | `wpdev check-domain <domain>` | Whether a domain is free for a new site, and why not (see [Which domains `add` accepts](#which-domains-add-accepts)) |
@@ -694,6 +715,37 @@ you to type `RESTORE` (not just `y`/`yes`) before doing anything — skip with
 `--yes` for scripted use — and doesn't back up the current state first — run
 `wpdev backup` right before it if you want to keep what's there now.
 
+## Scheduled database backups
+
+Each site can back up its own database, now or on a schedule, into
+`backups/<site>/` as `<site>_<UTC time>Z_<manual|auto>.sql.gz`:
+
+```bash
+wpdev db-backup mysite                       # now (also: several sites, or --all)
+wpdev db-backups mysite schedule 6h --keep=10  # automatically every 6 hours, newest 10 kept
+wpdev db-backups mysite schedule off         # stop
+wpdev db-backups mysite                      # list: file, kind, bytes, time
+wpdev db-backups mysite rm <file>            # delete one
+wpdev db-import mysite backups/mysite/<file> # restore one
+```
+
+An interval is a number and `m`, `h`, `d` or `w` (`30m`, `12h`, `1d`, `1w`;
+5 minutes at least), saved in the site's `config/sites/<site>.env` as
+`BACKUP_EVERY` / `BACKUP_KEEP` (7 unless set). Only automatic backups are
+pruned; ones you make yourself stay until you delete them.
+
+The api container keeps the schedule: once a minute it runs
+`wpdev db-backup --due`, which backs up each site whose newest automatic
+backup is older than its interval. So backups run while the stack is up,
+and a stack that was down catches up with one backup per site when it
+starts again. To run them without the stack's api, call
+`wpdev db-backup --due` from cron instead.
+
+In the dashboard, it's the **Backups** part of a site's **Manage →
+Database** tab: pick an interval, back up now, and download, restore or
+delete each backup. A restore there first backs up the current database,
+so it can be undone. Removing a site leaves its backups in place.
+
 ## Sharing a site's database
 
 `wpdev backup` dumps every database at once — useful for a full-stack backup,
@@ -702,15 +754,105 @@ not for handing one site's data to someone else. For that:
 ```bash
 wpdev db-export mysite                       # -> backups/mysite_<timestamp>.sql.gz
 wpdev db-export mysite mysite-for-bob.sql.gz # or a specific path
+wpdev db-export mysite --tables=wp_posts,wp_postmeta  # only some tables
+wpdev db-tables mysite                       # its tables: name, rows, bytes
 
 wpdev db-import mysite that-file.sql.gz      # .sql or .sql.gz, auto-detected
+wpdev db-import mysite prod.sql.gz --rewrite-urls  # and re-point its URLs here
+wpdev db-import mysite prod.sql.gz --tables=wp_posts,wp_postmeta  # just those
 ```
 
 `db-import` **replaces** the site's entire current database (asks you to
 confirm — skip with `--yes` for scripted use) and flushes its Redis cache afterward. If the dump came from a
-different domain, `wpdev` doesn't guess at re-pointing URLs for you — it
-prints the exact `wp search-replace` command to run, since only you know
-what the old domain actually was.
+different domain (production, say), add `--rewrite-urls`: it reads the
+dump's own `home` option and search-replaces that URL, then its bare host,
+with this site's across every table (GUIDs left alone). Without it,
+`wpdev` prints the `wp search-replace` command to run yourself. If the
+import fails part way, MySQL's error is shown.
+
+With `--tables=`, only those tables are replaced and the site's others are
+kept: the dump is loaded into a scratch database first, and the chosen
+tables are moved across, so a dump that fails to load leaves the site
+untouched. `--rewrite-urls` then re-points URLs in those tables only.
+
+The dashboard does both from a site's **Manage → Database** tab, with a
+checklist of tables for each: the site's own for an export, and, for an
+import, the ones in the dump you pick (read in the browser before
+anything uploads). Type the domain to confirm an import; URL re-pointing
+is on by default.
+
+## WordPress debug mode and debug.log
+
+```bash
+wpdev debug mysite                     # WP_DEBUG & co. as WordPress sees them, and the log's size
+wpdev debug mysite on                  # WP_DEBUG on, logging to wp-content/debug.log, not on the page
+wpdev debug mysite off
+wpdev debug mysite set SCRIPT_DEBUG true   # or WP_DEBUG_LOG, WP_DEBUG_DISPLAY, SAVEQUERIES
+wpdev debug-log mysite                 # its last 200 lines (--lines=N), --follow to keep watching
+wpdev debug-log mysite clear
+```
+
+`wpdev debug` edits `wp-config.php` itself rather than through `wp config
+set`: a wpdev site defines `WP_DEBUG` twice (its own value, and WordPress's
+`if ( ! defined( 'WP_DEBUG' ) )` fallback), and `wp config set` changes
+only one of them, possibly the one that never runs. Every `define()` of
+the constant is rewritten (or one added before "That's all, stop
+editing!"), and the result is read back from WordPress to confirm it took.
+
+A `debug.log` past 50 MB is moved to `debug.log.1` (replacing the previous
+one) by the same once-a-minute check that runs scheduled backups. Every
+site's vhost refuses `*.log` over the web; vhosts from before that rule
+get it on the next `wpdev up`.
+
+In the dashboard, the **Debug** page (in the sidebar; `#/debug/<site>`
+opens it on a site) has a site's switches beside its log: newest first, by
+level (fatal, warning, notice, deprecated, database, other), searchable,
+with stack traces folded into their entry and similar messages grouped
+(`×4,999 Duplicate entry …`) — and **Go live** to watch new entries
+arrive. A site's **Manage → Debug** tab keeps the switches for a quick
+change, with a button to that site's log on the Debug page.
+
+## Sharing a site with other devices
+
+To show a site on a phone, a tablet or someone else's computer, say for a
+presentation:
+
+```bash
+wpdev share mysite on                     # for an hour, on your network: http://<LAN IP>:39100
+wpdev share mysite on --for=2h --public   # and at a temporary https://….lhr.life address, from anywhere
+wpdev share mysite on --password=demo123  # visitors sign in as "preview" first
+wpdev share mysite on --admin             # include wp-admin and the login page (left out by default)
+wpdev share mysite                        # its addresses and when it ends
+wpdev share                               # every shared site
+wpdev share mysite off
+```
+
+Each shared site gets an nginx server of its own on a port from 39100-39109,
+published on every interface (`SHARE_BIND` in `.env` narrows that). It
+proxies to the site's own vhost with the site's own Host, so WordPress runs
+exactly as it always does, and rewrites the site's address in what comes
+back -- HTML, CSS, JS, JSON (escaped and URL-encoded forms too), redirects
+and cookies -- to whichever address the visitor used. Nothing is installed
+in WordPress and nothing in its database changes.
+
+`--public` adds a tunnel from [localhost.run](https://localhost.run) (free,
+no account) over SSH, in a container of its own (`wpdev-share-<site>`,
+the api image), with localhost.run's host key pinned. The free address
+can change if the tunnel reconnects; the dashboard shows the current one.
+Cloudflare's quick tunnels were the first choice, but their client can't
+reach Cloudflare through an HTTP proxy, which many networks need.
+
+A share always ends: after `--for` (1 minute to 1 day, an hour unless
+given), checked each minute by the api, or on `wpdev down`. wp-admin,
+the login page and xmlrpc.php aren't reachable through it unless `--admin`
+(admin-ajax.php is, for front-end features), every response carries
+`X-Robots-Tag: noindex`, and only that one site is exposed -- not the
+dashboard, Adminer or any other site. If a phone on your network can't
+connect, this machine's firewall is the usual reason: allow the port shown.
+
+In the dashboard: the share button on a site's card, or **Manage →
+Share**, with copy buttons, QR codes, the countdown, **+1 hour** and **Stop
+sharing**. Shared sites carry a *Shared* chip.
 
 ## Xdebug
 
@@ -1316,9 +1458,11 @@ link.
 - **An "Update available" card** shows up above it (and in the command
   palette) when `git
   fetch` finds commits on `origin` this checkout doesn't have yet (`wpdev
-  update-check`, checked on load and on every manual refresh — not on the
-  15s poll, since that would mean a `git fetch` every 15 seconds).
-  Clicking it confirms, then streams `wpdev update` live the same way
+  update-check`, which the api runs when it starts and every 6 hours and
+  keeps the answer of — not on the 15s poll, since that would mean a `git
+  fetch` every 15 seconds). It opens the update dialog (so does clicking the
+  version): release notes, the incoming changes, and **Update now**, which
+  streams `wpdev update` live the same way
   adding a site does: pulls, rebuilds, and recreates every container. The
   api is rebuilt and recreated last, a few seconds after the stream
   finishes, so the dashboard briefly shows "unreachable" before it
@@ -1401,7 +1545,7 @@ wp-local-dev/
 │   └── cron.log                 # real WP-Cron activity, every site, one file
 │
 ├── snapshots/<site>/            # `wpdev snapshot`/`restore` (git-ignored, created on demand)
-├── backups/                      # `wpdev backup`/`db-export` (git-ignored, created on demand)
+├── backups/                      # `wpdev backup`/`db-export`, and <site>/ for db-backup (git-ignored, created on demand)
 │
 ├── .vscode/launch.json          # Xdebug VS Code config, shipped — see "Xdebug"
 └── .github/workflows/           # CI: provisions real sites and exercises every feature above on each push

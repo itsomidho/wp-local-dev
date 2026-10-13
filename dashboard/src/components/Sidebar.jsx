@@ -10,6 +10,7 @@ import {
   ArrowUpRight,
   Settings,
   Sparkles,
+  Bug,
 } from 'lucide-react';
 import { appVersion } from '../api';
 
@@ -19,6 +20,7 @@ export const PAGES = [
   { id: 'services', label: 'Services', icon: Boxes },
   { id: 'docker', label: 'Docker', icon: Container },
   { id: 'doctor', label: 'Doctor', icon: Stethoscope },
+  { id: 'debug', label: 'Debug', icon: Bug },
   { id: 'docs', label: 'Docs', icon: BookOpen },
 ];
 
@@ -96,16 +98,20 @@ export default function Sidebar({ page, onNavigate, counts, onOpenTool, onOpenSe
             <button type="button" className="update-card" onClick={onUpdate} title={updateInfo.stdout?.trim()}>
               <Sparkles size={16} />
               <span>
-                <strong>Update available</strong>
-                <small>Pull, rebuild and restart</small>
+                <strong>
+                  {updateInfo.latestTag && updateInfo.latestTag !== updateInfo.currentTag ? `${updateInfo.latestTag} available` : 'Update available'}
+                </strong>
+                <small>
+                  {updateInfo.behind ? `${updateInfo.behind} change${updateInfo.behind === 1 ? '' : 's'} · see what's new` : "See what's new"}
+                </small>
               </span>
             </button>
           )}
           <div className="sidebar-meta">
             {appVersion() ? (
-              <span className="version mono" title="git describe for this checkout">
+              <button type="button" className="version mono" onClick={onUpdate} title="This checkout's version (git describe) -- check for updates">
                 {appVersion()}
-              </span>
+              </button>
             ) : (
               <span className="version mono">dev</span>
             )}

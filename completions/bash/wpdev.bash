@@ -39,7 +39,7 @@ _wpdev_complete() {
     local cur prev cmds subcmd
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain wp help"
+    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain wp help"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
@@ -48,7 +48,7 @@ _wpdev_complete() {
 
     subcmd="${COMP_WORDS[1]}"
     case "$subcmd" in
-        remove|snapshot|restore|db-export|db-import|creds|cert|fix-perms|media-proxy|admin-domain|wp|clone|db|adminer)
+        remove|snapshot|restore|db-tables|creds|cert|fix-perms|media-proxy|admin-domain|wp|clone|db|adminer)
             if [ "$COMP_CWORD" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
             fi
@@ -105,9 +105,64 @@ _wpdev_complete() {
                 COMPREPLY=($(compgen -f -- "$cur"))
             fi
             ;;
+        # Not in the plain site-name branch above: bash takes the first
+        # matching pattern, so they'd never get past their first argument.
         db-import)
-            if [ "$COMP_CWORD" -eq 3 ]; then
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
                 COMPREPLY=($(compgen -f -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "--tables= --rewrite-urls --yes" -- "$cur"))
+            fi
+            ;;
+        db-export)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "--tables=" -- "$cur"))
+            fi
+            ;;
+        db-backup)
+            COMPREPLY=($(compgen -W "$(_wpdev_sites) --all --due" -- "$cur"))
+            ;;
+        update-check)
+            COMPREPLY=($(compgen -W "--porcelain" -- "$cur"))
+            ;;
+        debug)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                COMPREPLY=($(compgen -W "on off set" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 4 ] && [ "${COMP_WORDS[3]}" = set ]; then
+                COMPREPLY=($(compgen -W "WP_DEBUG WP_DEBUG_LOG WP_DEBUG_DISPLAY SCRIPT_DEBUG SAVEQUERIES" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 5 ]; then
+                COMPREPLY=($(compgen -W "true false" -- "$cur"))
+            fi
+            ;;
+        share)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                COMPREPLY=($(compgen -W "on off" -- "$cur"))
+            elif [ "${COMP_WORDS[3]}" = on ]; then
+                COMPREPLY=($(compgen -W "--for= --public --password= --admin" -- "$cur"))
+            fi
+            ;;
+        debug-log)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "--lines= --follow clear" -- "$cur"))
+            fi
+            ;;
+        db-backups)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                COMPREPLY=($(compgen -W "schedule rm" -- "$cur"))
+            elif [ "${COMP_WORDS[3]}" = schedule ]; then
+                COMPREPLY=($(compgen -W "1h 6h 12h 1d 1w off --keep=" -- "$cur"))
             fi
             ;;
     esac
