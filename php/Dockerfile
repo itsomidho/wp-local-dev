@@ -33,6 +33,12 @@ COPY --chmod=0755 php/install-php-extensions /usr/local/bin/install-php-extensio
 RUN apt-get update
 RUN install-php-extensions xdebug redis
 
+# ionCube Loader: runs ionCube-encoded PHP, which some commercial themes and
+# plugins ship as ("the ionCube Loader for PHP needs to be installed").
+# ionCube never released a loader for PHP 8.0, so that one image goes
+# without it — a site needing ionCube has to use 7.4 or 8.1+.
+RUN if [ "$PHP_VERSION" != "8.0" ]; then install-php-extensions ioncube_loader; fi
+
 # msmtp: relays PHP's mail() (what wp_mail() uses by default) to the shared
 # Mailpit container, so every site's outgoing mail is caught automatically —
 # no per-site plugin or WordPress config needed. See php/msmtprc + php/mail.ini.
