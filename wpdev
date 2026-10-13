@@ -4050,8 +4050,19 @@ cmd_remove() {
     # delete via the php container to sidestep host permission mismatches.
     if [ -d "sites/${site_name}" ]; then
         if php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
-            # Root: a site from before #20 can hold root-owned files.
-            php_exec_root "$php_svc" rm -rf "/var/www/${site_name}" </dev/null
+            # Root: a site from before #20 can hold root-owned files. Tried
+            # a few times: WP-Cron or a request still in flight can write
+            # into the folder (a cache file, a session) while rm walks it,
+            # which leaves "Directory not empty" -- and under set -e a
+            # failure here once stopped `remove` halfway, the database gone
+            # but its vhost and certificate left behind.
+            for attempt in 1 2 3 4 5; do
+                php_exec_root "$php_svc" rm -rf "/var/www/${site_name}" </dev/null 2>/dev/null && break
+                sleep 1
+            done
+            if [ -d "sites/${site_name}" ]; then
+                print_warning "Couldn't remove all of sites/${site_name} -- something kept writing into it. The rest of the site is removed; delete the folder with: docker compose exec ${php_svc} rm -rf /var/www/${site_name}"
+            fi
         elif ! rm -rf "sites/${site_name}" 2>/dev/null; then
             print_warning "Could not remove sites/${site_name} (permission denied and ${php_svc} container isn't running). Run 'wpdev up' and retry, or: sudo rm -rf sites/${site_name}"
         fi
