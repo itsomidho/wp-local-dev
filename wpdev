@@ -1053,6 +1053,21 @@ set_env_var() {
     fi
 }
 
+# What the dashboard shows as its own version -- nearest tag plus
+# commits-since-and-hash (git describe), not a hand-maintained version file
+# that drifts the moment someone forgets to bump it. `--always` falls back
+# to a bare short hash if this checkout has no tags reachable at all;
+# `unknown` only if git itself fails (e.g. .git missing from a tarball
+# install). The dashboard reads it when its container starts, so this runs
+# before every `compose up` that should show a new version: `up`, and both
+# of `update`'s paths.
+sync_app_version() {
+    local app_version
+    [ -f .env ] || return 0
+    app_version="$(git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null)" || app_version="unknown"
+    set_env_var APP_VERSION "$app_version"
+}
+
 cmd_up() {
     require_stack_services
     # Host config that would otherwise fail mid-pull or mid-build with a
@@ -1174,14 +1189,7 @@ cmd_up() {
         docker_gid="$(stat -c '%g' /var/run/docker.sock 2>/dev/null)" || true
         [ -n "$docker_gid" ] && set_env_var DOCKER_GID "$docker_gid"
 
-        # What the dashboard shows as its own version -- nearest tag plus
-        # commits-since-and-hash (git describe), not a hand-maintained
-        # version file that drifts the moment someone forgets to bump it.
-        # `--always` falls back to a bare short hash if this checkout has
-        # no tags reachable at all; `|| echo unknown` only fires if git
-        # itself fails outright (e.g. .git missing from a tarball install).
-        app_version="$(git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null)" || app_version="unknown"
-        set_env_var APP_VERSION "$app_version"
+        sync_app_version
 
         # This desktop session's D-Bus socket, for `wpdev open` from the
         # api (the dashboard's "Open in file manager"); empty on a machine
@@ -1496,7 +1504,9 @@ cmd_update() {
         compose_build $(wanted_services)
     fi
     retire_services
+    sync_app_version
     docker compose up -d --force-recreate $(wanted_services)
+    upgrade_vhosts
     stop_unused_php
     # Always, not just when api_is_stale: the pull may have changed api's
     # code, which only a rebuild picks up -- its config hash can't show it.
@@ -1524,10 +1534,11 @@ rebuild_stale_images() {
         compose_build $(wanted_services)
     fi
     retire_services
+    sync_app_version
     docker compose up -d $(wanted_services)
     upgrade_vhosts
     stop_unused_php
-    if [ -n "$api_before" ] && [ "$(docker image inspect -f '{{.Id}}' "$api_image" 2>/dev/null)" != "$api_before" ]; then
+    if [ -n "$api_before" ] && { [ "$(docker image inspect -f '{{.Id}}' "$api_image" 2>/dev/null)" != "$api_before" ] || api_is_stale; }; then
         recreate_api_detached "up -d"
     fi
     print_info "Images are current."
