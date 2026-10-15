@@ -2406,6 +2406,10 @@ cmd_adminer() {
     fi
 
     echo "Opening ${url}"
+    # A site's DB password is its own user's, not root's -- the form above
+    # is prefilled with root, so point at the per-site form instead. On the
+    # Login line, since that's the one the dashboard shows.
+    [ -z "$site" ] && login_hint="${login_hint} (a site's DB password goes with its own user: wpdev adminer <site>)"
     echo "Login: ${login_hint}"
 
     if command -v xdg-open >/dev/null 2>&1; then
@@ -5767,7 +5771,8 @@ PHP
     echo -e "  Site:        ${GREEN}${url}${NC}"
     echo "  PHP version: ${php_version} (${php_svc})"
     echo -e "  Admin login: ${GREEN}${url}/wp-admin${NC}  (admin / ${admin_pass})"
-    echo "  Database:    ${db_name} / ${db_user} (password: wpdev creds ${site_name})"
+    echo "  Database:    ${db_name} (user ${db_user} / ${db_pass})"
+    echo "  Adminer:     wpdev adminer ${site_name}  (server mysql, user ${db_user} -- not root, not admin)"
     echo "  Object cache: Redis (check with: wpdev wp ${site_name} redis status)"
     echo "  Outgoing mail: caught by Mailpit — wpdev mailpit"
     echo ""

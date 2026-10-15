@@ -518,6 +518,7 @@ export default function App() {
         <SiteManageDialog
           site={manageSite}
           initialTab={manageTab}
+          onOpenTool={openTool}
           onOpenDebug={(s) => {
             setManageSite(null);
             navigate('debug', s.name);

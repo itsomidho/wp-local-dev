@@ -2534,10 +2534,26 @@ button.version:hover {
   font-size: 13px;
 }
 
-.drawer-hero-links a {
+.drawer-hero-links a,
+.drawer-hero-links .link-button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+/* A button that looks like the links beside it. */
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--brand);
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 /* The site drawer: sections down a side nav, the open one beside it.

@@ -71,7 +71,7 @@ const TAB_GROUPS = [
 ];
 const REMOVE_TAB = { id: 'Remove', icon: Trash2, danger: true };
 
-export default function SiteManageDialog({ site, initialTab = 'Overview', onClose, onRunAction, onRemoved, onOpenDebug }) {
+export default function SiteManageDialog({ site, initialTab = 'Overview', onClose, onRunAction, onRemoved, onOpenDebug, onOpenTool }) {
   const [tab, setTab] = useState(initialTab);
   const url = siteUrl(site.domain);
 
@@ -88,6 +88,11 @@ export default function SiteManageDialog({ site, initialTab = 'Overview', onClos
             <a href={`${url}/wp-admin/`} target="_blank" rel="noreferrer">
               <LayoutDashboard size={14} /> wp-admin
             </a>
+            {/* Deep-linked to this site's own DB user -- the sidebar's
+                Adminer opens as root, which this site's password won't fit. */}
+            <button type="button" className="link-button" onClick={() => onOpenTool('adminer', site.name)}>
+              <Database size={14} /> Adminer
+            </button>
             {site.php && <Chip mono>PHP {site.php}</Chip>}
           </div>
         </div>
