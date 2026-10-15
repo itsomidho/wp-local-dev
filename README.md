@@ -264,6 +264,8 @@ Continue? (y/n): y
   Site:        https://mysite.test
   PHP version: 8.3 (php83)
   Admin login: https://mysite.test/wp-admin  (admin / <generated password>)
+  Database:    wp_mysite (user wp_mysite / <generated password>)
+  Adminer:     wpdev adminer mysite  (server mysql, user wp_mysite -- not root, not admin)
 
 Add '127.0.0.1 mysite.test' to /etc/hosts now? (y/n): y
 ```
