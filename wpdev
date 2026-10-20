@@ -6208,6 +6208,15 @@ migrate_env_ports() {
 # Main
 # ---------------------------------------------------------------------------
 
+# The php containers bind-mount config/sites (the cron runner reads it).
+# If it doesn't exist when one starts, Docker creates it -- owned by root,
+# and then no site's settings can be saved. So it exists before anything
+# could start one.
+mkdir -p "$SITE_CONFIG_DIR" 2>/dev/null || true
+if [ -d "$SITE_CONFIG_DIR" ] && [ ! -w "$SITE_CONFIG_DIR" ]; then
+    print_error "${SITE_CONFIG_DIR}/ isn't writable (Docker probably created it as root). Fix it with: sudo chown \"\$(id -u):\$(id -g)\" ${SITE_CONFIG_DIR}"
+fi
+
 migrate_site_configs
 migrate_env_ports
 
