@@ -616,6 +616,59 @@ function parseShare(text) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// On / off (`wpdev on|off|auto-off`)
+// ---------------------------------------------------------------------------
+function parsePower(text) {
+  const kv = {};
+  for (const line of text.split('\n')) {
+    const m = /^\s*([A-Z_]+)=(.*)$/.exec(line);
+    if (m) kv[m[1]] = m[2].trim();
+  }
+  const time = (v) => (v ? Number(v) * 1000 : null);
+  return {
+    state: kv.STATE === 'off' ? 'off' : 'on',
+    offSince: time(kv.OFF_SINCE),
+    offBy: kv.OFF_BY || null,
+    autoOff: kv.AUTO_OFF || 'never',
+    autoOffSource: kv.SOURCE || 'default',
+    idleSince: time(kv.IDLE_SINCE),
+    offAt: time(kv.OFF_AT),
+  };
+}
+
+app.get('/api/sites/:name/power', requireValidSiteName, async (req, res) => {
+  const { code, stdout, stderr } = await runWpdev(['auto-off', req.params.name]);
+  if (code !== 0) return res.status(500).json({ code, stdout, stderr });
+  res.json(parsePower(stdout));
+});
+
+// {state: 'on'|'off'} switches it; {autoOff: '3d'|'never'|'default'} sets
+// its auto-off. Either or both. Answers with the new state.
+app.put('/api/sites/:name/power', requireValidSiteName, async (req, res) => {
+  const { state, autoOff } = req.body || {};
+  if (state != null && state !== 'on' && state !== 'off') {
+    return res.status(400).json({ error: "state must be 'on' or 'off'" });
+  }
+  if (autoOff != null && !/^(\d{1,4}[mhdw]|never|default)$/.test(String(autoOff))) {
+    return res.status(400).json({ error: 'autoOff must look like 30m, 12h, 3d or 1w, or be never / default' });
+  }
+  let stdout = '';
+  let stderr = '';
+  for (const args of [
+    autoOff != null && ['auto-off', req.params.name, String(autoOff)],
+    // Switching on may have to start a PHP container (or build its image).
+    state && [state, req.params.name],
+  ].filter(Boolean)) {
+    const run = await runWpdev(args, { timeoutMs: 600000 });
+    stdout += run.stdout;
+    stderr += run.stderr;
+    if (run.code !== 0) return res.status(500).json({ ...run, stdout, stderr });
+  }
+  const now = await runWpdev(['auto-off', req.params.name]);
+  res.json({ ...parsePower(now.stdout), stdout, stderr });
+});
+
 app.get('/api/shares', async (req, res) => {
   const { code, stdout, stderr } = await runWpdev(['share']);
   if (code !== 0) return res.status(500).json({ code, stdout, stderr });
@@ -674,7 +727,8 @@ app.get('/api/qr', (req, res) => {
 
 // The minute clock: `wpdev db-backup --due` backs up whichever sites are
 // due, `debug-log --rotate-due` moves any debug.log past 50 MB aside, and
-// `share --expire-due` ends shares whose time is up.
+// `share --expire-due` ends shares whose time is up, and `auto-off --due`
+// switches off sites nobody has visited for as long as their setting says.
 // Never two rounds at once -- a slow backup just delays the next.
 let minuteTasksRunning = false;
 setInterval(async () => {
@@ -685,6 +739,7 @@ setInterval(async () => {
       ['scheduled backups', ['db-backup', '--due']],
       ['debug.log rotation', ['debug-log', '--rotate-due']],
       ['share expiry', ['share', '--expire-due']],
+      ['auto-off', ['auto-off', '--due']],
     ]) {
       const { code, stdout, stderr } = await runWpdev(args, DB_TIMEOUT);
       const out = `${stdout}${stderr}`.trim();

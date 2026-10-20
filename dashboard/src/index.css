@@ -1848,6 +1848,16 @@ button.version:hover {
   color: var(--text);
 }
 
+/* Switched off (`wpdev off`): faded, but its controls stay full strength. */
+.site-card.is-off .site-card-head > :not(.site-card-tools),
+.site-card.is-off .chips {
+  opacity: 0.55;
+}
+
+.site-card.is-off {
+  background: var(--surface-2);
+}
+
 .site-note {
   display: inline-flex;
   align-items: center;

@@ -35,6 +35,10 @@ server {
     # this domain over to the admin domain. Same [f] glob: off = no file.
     include /etc/nginx/sites/admin-domain/frontend/DOMAIN.con[f];
 
+    # Switched off (`wpdev off`): answers every request with a short "this
+    # site is off" page before PHP is involved. Same [f] glob: on = no file.
+    include /etc/nginx/sites/off/DOMAIN.con[f];
+
     # Main WordPress rewrite logic
     location / {
         try_files $uri $uri/ /index.php?$args;

@@ -111,6 +111,8 @@ export const api = {
   clearDebugLog: (name) => request('DELETE', `/api/sites/${name}/debug/log`),
   downloadDebugLog,
   shares: () => request('GET', '/api/shares'),
+  power: (name) => request('GET', `/api/sites/${name}/power`),
+  setPower: (name, body) => request('PUT', `/api/sites/${name}/power`, body),
   share: (name) => request('GET', `/api/sites/${name}/share`),
   startShare: (name, body) => request('PUT', `/api/sites/${name}/share`, body),
   stopShare: (name) => request('DELETE', `/api/sites/${name}/share`),
