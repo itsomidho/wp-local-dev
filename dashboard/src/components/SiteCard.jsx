@@ -12,6 +12,7 @@ import {
   Folder,
   Copy,
   Share2,
+  Power,
 } from 'lucide-react';
 import { api, siteUrl } from '../api';
 import { stripAnsi } from '../lib/parse';
@@ -19,6 +20,60 @@ import { Avatar, Chip, StatusDot, useToast } from './ui';
 
 // Running shares (`wpdev share`) by domain, provided by App from its poll.
 export const SharesContext = createContext({});
+
+// Called after a site is switched on or off, so App re-reads the site list
+// and status.
+export const PowerContext = createContext(() => {});
+
+// Switch a site on or off (`wpdev on|off`). Switching on can take a few
+// seconds: its PHP container may have to start first.
+export function PowerButton({ site, className = 'btn btn-ghost btn-xs btn-icon', withLabel = false }) {
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const onChanged = useContext(PowerContext);
+  const next = site.off ? 'on' : 'off';
+
+  const toggle = () => {
+    setBusy(true);
+    api
+      .setPower(site.name, { state: next })
+      .then(() =>
+        toast({
+          tone: 'success',
+          title: next === 'on' ? `${site.domain} is on` : `${site.domain} is off`,
+          description: next === 'on' ? undefined : 'Its PHP and WP-Cron stop until you switch it back on.',
+        }),
+      )
+      .catch((e) =>
+        toast({
+          tone: 'error',
+          title: `Couldn't switch ${site.domain} ${next}`,
+          description: lastLine(e.data?.stdout || e.data?.stderr) || e.message,
+          duration: 8000,
+        }),
+      )
+      .finally(() => {
+        setBusy(false);
+        onChanged();
+      });
+  };
+
+  const label = site.off ? 'Switch on' : 'Switch off';
+  return (
+    <button
+      type="button"
+      className={`${className}${site.off ? '' : ' power-on'}`}
+      onClick={toggle}
+      disabled={busy}
+      aria-busy={busy}
+      title={site.off ? 'Switch this site back on' : 'Switch this site off to save resources'}
+      aria-label={`${label} ${site.domain}`}
+    >
+      <Power size={15} />
+      {withLabel && (busy ? (site.off ? 'Starting…' : 'Stopping…') : label)}
+    </button>
+  );
+}
 
 // The project's path on the host, from /api/settings -- asked once, shared
 // by every card.
@@ -160,6 +215,7 @@ function FolderMenu({ site }) {
 // answered at all.
 export function httpTone(code) {
   if (!code) return { tone: 'muted', label: 'Not checked yet' };
+  if (code === 'off') return { tone: 'muted', label: 'Switched off' };
   if (code === 'down' || code === '000') return { tone: 'danger', label: 'Unreachable (no response)' };
   if (code === 'timeout') return { tone: 'warning', label: 'Slow (no answer within 10s)' };
   if (/^[23]/.test(code)) return { tone: 'success', label: `Reachable (HTTP ${code})` };
@@ -175,6 +231,11 @@ export function SiteChips({ site, status }) {
   const share = useContext(SharesContext)[site.domain];
   return (
     <div className="chips">
+      {site.off && (
+        <Chip tone="muted" icon={Power} title="Switched off: no PHP, no WP-Cron. Switch it on to use it.">
+          Off
+        </Chip>
+      )}
       {share && (
         <Chip tone="success" icon={Share2} title={`Shared until ${new Date(share.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${share.publicUrl ? `, also at ${share.publicUrl}` : ''}`}>
           {share.publicUrl ? 'Shared publicly' : 'Shared'}
@@ -199,7 +260,7 @@ export function SiteChips({ site, status }) {
           {status.database === 'OK' ? 'DB' : `DB ${status.database}`}
         </Chip>
       )}
-      {status?.cache === 'Connected' && (
+      {!site.off && status?.cache === 'Connected' && (
         <Chip tone="info" icon={Layers} title="Redis object cache connected">
           Redis
         </Chip>
@@ -210,10 +271,12 @@ export function SiteChips({ site, status }) {
 
 export default function SiteCard({ site, status, onManage }) {
   const url = siteUrl(site.domain);
-  const reach = httpTone(status?.http);
+  // The site list knows about on/off first (it's re-read right after a
+  // switch); status may still be from before.
+  const reach = httpTone(site.off ? 'off' : status?.http === 'off' ? null : status?.http);
 
   return (
-    <article className="site-card">
+    <article className={`site-card${site.off ? ' is-off' : ''}`}>
       <header className="site-card-head">
         <Avatar name={site.name} size={42} />
         <div className="site-card-title">
@@ -222,7 +285,7 @@ export default function SiteCard({ site, status, onManage }) {
           </a>
           <span className="site-note">
             <StatusDot tone={reach.tone} label={reach.label} />
-            {reach.tone === 'muted' ? site.note : reach.label}
+            {reach.tone === 'muted' && !site.off ? site.note : reach.label}
           </span>
         </div>
         <div className="site-card-tools">
@@ -235,6 +298,7 @@ export default function SiteCard({ site, status, onManage }) {
           >
             <Share2 size={15} />
           </button>
+          <PowerButton site={site} />
           <FolderMenu site={site} />
         </div>
       </header>
@@ -242,12 +306,18 @@ export default function SiteCard({ site, status, onManage }) {
       <SiteChips site={site} status={status} />
 
       <footer className="site-card-actions">
-        <a className="btn btn-ghost btn-sm" href={url} target="_blank" rel="noreferrer">
-          <ArrowUpRight size={15} /> Visit
-        </a>
-        <a className="btn btn-ghost btn-sm" href={`${url}/wp-admin/`} target="_blank" rel="noreferrer">
-          <LayoutDashboard size={15} /> Admin
-        </a>
+        {site.off ? (
+          <PowerButton site={site} className="btn btn-primary btn-sm" withLabel />
+        ) : (
+          <>
+            <a className="btn btn-ghost btn-sm" href={url} target="_blank" rel="noreferrer">
+              <ArrowUpRight size={15} /> Visit
+            </a>
+            <a className="btn btn-ghost btn-sm" href={`${url}/wp-admin/`} target="_blank" rel="noreferrer">
+              <LayoutDashboard size={15} /> Admin
+            </a>
+          </>
+        )}
         <button type="button" className="btn btn-soft btn-sm site-card-manage" onClick={() => onManage(site)}>
           <Settings2 size={15} /> Manage
         </button>

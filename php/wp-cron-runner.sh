@@ -21,12 +21,17 @@ flock -n 200 || { echo "[wp-cron] $(date '+%Y-%m-%d %H:%M:%S') previous run stil
 
 # Multiple PHP versions each run their own copy of this script in their own
 # container, all sharing the same /var/www — so each must only process sites
-# actually assigned to ITS version (sites/<name>/.php-version). Getting this
-# wrong wouldn't just double-run cron: a site assigned to 8.4 would have its
-# scheduled events executed under 8.1's interpreter instead, which can
-# outright fatal-error on version-specific syntax — confirmed for real while
-# building this (Composer/PHP-version fatal on a real site). Sites with no
-# marker file (predate multi-PHP support) are treated as the default version.
+# actually assigned to ITS version. Getting this wrong wouldn't just
+# double-run cron: a site assigned to 8.4 would have its scheduled events
+# executed under 8.1's interpreter instead, which can outright fatal-error
+# on version-specific syntax.
+#
+# A site's PHP_VERSION and on/off state (SITE_STATE, `wpdev off`) come from
+# wpdev's config/sites/<name>.env, mounted read-only at /etc/wpdev/sites. A
+# site with no PHP_VERSION there gets the default version; one switched off
+# is skipped, so it costs nothing until it's turned back on. (These used to
+# be read from sites/<name>/.php-version, which wpdev stopped writing when
+# its settings moved to config/sites -- every site then ran under 8.2.)
 #
 # Read from /etc/php-version (written by entrypoint.sh at container start),
 # NOT $PHP_VERSION — cron jobs get a stripped environment that never sees
@@ -34,12 +39,21 @@ flock -n 200 || { echo "[wp-cron] $(date '+%Y-%m-%d %H:%M:%S') previous run stil
 # internally too, so there is no env var to read at all by the time this runs.
 my_version="$(cat /etc/php-version 2>/dev/null)"
 [ -z "$my_version" ] && my_version="8.2"
+default_version="8.2"
+config_dir="/etc/wpdev/sites"
+
+# site_setting <site-name> <KEY>: the value saved in its settings, or nothing.
+site_setting() {
+    sed -n "s/^$2=//p" "${config_dir}/$1.env" 2>/dev/null | tail -1
+}
 
 for config in /var/www/*/wp-config.php; do
     [ -f "$config" ] || continue
     site_dir="$(dirname "$config")"
-    site_version="$(cat "${site_dir}/.php-version" 2>/dev/null)"
-    [ -z "$site_version" ] && site_version="8.2"
+    site_name="$(basename "$site_dir")"
+    [ "$(site_setting "$site_name" SITE_STATE)" = "off" ] && continue
+    site_version="$(site_setting "$site_name" PHP_VERSION)"
+    [ -z "$site_version" ] && site_version="$default_version"
     [ "$site_version" = "$my_version" ] || continue
     echo "[wp-cron] $(date '+%Y-%m-%d %H:%M:%S') ${site_dir} (php${my_version})"
     /usr/local/bin/wp cron event run --due-now --path="$site_dir" --allow-root 2>&1

@@ -27,7 +27,7 @@ import AddSiteDialog from './components/AddSiteDialog';
 import SiteManageDialog from './components/SiteManageDialog';
 import UpdateDialog from './components/UpdateDialog';
 import DebugPage from './components/DebugPage';
-import { SharesContext } from './components/SiteCard';
+import { PowerContext, SharesContext } from './components/SiteCard';
 import LogModal, { LogsDrawer } from './components/LogModal';
 import ConfirmDialog from './components/ConfirmDialog';
 import DocsPage from './components/DocsPage';
@@ -258,6 +258,13 @@ export default function App() {
     if (page === 'doctor') runDoctor();
   }, [refresh, refreshStatus, checkForUpdate, page, runDoctor]);
 
+  // After a site is switched on or off: the list says so right away, the
+  // status table (HTTP, Redis) after its checks.
+  const onPowerChanged = useCallback(() => {
+    refresh();
+    refreshStatus();
+  }, [refresh, refreshStatus]);
+
   const siteList = useMemo(() => sites || [], [sites]);
   const statusBySite = useMemo(() => Object.fromEntries(status.sites.map((r) => [r.domain, r])), [status.sites]);
 
@@ -431,6 +438,7 @@ export default function App() {
 
   return (
     <SharesContext.Provider value={sharesByDomain}>
+    <PowerContext.Provider value={onPowerChanged}>
     <div className={`shell${page === 'docs' ? ' shell-docs' : ''}`}>
       <Sidebar
         page={page}
@@ -581,6 +589,7 @@ export default function App() {
         />
       )}
     </div>
+    </PowerContext.Provider>
     </SharesContext.Provider>
   );
 }

@@ -113,6 +113,9 @@ services:
       - ./php/mail.ini:/usr/local/etc/php/conf.d/mail.ini
       - ./php/msmtprc:/etc/msmtprc
       - ./php/wp-cron-runner.sh:/usr/local/bin/wp-cron-runner.sh
+      # wpdev's per-site settings, read-only, so the cron runner knows each
+      # site's PHP_VERSION and whether it's switched off (SITE_STATE).
+      - ./config/sites:/etc/wpdev/sites:ro
       - ./logs:/var/log/wpdev
       # Shared with nginx so the nginx-helper plugin can unlink a site's own
       # cached pages directly on post save (see `wpdev cache`) -- its

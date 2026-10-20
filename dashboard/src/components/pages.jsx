@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { siteUrl } from '../api';
 import MachineStats from './MachineStats';
-import SiteCard, { SiteChips, httpTone } from './SiteCard';
+import SiteCard, { PowerButton, SiteChips, httpTone } from './SiteCard';
 import Terminal, { stripAnsiToLines } from './Terminal';
 import { Avatar, Chip, EmptyState, Skeleton, StatusDot, useFollowPage } from './ui';
 import { idlePhpVersions, mergeServices, serviceInfo } from '../lib/services';
@@ -33,8 +33,9 @@ import { idlePhpVersions, mergeServices, serviceInfo } from '../lib/services';
 // How many sites the Overview lists before "+N more" (two columns of 4).
 const OVERVIEW_SITES = 8;
 
+// A site that's switched off doesn't keep its PHP version running.
 function phpInUse(sites) {
-  return [...new Set(sites.map((s) => s.php).filter(Boolean))];
+  return [...new Set(sites.filter((s) => !s.off).map((s) => s.php).filter(Boolean))];
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +60,9 @@ function Kpi({ icon: Icon, label, value, hint, tone = 'brand', loading }) {
 export function OverviewPage({ sites, sitesLoading, statusBySite, services, status, stats, statsError, onManage, onAdd, onNavigate, onOpenTool }) {
   const merged = mergeServices(services, phpInUse(sites));
   const running = merged.filter((s) => s.state === 'running').length;
-  const reachable = sites.filter((s) => /^[23]/.test(statusBySite[s.domain]?.http || '')).length;
+  const onSites = sites.filter((s) => !s.off);
+  const offCount = sites.length - onSites.length;
+  const reachable = onSites.filter((s) => /^[23]/.test(statusBySite[s.domain]?.http || '')).length;
   const statusRows = Object.values(statusBySite);
   const mysql = statusRows.find((r) => r.mysql && r.mysql !== 'n/a')?.mysql;
   const loadingStatus = !status.checkedAt;
@@ -70,10 +73,10 @@ export function OverviewPage({ sites, sitesLoading, statusBySite, services, stat
         <Kpi icon={Globe} label="Sites" value={sites.length} hint={sites.length === 1 ? 'site provisioned' : 'sites provisioned'} loading={sitesLoading} />
         <Kpi
           icon={Activity}
-          tone={!loadingStatus && reachable < sites.length ? 'warning' : 'success'}
+          tone={!loadingStatus && reachable < onSites.length ? 'warning' : 'success'}
           label="Reachable"
-          value={`${reachable}/${sites.length}`}
-          hint="answering over HTTPS"
+          value={`${reachable}/${onSites.length}`}
+          hint={offCount ? `answering over HTTPS · ${offCount} switched off` : 'answering over HTTPS'}
           loading={loadingStatus}
         />
         <Kpi
@@ -250,7 +253,7 @@ function RowSkeletons() {
 }
 
 function SiteRow({ site, status, onManage }) {
-  const reach = httpTone(status?.http);
+  const reach = httpTone(site.off ? 'off' : status?.http === 'off' ? null : status?.http);
   return (
     <li className="site-row">
       <Avatar name={site.name} size={36} />
@@ -261,6 +264,7 @@ function SiteRow({ site, status, onManage }) {
         <SiteChips site={site} status={status} />
       </div>
       <StatusDot tone={reach.tone} label={reach.label} />
+      <PowerButton site={site} />
       <button type="button" className="btn btn-soft btn-sm" onClick={() => onManage(site)} aria-label={`Manage ${site.domain}`}>
         <Settings2 size={14} /> <span className="hide-sm">Manage</span>
       </button>

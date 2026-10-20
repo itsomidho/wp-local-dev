@@ -42,6 +42,13 @@
 #   wpdev db-import <site> <file>   Replace that site's database from a .sql or .sql.gz dump
 #                                   (--tables=a,b: only those, keeping the rest;
 #                                    --rewrite-urls: re-point the dump's URLs to this site)
+#   wpdev off <site>... | --all     Switch a site off to save resources: it shows a "this site
+#                                   is off" page, its WP-Cron stops, and its PHP container stops
+#                                   when no site that's on needs that version. Nothing is deleted.
+#   wpdev on <site>... | --all      Switch it back on (a few seconds)
+#   wpdev auto-off <site> [3d|12h|never|default]  Switch it off by itself after that long
+#                                   without a visit (default: AUTO_OFF_AFTER in .env);
+#                                   "--due" switches off whichever sites are past it
 #   wpdev list                List configured site domains
 #   wpdev hosts               Print /etc/hosts entries needed for all sites
 #   wpdev check-domain <domain>  Whether <domain> is free for a new site (and why not)
@@ -146,6 +153,15 @@ cancelled() { echo "Cancelled."; exit 1; }
 #   CACHE_TTL             e.g. 5m or 1h (default 60m)
 #   CACHE_BYPASS_COOKIES  space-separated cookie names (trailing * = prefix)
 #   CACHE_BYPASS_PATHS    space-separated URL paths (trailing * = prefix)
+#   SITE_STATE            "off" while `wpdev off` has it switched off (none = on)
+#   OFF_SINCE / OFF_BY    when it was switched off, and by whom: "you" or "auto-off"
+#   LAST_ON               when `wpdev on` last switched it on (epoch) -- auto-off's
+#                         clock starts there when nobody has visited since
+#   AUTO_OFF              `wpdev auto-off`: idle time before it switches itself
+#                         off (e.g. 3d), or "never"; none = AUTO_OFF_AFTER in .env
+#   AUTO_OFF_SET          when `wpdev auto-off <site>` last changed it (epoch): its
+#                         clock starts no earlier, so a new limit never applies
+#                         retroactively
 SITE_CONFIG_DIR="config/sites"
 site_config_file() { echo "${SITE_CONFIG_DIR}/$1.env"; }
 
@@ -257,11 +273,14 @@ site_url() {
 # is "timeout", not "down" -- those are different problems, and a 3s limit
 # once reported a working site as down. The `|| rc=$?`: a failed probe
 # must report, not abort the caller under set -e.
+# wpdev's own requests carry this User-Agent, so auto-off doesn't count
+# them as visits (see site_last_visit).
+WPDEV_PROBE_UA="wpdev-probe"
 site_http_code() {
     local domain="$1" path="${2:-/}" port target code rc=0
     port="$(nginx_https_port)"
     if [ -n "${WPDEV_IN_API:-}" ]; then target="nginx:443"; else target="127.0.0.1:${port}"; fi
-    code="$(curl -sk --noproxy '*' --connect-timeout 3 --max-time 10 --connect-to "${domain}:${port}:${target}" \
+    code="$(curl -sk -A "$WPDEV_PROBE_UA" --noproxy '*' --connect-timeout 3 --max-time 10 --connect-to "${domain}:${port}:${target}" \
         -o /dev/null -w "%{http_code}" "https://${domain}:${port}${path}" 2>/dev/null)" || rc=$?
     if [ "$rc" -eq 28 ] && [ "${code:-000}" = "000" ]; then
         code="timeout"
@@ -403,6 +422,9 @@ show_help() {
     echo "  debug-log <site> [--lines=N] [--follow] | <site> clear  Show (or follow, or empty) its debug.log; logs past 50 MB are rotated to .1"
     echo "  share [<site> [on [--for=1h] [--public] [--password=X] [--admin] | off]]  Share a site with other devices for a while: on your network, and with --public at a temporary https:// address"
     echo "  db-import <site> <file> [--tables=a,b] [--rewrite-urls] [--yes]  Replace that site's database from a .sql or .sql.gz dump; --tables: only those tables, the rest kept; --rewrite-urls re-points the dump's URLs to this site"
+    echo "  off <site>... | --all     Switch a site off to save resources: an \"it's off\" page, no WP-Cron, and its PHP container stops when no site that's on needs it"
+    echo "  on <site>... | --all      Switch it back on"
+    echo "  auto-off [<site> [3d|12h|never|default] | --due]  Switch a site off by itself after that long without a visit (default: AUTO_OFF_AFTER in .env)"
     echo "  list                      List configured site domains"
     echo "  hosts                     Print /etc/hosts entries needed for all sites"
     echo "  open <name> [--editor=nvim]  Open a site's folder in the file manager, or in Neovim"
@@ -1237,6 +1259,7 @@ cmd_up() {
     [ -z "$(pending_image_builds)" ] || compose_build $(wanted_services)
     docker compose up -d $(wanted_services)
     upgrade_vhosts
+    sync_off_pages
     stop_unused_php
     if [ -n "${WPDEV_IN_API:-}" ] && api_is_stale; then
         recreate_api_detached "up -d"
@@ -1301,11 +1324,14 @@ require_stack_services() {
 # docker-compose.yml, but only the versions some site uses run. These are
 # the pieces `up`, `update`, `restart`, `remove` and doctor share.
 
-# PHP versions that some site uses -- its PHP_VERSION, or the default for a
-# site saved without one. Sorted, one per line; empty with no sites.
+# PHP versions that some site that's on uses -- its PHP_VERSION, or the
+# default for a site saved without one. A site switched off (`wpdev off`)
+# doesn't count, so its version's container stops once no other site needs
+# it. Sorted, one per line; empty with no sites.
 php_versions_in_use() {
     local name v
     for name in $(site_names); do
+        site_is_off "$name" && continue
         v="$(site_get "$name" PHP_VERSION)"
         echo "${v:-$DEFAULT_PHP_VERSION}"
     done | sort -uV
@@ -1345,7 +1371,7 @@ stop_unused_php() {
         svc="$(php_slug "$v")"
         case "$in_use" in *" ${svc} "*) continue ;; esac
         docker inspect "wp-${svc}" >/dev/null 2>&1 || continue
-        docker compose rm -sf "$svc" >/dev/null 2>&1 && print_info "Stopped wp-${svc} (no site uses PHP ${v})"
+        docker compose rm -sf "$svc" >/dev/null 2>&1 && print_info "Stopped wp-${svc} (no site that's on uses PHP ${v})"
     done
     return 0
 }
@@ -1507,6 +1533,7 @@ cmd_update() {
     sync_app_version
     docker compose up -d --force-recreate $(wanted_services)
     upgrade_vhosts
+    sync_off_pages
     stop_unused_php
     # Always, not just when api_is_stale: the pull may have changed api's
     # code, which only a rebuild picks up -- its config hash can't show it.
@@ -1537,6 +1564,7 @@ rebuild_stale_images() {
     sync_app_version
     docker compose up -d $(wanted_services)
     upgrade_vhosts
+    sync_off_pages
     stop_unused_php
     if [ -n "$api_before" ] && { [ "$(docker image inspect -f '{{.Id}}' "$api_image" 2>/dev/null)" != "$api_before" ] || api_is_stale; }; then
         recreate_api_detached "up -d"
@@ -1687,7 +1715,14 @@ status_site_row() {
     [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
     php_svc="$(php_slug "$php_version")"
 
-    http_code="$(site_http_code "$domain")"
+    # Switched off: nginx answers with the "this site is off" page and its
+    # PHP may well be stopped, so there's nothing to probe. "off" in the
+    # HTTP column is what the dashboard reads.
+    if site_is_off "$site_name"; then
+        http_code="off"
+    else
+        http_code="$(site_http_code "$domain")"
+    fi
 
     db_status="n/a"
     if [ -f "$config" ] && [ "$mysql_up" -eq 1 ] && [ -n "${DB_ROOT_PASSWORD:-}" ]; then
@@ -1704,7 +1739,7 @@ status_site_row() {
     fi
 
     php_reachable=0
-    if [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
+    if [ "$http_code" != "off" ] && [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
         php_reachable=1
     fi
 
@@ -1993,6 +2028,10 @@ cmd_doctor() {
             config="sites/${site_name}/wp-config.php"
 
             echo "${domain}:"
+
+            if site_is_off "$site_name"; then
+                print_info "  Switched off ($(off_description "$site_name")) — wpdev on ${site_name}"
+            fi
 
             if grep -q "[[:space:]]${domain}$" /etc/hosts 2>/dev/null || grep -q "[[:space:]]${domain}[[:space:]]" /etc/hosts 2>/dev/null; then
                 print_info "  /etc/hosts entry present"
@@ -2593,6 +2632,17 @@ ensure_vhost_includes() {
             !done && /^    location \/ \{/ {
                 print "    # Admin domain (`wpdev admin-domain`)."
                 print "    include /etc/nginx/sites/admin-domain/frontend/" d ".con[f];"
+                print ""
+                done = 1
+            }
+            { print }
+        ' "$vhost" > "${vhost}.new" && mv "${vhost}.new" "$vhost"
+    fi
+    if ! grep -q 'sites/off/' "$vhost"; then
+        awk -v d="$1" '
+            !done && /^    location \/ \{/ {
+                print "    # Switched off (`wpdev off`)."
+                print "    include /etc/nginx/sites/off/" d ".con[f];"
                 print ""
                 done = 1
             }
@@ -3753,6 +3803,7 @@ cmd_list() {
             php_version="$(site_get "$site_name" PHP_VERSION)"
             [ -z "$php_version" ] && php_version="$DEFAULT_PHP_VERSION"
             wp_status="provisioned, php ${php_version}"
+            site_is_off "$site_name" && wp_status="${wp_status}, off"
         else
             wp_status="no site files found (expected sites/${site_name})"
         fi
@@ -4076,7 +4127,7 @@ cmd_remove() {
     if [ -n "$admin" ] && ! admin_domain_in_use "$admin" "$domain"; then
         rm -f "nginx/ssl/certs/${admin}.pem" "nginx/ssl/private/${admin}-key.pem"
     fi
-    rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem" "$(media_proxy_conf "$domain")" "$(admin_domain_conf "$domain")" "$(admin_domain_frontend_conf "$domain")"
+    rm -f "nginx/sites/${domain}.conf" "nginx/ssl/certs/${domain}.pem" "nginx/ssl/private/${domain}-key.pem" "$(media_proxy_conf "$domain")" "$(admin_domain_conf "$domain")" "$(admin_domain_frontend_conf "$domain")" "$(off_conf "$domain")"
     print_info "Removed Nginx config and SSL certificate${admin:+ (and admin domain ${admin})}"
     rm -f "$(site_config_file "$site_name")"
     print_info "Removed $(site_config_file "$site_name")"
@@ -5402,6 +5453,343 @@ cmd_share() {
     esac
 }
 
+# ---------------------------------------------------------------------------
+# On / off: a site you're not using costs nothing
+# ---------------------------------------------------------------------------
+# Sites share their containers (one PHP-FPM per version, one MySQL, nginx),
+# so "off" isn't a container of its own stopping. It's everything the site
+# makes the stack do: nginx answers it with a short page before PHP ever
+# sees the request, WP-Cron skips it (php/wp-cron-runner.sh), and its PHP
+# version stops counting as in use (php_versions_in_use) -- so that
+# container stops when no site that's on needs it. Files, database and
+# settings are untouched, and `on` brings it back in seconds.
+
+off_conf() { echo "nginx/sites/off/$1.conf"; }
+
+site_is_off() { [ "$(site_get "$1" SITE_STATE)" = "off" ]; }
+
+# epoch -> "2026-10-20 14:02", or nothing.
+format_epoch() {
+    [ -n "$1" ] && date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null
+    return 0
+}
+
+# "since 2026-10-20 14:02, by auto-off", for messages.
+off_description() {
+    local since by
+    since="$(format_epoch "$(site_get "$1" OFF_SINCE)")"
+    by="$(site_get "$1" OFF_BY)"
+    echo "since ${since:-?}, by ${by:-you}"
+}
+
+# The "this site is off" page for <domain>. Server-level directives only,
+# so it answers before any location block -- the media proxy's and admin
+# domain's included. No $ or ' in the page: nginx would read them.
+render_off_conf() {
+    local domain="$1" site="$2" conf
+    conf="$(off_conf "$domain")"
+    mkdir -p "$(dirname "$conf")"
+    cat > "$conf" <<CONF
+# Managed by \`wpdev off\` for ${domain} -- \`wpdev on ${site}\` removes it.
+add_header Cache-Control "no-store" always;
+add_header Retry-After 3600 always;
+default_type text/html;
+return 503 '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${domain} is switched off</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.6 system-ui,sans-serif;background:#f6f7f9;color:#1d2327}main{max-width:34rem;padding:2rem 1rem}h1{font-size:1.4rem;margin:0 0 .5rem}code{background:#e3e6ea;padding:.1rem .4rem;border-radius:4px}@media (prefers-color-scheme:dark){body{background:#16181d;color:#e6e8ec}code{background:#2a2e36}}</style></head><body><main><h1>${domain} is switched off</h1><p>This local site is off to save resources. Its files and database are untouched.</p><p>Turn it back on with <code>wpdev on ${site}</code>, or from the dashboard.</p></main></body></html>';
+CONF
+}
+
+# Waits (up to 20s) until PHP-FPM in <service> accepts connections: its
+# container counts as started a moment before that, and a page served in
+# that moment is a 502.
+wait_for_php() {
+    local i
+    for i in $(seq 1 40); do
+        docker exec "wp-$1" bash -c 'echo > /dev/tcp/127.0.0.1/9000' >/dev/null 2>&1 && return 0
+        sleep 0.5
+    done
+    print_warning "wp-$1 started but PHP-FPM isn't answering yet -- the site may show an error for a moment"
+}
+
+# Starts <service> quietly (Compose's progress lines go nowhere) and waits
+# until it serves. A first-time image build still says so, on stdout.
+start_php_quietly() {
+    ensure_php_running "$1" 2>/dev/null || print_error "Couldn't start wp-$1 -- try: docker compose up -d $1"
+    wait_for_php "$1"
+}
+
+# Nginx picks up on/off changes; a stopped nginx reads them when it starts.
+reload_nginx_for_power() {
+    container_running wp-nginx || return 0
+    reload_nginx_or_fail || print_warning "nginx -t failed after the change -- run: wpdev reload-nginx"
+}
+
+# Marks <site> off and writes its page. Applying it (nginx reload, PHP stop)
+# is the caller's job, once for however many sites it switched.
+site_off() {
+    local site="$1" by="$2" domain
+    domain="$(site_domain_of "$site")"
+    if [ -n "$(site_get "$site" SHARE_UNTIL)" ]; then
+        share_off "$site"
+        print_info "Stopped sharing ${domain}"
+    fi
+    site_set "$site" SITE_STATE off
+    site_set "$site" OFF_SINCE "$(date +%s)"
+    site_set "$site" OFF_BY "$by"
+    [ -f "nginx/sites/${domain}.conf" ] && ensure_vhost_includes "$domain"
+    render_off_conf "$domain" "$site"
+}
+
+# Every off site has its page and no site that's on has one -- after a
+# snapshot restore, a hand-edited config, or an upgrade from before on/off.
+sync_off_pages() {
+    local site domain changed=0 conf
+    for site in $(site_names); do
+        domain="$(site_domain_of "$site")"
+        conf="$(off_conf "$domain")"
+        if site_is_off "$site"; then
+            if [ ! -f "$conf" ] || ! grep -q 'sites/off/' "nginx/sites/${domain}.conf"; then
+                ensure_vhost_includes "$domain"
+                render_off_conf "$domain" "$site"
+                changed=1
+            fi
+        elif [ -f "$conf" ]; then
+            rm -f "$conf"
+            changed=1
+        fi
+    done
+    [ "$changed" = 1 ] && reload_nginx_for_power
+    return 0
+}
+
+# The site names a command's arguments mean: each one given, or every site
+# with --all. Unknown ones are an error before anything changes.
+power_targets() {
+    local a all=0 names=""
+    for a in "$@"; do
+        case "$a" in
+            --all) all=1 ;;
+            -*) print_error "Unknown option: ${a}" >&2 ;;
+            *)
+                resolve_site "$a"
+                [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${a}" >&2
+                names="${names} ${site_name}"
+                ;;
+        esac
+    done
+    [ "$all" = 1 ] && names="$(site_names | tr '\n' ' ')"
+    echo $names
+}
+
+# wpdev off <site>... | --all
+cmd_off() {
+    local targets site domain switched=0
+    targets="$(power_targets "$@")"
+    [ -n "$targets" ] || { print_warning "Usage: wpdev off <site>... | --all"; return 1; }
+    for site in $targets; do
+        domain="$(site_domain_of "$site")"
+        if site_is_off "$site"; then
+            print_info "${domain} is already off"
+            continue
+        fi
+        site_off "$site" you
+        print_info "${domain} is off -- wpdev on ${site} brings it back"
+        switched=1
+    done
+    [ "$switched" = 1 ] || return 0
+    reload_nginx_for_power
+    stop_unused_php
+}
+
+# wpdev on <site>... | --all
+# Its PHP starts before its page goes, so there's no moment of 502s.
+cmd_on() {
+    local targets site domain svc started=" " switched=0
+    targets="$(power_targets "$@")"
+    [ -n "$targets" ] || { print_warning "Usage: wpdev on <site>... | --all"; return 1; }
+    for site in $targets; do
+        domain="$(site_domain_of "$site")"
+        if ! site_is_off "$site"; then
+            print_info "${domain} is already on"
+            continue
+        fi
+        svc="$(site_php_service "$site")"
+        if container_running wp-nginx; then
+            case "$started" in
+                *" ${svc} "*) ;;
+                *) start_php_quietly "$svc"; started="${started}${svc} " ;;
+            esac
+        fi
+        site_unset "$site" SITE_STATE
+        site_unset "$site" OFF_SINCE
+        site_unset "$site" OFF_BY
+        site_set "$site" LAST_ON "$(date +%s)"
+        rm -f "$(off_conf "$domain")"
+        print_info "${domain} is on: $(site_url "$domain")"
+        switched=1
+    done
+    [ "$switched" = 1 ] || return 0
+    reload_nginx_for_power
+    container_running wp-nginx || print_info "The stack isn't running -- wpdev up starts it with these sites on."
+}
+
+# A site's auto-off setting -- its own AUTO_OFF, else AUTO_OFF_AFTER in
+# .env, else never -- and where it came from: "<value> <site|default>".
+auto_off_setting() {
+    local v
+    v="$(site_get "$1" AUTO_OFF)"
+    if [ -n "$v" ]; then echo "$v site"; return 0; fi
+    v="$(sed -n 's/^AUTO_OFF_AFTER=//p' .env 2>/dev/null | tail -1 | tr -d '"\r'"'"' ')"
+    echo "${v:-never} default"
+}
+
+# When <site> last had a visit (epoch), from its nginx access log -- the
+# newest request that isn't wpdev's own check (status) or WordPress
+# calling itself (loopbacks, cron spawns). Nothing when there's none.
+site_last_visit() {
+    local log="logs/nginx/${1}_access.log" line stamp
+    [ -r "$log" ] || return 0
+    line="$(tac "$log" 2>/dev/null | grep -v -m1 -e "\"${WPDEV_PROBE_UA}\"" -e '"WordPress/' || true)"
+    stamp="$(echo "$line" | sed -n 's/^[^[]*\[\([^]]*\)\].*/\1/p')"
+    [ -n "$stamp" ] || return 0
+    # 20/Oct/2026:19:18:03 +0000 -> 20 Oct 2026 19:18:03 +0000
+    date -d "$(echo "$stamp" | sed 's|/| |g; s|:| |')" +%s 2>/dev/null || true
+}
+
+# AUTO_OFF_AFTER from .env as it was first seen, "<value> <epoch>", kept in
+# .wpdev/ -- .env is edited by hand, so this is how wpdev learns when the
+# default changed. Updated (and the clock restarted) whenever it differs.
+AUTO_OFF_DEFAULT_STATE=".wpdev/auto-off-default"
+auto_off_default_since() {
+    local value="$1" saved_value saved_at
+    read -r saved_value saved_at 2>/dev/null <"$AUTO_OFF_DEFAULT_STATE" || true
+    if [ "$saved_value" != "$value" ] || [ -z "$saved_at" ]; then
+        saved_at="$(date +%s)"
+        mkdir -p "$(dirname "$AUTO_OFF_DEFAULT_STATE")"
+        echo "${value} ${saved_at}" >"$AUTO_OFF_DEFAULT_STATE" 2>/dev/null || true
+    fi
+    echo "$saved_at"
+}
+
+# Since when <site> has been idle (epoch): the newest of its last visit,
+# when it was last switched on, when nginx last started (so a stack that
+# was down all weekend doesn't switch every site off the minute it comes
+# back), and when its auto-off limit was set (so turning auto-off on, or
+# shortening it, never switches off a site the moment it's saved).
+# Nothing when none is known.
+site_idle_since() {
+    local t newest=0 started default_at="" setting source
+    started="$(docker inspect -f '{{.State.StartedAt}}' wp-nginx 2>/dev/null || true)"
+    [ -n "$started" ] && started="$(date -d "$started" +%s 2>/dev/null || true)"
+    read -r setting source <<<"$(auto_off_setting "$1")"
+    if [ "$source" = "default" ] && [ "$setting" != "never" ]; then
+        default_at="$(auto_off_default_since "$setting")"
+    fi
+    for t in "$(site_last_visit "$1")" "$(site_get "$1" LAST_ON)" "$started" \
+        "$(site_get "$1" AUTO_OFF_SET)" "$default_at"; do
+        [ -n "$t" ] && [ "$t" -gt "$newest" ] && newest="$t"
+    done
+    [ "$newest" -gt 0 ] && echo "$newest"
+    return 0
+}
+
+# wpdev auto-off                          every site's setting
+# wpdev auto-off <site>                   its setting (KEY=value lines)
+# wpdev auto-off <site> <3d|12h|never|default>
+# wpdev auto-off --due                    switch off sites idle past theirs
+cmd_auto_off() {
+    local site_arg="${1:-}" value="${2:-}" setting source secs idle now site switched=0
+    now="$(date +%s)"
+    case "$site_arg" in
+        --due)
+            container_running wp-nginx || return 0
+            for site in $(site_names); do
+                site_is_off "$site" && continue
+                # A shared site has someone else looking at it.
+                [ -n "$(site_get "$site" SHARE_UNTIL)" ] && continue
+                read -r setting source <<<"$(auto_off_setting "$site")"
+                secs="$(backup_interval_seconds "$setting")" || continue
+                idle="$(site_idle_since "$site")"
+                [ -n "$idle" ] || continue
+                [ $((now - idle)) -ge "$secs" ] || continue
+                site_off "$site" auto-off
+                print_info "Switched $(site_domain_of "$site") off: no visits for ${setting}"
+                switched=1
+            done
+            if [ "$switched" = 1 ]; then
+                reload_nginx_for_power
+                stop_unused_php
+            fi
+            return 0
+            ;;
+        "")
+            printf "%-28s %-6s %-14s %s\n" "DOMAIN" "STATE" "AUTO-OFF" "IDLE SINCE"
+            for site in $(site_names); do
+                read -r setting source <<<"$(auto_off_setting "$site")"
+                [ "$source" = "default" ] && setting="${setting} (default)"
+                idle="$(format_epoch "$(site_idle_since "$site")")"
+                printf "%-28s %-6s %-14s %s\n" "$(site_domain_of "$site")" \
+                    "$(site_is_off "$site" && echo off || echo on)" "$setting" "${idle:-?}"
+            done
+            return 0
+            ;;
+        -*) print_error "Unknown option: ${site_arg}" ;;
+    esac
+
+    resolve_site "$site_arg"
+    [ -f "nginx/sites/${domain}.conf" ] || print_error "No such site: ${site_arg}"
+
+    case "$value" in
+        "")
+            read -r setting source <<<"$(auto_off_setting "$site_name")"
+            idle="$(site_idle_since "$site_name")"
+            echo "STATE=$(site_is_off "$site_name" && echo off || echo on)"
+            echo "OFF_SINCE=$(site_get "$site_name" OFF_SINCE)"
+            echo "OFF_BY=$(site_get "$site_name" OFF_BY)"
+            echo "AUTO_OFF=${setting}"
+            echo "SOURCE=${source}"
+            echo "IDLE_SINCE=${idle}"
+            if secs="$(backup_interval_seconds "$setting")" && [ -n "$idle" ] && ! site_is_off "$site_name"; then
+                echo "OFF_AT=$((idle + secs))"
+            else
+                echo "OFF_AT="
+            fi
+            ;;
+        default)
+            site_unset "$site_name" AUTO_OFF
+            site_set "$site_name" AUTO_OFF_SET "$(date +%s)"
+            read -r setting source <<<"$(auto_off_setting "$site_name")"
+            print_info "${domain} follows the default auto-off (AUTO_OFF_AFTER in .env): ${setting}"
+            ;;
+        never|off)
+            site_set "$site_name" AUTO_OFF never
+            print_info "${domain} never switches itself off"
+            ;;
+        *)
+            backup_interval_seconds "$value" >/dev/null || print_error "Auto-off takes a time like 30m, 12h, 3d or 1w, or never / default (got '${value}')"
+            site_set "$site_name" AUTO_OFF "$value"
+            site_set "$site_name" AUTO_OFF_SET "$(date +%s)"
+            print_info "${domain} switches itself off after ${value} without a visit"
+            ;;
+    esac
+}
+
+# Commands that need a site's PHP, run against a site that's off: start its
+# PHP container just for this command, and stop it again on the way out
+# when still nothing that's on needs it. On stderr, so `wpdev wp`'s own
+# output stays clean.
+wake_php_for_off_site() {
+    local arg="$1" name svc
+    [ -n "$arg" ] && [ "${arg#-}" = "$arg" ] || return 0
+    name="$(resolve_site "$arg"; echo "$site_name")"
+    [ -f "$(site_config_file "$name")" ] && site_is_off "$name" || return 0
+    svc="$(site_php_service "$name")"
+    container_running "wp-${svc}" && return 0
+    container_running wp-nginx || return 0
+    print_warning "$(site_domain_of "$name") is off -- starting wp-${svc} just for this command" >&2
+    start_php_quietly "$svc" >&2
+    trap 'stop_unused_php >/dev/null 2>&1 || true' EXIT
+}
+
 cmd_add() {
     # --domain=/--php= let this run headless (e.g. driven by an API instead
     # of a human at a TTY). Providing --domain is what signals non-interactive
@@ -5820,8 +6208,23 @@ migrate_env_ports() {
 # Main
 # ---------------------------------------------------------------------------
 
+# The php containers bind-mount config/sites (the cron runner reads it).
+# If it doesn't exist when one starts, Docker creates it -- owned by root,
+# and then no site's settings can be saved. So it exists before anything
+# could start one.
+mkdir -p "$SITE_CONFIG_DIR" 2>/dev/null || true
+if [ -d "$SITE_CONFIG_DIR" ] && [ ! -w "$SITE_CONFIG_DIR" ]; then
+    print_error "${SITE_CONFIG_DIR}/ isn't writable (Docker probably created it as root). Fix it with: sudo chown \"\$(id -u):\$(id -g)\" ${SITE_CONFIG_DIR}"
+fi
+
 migrate_site_configs
 migrate_env_ports
+
+# A site that's off has no PHP running; these commands need it.
+case "${1:-}" in
+    wp|debug|cache|media-proxy|admin-domain|fix-perms|snapshot|restore|clone|db-import|remove)
+        wake_php_for_off_site "${2:-}" ;;
+esac
 
 case "${1:-help}" in
     up) cmd_up ;;
@@ -5867,6 +6270,9 @@ case "${1:-help}" in
     debug-log) shift; cmd_debug_log "$@" ;;
     share) shift; cmd_share "$@" ;;
     db-import) shift; cmd_db_import "$@" ;;
+    on) shift; cmd_on "$@" ;;
+    off) shift; cmd_off "$@" ;;
+    auto-off) shift; cmd_auto_off "$@" ;;
     list) cmd_list ;;
     hosts) cmd_hosts ;;
     check-domain) cmd_check_domain "$2" ;;

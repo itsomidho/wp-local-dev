@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import {
   Info,
   Gauge,
@@ -32,6 +32,7 @@ import {
   KeyRound,
   Timer,
   ExternalLink,
+  Power,
 } from 'lucide-react';
 import { api, siteUrl } from '../api';
 import ConfirmDialog, { TypeToConfirmDialog } from './ConfirmDialog';
@@ -40,6 +41,7 @@ import { stripAnsi } from '../lib/parse';
 import { dumpTables } from '../lib/dump';
 import { formatBytes, lastOutputLine } from '../lib/format';
 import { DebugSettings, Switch } from './Debug';
+import { PowerContext } from './SiteCard';
 
 // Grouped down the side of the drawer; Remove sits apart, at the bottom.
 const TAB_GROUPS = [
@@ -47,6 +49,7 @@ const TAB_GROUPS = [
     label: 'Site',
     tabs: [
       { id: 'Overview', icon: Info },
+      { id: 'Power', icon: Power },
       { id: 'Cache', icon: Gauge },
       { id: 'Media', icon: Image },
       { id: 'Admin domain', icon: ShieldCheck },
@@ -116,6 +119,7 @@ export default function SiteManageDialog({ site, initialTab = 'Overview', onClos
       </nav>
       <div className="drawer-body" key={tab} role="tabpanel" aria-label={tab}>
         {tab === 'Overview' && <OverviewTab site={site} />}
+        {tab === 'Power' && <PowerTab site={site} />}
         {tab === 'Cache' && <CacheTab site={site} />}
         {tab === 'Media' && <MediaTab site={site} />}
         {tab === 'Admin domain' && <AdminDomainTab site={site} />}
@@ -307,6 +311,153 @@ function OverviewTab({ site }) {
             runTool(() => api.cert(site.name));
           }}
         />
+      )}
+    </div>
+  );
+}
+
+// `wpdev on|off` and `wpdev auto-off`, via /api/sites/:name/power.
+const AUTO_OFF_CHOICES = [
+  { value: 'default', label: 'Default' },
+  { value: 'never', label: 'Never' },
+  { value: '12h', label: '12 hours' },
+  { value: '1d', label: '1 day' },
+  { value: '3d', label: '3 days' },
+  { value: '1w', label: '1 week' },
+];
+const AUTO_OFF_UNIT = { m: 'minute', h: 'hour', d: 'day', w: 'week' };
+
+function describeAutoOff(value) {
+  const m = /^(\d+)([mhdw])$/.exec(value || '');
+  if (!m) return 'never';
+  return `after ${m[1]} ${AUTO_OFF_UNIT[m[2]]}${m[1] === '1' ? '' : 's'} without a visit`;
+}
+
+function formatWhen(ms) {
+  return ms ? new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+}
+
+function PowerTab({ site }) {
+  const toast = useToast();
+  const onChanged = useContext(PowerContext);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(null); // 'state' | 'auto'
+
+  const load = () =>
+    api
+      .power(site.name)
+      .then((r) => {
+        setData(r);
+        setError(null);
+        return r;
+      })
+      .catch((e) => setError(e.message));
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
+
+  const save = async (body, what) => {
+    setBusy(what);
+    try {
+      const r = await api.setPower(site.name, body);
+      setData(r);
+      if (body.state) {
+        toast({ tone: 'success', title: body.state === 'on' ? `${site.domain} is on` : `${site.domain} is off` });
+        onChanged();
+      } else {
+        toast({ tone: 'success', title: r.autoOff === 'never' ? 'Auto-off disabled' : `Switches off ${describeAutoOff(r.autoOff)}` });
+      }
+    } catch (e) {
+      toast({ tone: 'error', title: "Couldn't change it", description: lastOutputLine(e), duration: 8000 });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const off = data?.state === 'off';
+  const choice = data ? (data.autoOffSource === 'default' ? 'default' : data.autoOff) : null;
+  const known = AUTO_OFF_CHOICES.some((o) => o.value === choice);
+
+  return (
+    <div className="tab-panel">
+      <p className="muted">
+        A site you aren&rsquo;t using can be switched off: it shows a short &ldquo;this site is off&rdquo; page, its
+        WP-Cron stops, and its PHP container stops when no site that&rsquo;s on uses the same PHP version. Files,
+        database and settings stay as they are.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {!data && !error && <Skeleton height={120} radius={12} />}
+      {data && (
+        <>
+          <section className="panel-section">
+            <div className="section-row">
+              <h4>Site is {off ? 'off' : 'on'}</h4>
+              <Switch
+                checked={!off}
+                disabled={busy !== null}
+                label={off ? `Switch ${site.domain} on` : `Switch ${site.domain} off`}
+                onChange={(on) => save({ state: on ? 'on' : 'off' }, 'state')}
+              />
+            </div>
+            <dl className="kv">
+              {off ? (
+                <div className="kv-row">
+                  <dt>Off since</dt>
+                  <dd>
+                    {formatWhen(data.offSince)}
+                    {data.offBy === 'auto-off' && <Chip tone="muted">by auto-off</Chip>}
+                  </dd>
+                </div>
+              ) : (
+                <>
+                  <div className="kv-row">
+                    <dt>Idle since</dt>
+                    <dd>{formatWhen(data.idleSince)}</dd>
+                  </div>
+                  <div className="kv-row">
+                    <dt>Switches off</dt>
+                    <dd>{data.offAt ? `around ${formatWhen(Math.max(data.offAt, Date.now()))}` : 'never'}</dd>
+                  </div>
+                </>
+              )}
+            </dl>
+            {busy === 'state' && <p className="field-hint">{off ? 'Starting its PHP…' : 'Switching off…'}</p>}
+          </section>
+
+          <section className="panel-section">
+            <h4>Auto-off</h4>
+            <div className="choice-row" role="radiogroup" aria-label="Switch off by itself">
+              {AUTO_OFF_CHOICES.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={choice === o.value}
+                  className={`choice${choice === o.value ? ' is-active' : ''}`}
+                  disabled={busy !== null}
+                  onClick={() => o.value !== choice && save({ autoOff: o.value }, 'auto')}
+                >
+                  {o.label}
+                </button>
+              ))}
+              {!known && choice && (
+                <button type="button" role="radio" aria-checked className="choice is-active mono">
+                  {choice}
+                </button>
+              )}
+            </div>
+            <p className="field-hint">
+              {data.autoOffSource === 'default'
+                ? `Default (AUTO_OFF_AFTER in .env): ${describeAutoOff(data.autoOff)}.`
+                : `Switches off ${describeAutoOff(data.autoOff)}.`}{' '}
+              Idle time counts from the last browser request (not wpdev&rsquo;s own checks or WordPress calling itself), from
+              when the site was last switched on, or from when the stack last started, whichever is latest.
+            </p>
+          </section>
+        </>
       )}
     </div>
   );

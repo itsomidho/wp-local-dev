@@ -10,6 +10,7 @@ export function stripAnsi(text) {
 
 // `wpdev list`, one line per site:
 //   "  https://mysite.test  →  sites/mysite  (provisioned, php 8.2)"
+// with ", off" at the end while the site is switched off (`wpdev off`).
 // (or https://mysite.test:8444 when nginx isn't on 443 -- the port is
 // matched but not captured, since links are rebuilt by siteUrl).
 const SITE_LINE_RE = /https:\/\/([a-z0-9.-]+)(?::\d+)?\s*(?:→|->)\s*sites\/([a-z0-9-]+)\s*\(([^)]*)\)/i;
@@ -27,9 +28,10 @@ export function parseSites(stdout) {
         domain: m[1],
         name: m[2],
         php: phpMatch ? phpMatch[1] : null,
-        // The rest of the status text, minus the PHP clause shown as its
-        // own chip -- e.g. "provisioned, php 8.2" -> "provisioned".
-        note: statusText.replace(/,?\s*php\s+[0-9.]+/i, '').trim(),
+        off: /,\s*off\s*$/i.test(statusText),
+        // The rest of the status text, minus the PHP clause and the off
+        // flag shown on their own -- "provisioned, php 8.2" -> "provisioned".
+        note: statusText.replace(/,?\s*php\s+[0-9.]+/i, '').replace(/,\s*off\s*$/i, '').trim(),
       };
     });
 }

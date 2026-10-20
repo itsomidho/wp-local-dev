@@ -372,6 +372,9 @@ CACHE_BYPASS_PATHS=/cart/ /checkout/*
 | `ADMIN_DOMAIN` | `admin-domain` | The admin domain (kept after `off`) |
 | `CACHE` | `cache` | `on` while the full-page cache is on |
 | `CACHE_TTL`, `CACHE_BYPASS_COOKIES`, `CACHE_BYPASS_PATHS` | you | Full-page cache tuning (see below) |
+| `SITE_STATE`, `OFF_SINCE`, `OFF_BY` | `off`, `auto-off` | `off` while the site is switched off, since when, and by whom (`you` or `auto-off`) |
+| `LAST_ON` | `on` | When the site was last switched on (auto-off's clock starts there) |
+| `AUTO_OFF` | `auto-off` | Idle time before it switches itself off (`3d`, `never`; none = `AUTO_OFF_AFTER` in `.env`) |
 
 - **The site's folder stays the project's own.** `sites/<name>/` is often
   a git repo, with its own `.env`. wpdev writes nothing there except
@@ -450,6 +453,9 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev debug-log <site> [--lines=N] [--follow] \| <site> clear` | Show, follow or empty its `debug.log` (rotated to `.1` past 50 MB) |
 | `wpdev db-backup <site>... \| --all \| --due` | Back up those databases now into `backups/<site>/`; `--due`: whichever sites' schedules say it's time |
 | `wpdev db-backups <site> [schedule <interval\|off> [--keep=N] \| rm <file>]` | List a site's backups, set its automatic schedule (`6h`, `1d`...), or remove one |
+| `wpdev off <site>... \| --all` | Switch a site off to save resources: an "it's off" page, no WP-Cron, and its PHP container stops when no site that's on needs it (see [Switching a site off](#switching-a-site-off)) |
+| `wpdev on <site>... \| --all` | Switch it back on |
+| `wpdev auto-off [<site> [3d\|never\|default] \| --due]` | Switch a site off by itself after that long without a visit |
 | `wpdev list` | List configured site domains |
 | `wpdev hosts` | Print the `/etc/hosts` lines needed for all sites |
 | `wpdev check-domain <domain>` | Whether a domain is free for a new site, and why not (see [Which domains `add` accepts](#which-domains-add-accepts)) |
@@ -716,6 +722,54 @@ dump was hand-crafting a `mysql < dump.sql` yourself. `restore-all` replaces
 you to type `RESTORE` (not just `y`/`yes`) before doing anything — skip with
 `--yes` for scripted use — and doesn't back up the current state first — run
 `wpdev backup` right before it if you want to keep what's there now.
+
+## Switching a site off
+
+A site you aren't using can be switched off to save resources, and back on
+in a few seconds:
+
+```bash
+wpdev off mysite          # several sites, or --all
+wpdev on mysite
+wpdev auto-off mysite 3d  # switch itself off after 3 days without a visit
+wpdev auto-off mysite never | default
+wpdev auto-off            # every site: on/off, its setting, idle since when
+```
+
+Sites share their containers (one PHP-FPM per PHP version, one MySQL,
+nginx), so switching one off doesn't stop a container of its own. It stops
+what the site makes the stack do:
+
+- **No requests reach PHP.** nginx answers every request, wp-admin and the
+  admin domain included, with a short "this site is switched off" page
+  (HTTP 503) from `nginx/sites/off/<domain>.conf`.
+- **WP-Cron stops** for it (`php/wp-cron-runner.sh` skips it), so it no
+  longer boots WordPress once a minute.
+- **Its PHP container stops** when no site that's on uses the same PHP
+  version, and `wpdev up` leaves it stopped.
+- **A share ends**, since there's nothing to show.
+
+Files, database, settings and backups are untouched, and MySQL and Redis
+keep running for the other sites. `wpdev status` shows `off` in its HTTP
+column and `wpdev list` ends the line with `, off`. Commands that need the
+site's PHP (`wp`, `debug`, `cache`, `snapshot`, `clone`, ...) still work: they
+start its PHP container for the one command and stop it again afterwards.
+
+**Auto-off.** Set `AUTO_OFF_AFTER=3d` in `.env` to give every site an idle
+limit, or set one per site with `wpdev auto-off <site> <time>` (`30m`,
+`12h`, `3d`, `1w`, or `never`). Idle time counts from the newest of: the
+last request in the site's nginx access log that came from a browser
+(wpdev's own checks and WordPress calling itself don't count), when the
+site was last switched on, when nginx last started, and when the limit
+was set or changed. So a stack that was down all weekend doesn't switch
+every site off the minute it comes back, and turning auto-off on never
+switches off a site that was already idle: its clock starts then. A site that's being shared is left on. The api container
+checks once a minute (`wpdev auto-off --due`); run that from cron to have
+it without the api.
+
+In the dashboard, each site card has a power button (an off card fades and
+offers **Switch on**), and **Manage → Power** has the switch, when it went
+off and why, and the auto-off choice.
 
 ## Scheduled database backups
 
