@@ -202,6 +202,32 @@ export default function App() {
     return () => clearTimeout(id);
   }, [mysqlStarting, status.checkedAt, refreshStatus]);
 
+  // A site's HTTP status changes on its own (a plugin fatal fixed, PHP
+  // restarted), so re-check every minute while the tab is visible, and
+  // right away on coming back to it if the last check is stale. Without
+  // this an old "HTTP 500" stayed on the card until the next reload.
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+  useEffect(() => {
+    const STALE_MS = 60 * 1000;
+    const recheck = () => {
+      const s = statusRef.current;
+      if (document.hidden || s.loading) return;
+      if (s.checkedAt && Date.now() - s.checkedAt.getTime() < STALE_MS - 1000) return;
+      refreshStatus();
+    };
+    const id = setInterval(recheck, STALE_MS);
+    document.addEventListener('visibilitychange', recheck);
+    window.addEventListener('focus', recheck);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', recheck);
+      window.removeEventListener('focus', recheck);
+    };
+  }, [refreshStatus]);
+
   // Streamed, so each check shows up as doctor prints it rather than a
   // blank page for the whole run. Doctor exits non-zero when it finds
   // problems -- that output is still the result, not an error.
