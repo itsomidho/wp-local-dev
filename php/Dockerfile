@@ -31,7 +31,15 @@ COPY --chmod=0755 php/install-php-extensions /usr/local/bin/install-php-extensio
 # apt cache baked into an older pull of the same tag can 404 on redis's
 # optional compression deps (libzstd-dev, liblz4-dev) without this.
 RUN apt-get update
-RUN install-php-extensions xdebug redis
+# Both come from PECL, which now and then answers "No releases available"
+# for a package it does have (seen on GitHub's runners). Up to 4 tries, 15s
+# then 30s then 45s apart, before the build fails.
+RUN for try in 1 2 3 4; do \
+        install-php-extensions xdebug redis && exit 0; \
+        [ "$try" = 4 ] && exit 1; \
+        echo "PECL install failed (try ${try} of 4) -- retrying in $((try * 15))s"; \
+        sleep $((try * 15)); \
+    done
 
 # ionCube Loader: runs ionCube-encoded PHP, which some commercial themes and
 # plugins ship as ("the ionCube Loader for PHP needs to be installed").
