@@ -327,7 +327,7 @@ jobs:
           docker exec wp-php82 sh -c 'rm -rf "$WP_CLI_CACHE_DIR/plugin/"'
           docker exec wp-php82 sh -c "echo '127.0.0.1 wordpress.org downloads.wordpress.org' >> /etc/hosts"
 
-          out=$(./wpdev cache citest on 2>&1)
+          out=$(./wpdev cache citest on 2>&1) || { echo "$out"; exit 1; }
           echo "$out"
           echo "$out" | grep -qi "Could not set up nginx-helper"
           docker exec wp-nginx nginx -t
@@ -467,7 +467,9 @@ jobs:
           citest -- its own plugin/cache state is checked by other steps
           and shouldn't be disturbed.
         run: |
-          out=$(./wpdev add --domain=flagtest.test --php=8.1 </dev/null 2>&1)
+          # `|| { ...; }`: under bash -e a failed $(...) stops the step before
+          # the echo below, hiding the very output that says why.
+          out=$(./wpdev add --domain=flagtest.test --php=8.1 </dev/null 2>&1) || { echo "$out"; exit 1; }
           echo "$out"
           echo "$out" | grep -qi "Skipping confirmation (--domain given"
           echo "$out" | grep -qi "flagtest.test is ready"
