@@ -52,6 +52,9 @@ export function Logo() {
 }
 
 export default function Sidebar({ page, onNavigate, counts, onOpenTool, onOpenSettings, updateInfo, onUpdate, open, onDismiss }) {
+  // The api's last check runs git live, so it follows an update without a
+  // page reload; config.js's value is only read once, when the page loads.
+  const version = updateInfo?.current || appVersion();
   return (
     <>
       <div className={`sidebar-scrim${open ? ' is-open' : ''}`} onClick={onDismiss} />
@@ -108,9 +111,9 @@ export default function Sidebar({ page, onNavigate, counts, onOpenTool, onOpenSe
             </button>
           )}
           <div className="sidebar-meta">
-            {appVersion() ? (
+            {version ? (
               <button type="button" className="version mono" onClick={onUpdate} title="This checkout's version (git describe) -- check for updates">
-                {appVersion()}
+                {version}
               </button>
             ) : (
               <span className="version mono">dev</span>

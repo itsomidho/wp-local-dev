@@ -256,8 +256,8 @@ export default function App() {
   // Checks git's upstream, not GitHub's release API -- the right signal
   // for "does `wpdev update` have anything to do". The api caches it
   // (re-checking every 6 hours), so asking is cheap. Best-effort.
-  const checkForUpdate = useCallback(() => {
-    api.updateCheck().then(setUpdateInfo).catch(() => {});
+  const checkForUpdate = useCallback((fresh = false) => {
+    api.updateCheck(fresh).then(setUpdateInfo).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -398,7 +398,11 @@ export default function App() {
       onFinished: () => {
         refresh();
         refreshStatus();
-        checkForUpdate();
+        // Check now, not the api's cached answer from before the pull. Again
+        // a bit later: the api may restart itself right after an update and
+        // miss the first one.
+        checkForUpdate(true);
+        setTimeout(() => checkForUpdate(true), 15000);
       },
     });
   };
