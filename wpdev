@@ -1482,7 +1482,11 @@ cmd_update() {
     require_stack_services
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Not a git checkout -- can't update. Re-clone from https://github.com/itsomidho/wp-local-dev."
 
-    if [ -n "$(git status --porcelain)" ]; then
+    # Untracked files don't count: a fast-forward pull leaves them alone
+    # (and refuses, safely, if one is in the way). Run from the api, git
+    # can't see your global gitignore, so ignored files like
+    # .claude/settings.local.json show up as untracked there.
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
         print_error "You have uncommitted changes -- commit or stash them first, then run 'wpdev update' again."
     fi
 
@@ -1597,7 +1601,8 @@ update_check_porcelain() {
     latest_tag="$(git ls-remote --tags --refs origin 'v*' 2>/dev/null | sed 's#.*refs/tags/##' | sort -V | tail -n1)"
     behind="$(git rev-list --count "HEAD..${remote_rev}")"
     ahead="$(git rev-list --count "${remote_rev}..HEAD")"
-    dirty="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+    # Same rule as cmd_update's check: untracked files don't block it.
+    dirty="$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')"
     branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
     echo "CURRENT=${current}"
     echo "CURRENT_TAG=${current_tag}"
