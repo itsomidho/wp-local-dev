@@ -364,8 +364,10 @@ fix_site_ownership() {
 
 # Paths under sites/<site> that aren't yours, or that you can't write.
 # Capped: it's for "is there a problem", not an inventory.
+# Files inside .git only count when they aren't yours: git makes its
+# objects read-only on purpose, so the write check would always fire.
 foreign_files() {
-    find "sites/$1" \( ! -user "$(id -u)" -o ! -perm -u+w \) -print 2>/dev/null | head -n "${2:-1000}" || true
+    find "sites/$1" \( ! -user "$(id -u)" -o \( ! -perm -u+w ! -path '*/.git/*' \) \) -print 2>/dev/null | head -n "${2:-1000}" || true
 }
 print_fail() { echo -e "${RED}✗${NC} $1"; }
 
