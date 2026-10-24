@@ -267,9 +267,18 @@ export default function App() {
     const id = setInterval(refresh, 15000);
     // A dashboard left open for days still hears about a release.
     const updates = setInterval(checkForUpdate, 30 * 60 * 1000);
+    // And when you come back to the tab: after a `wpdev update` in the
+    // terminal, the sidebar would otherwise keep the old version for up
+    // to 30 minutes. The api's cached answer is enough here -- update
+    // restarts the api, which starts with a fresh check.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') checkForUpdate();
+    };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       clearInterval(id);
       clearInterval(updates);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [refresh, refreshStatus, checkForUpdate]);
 
