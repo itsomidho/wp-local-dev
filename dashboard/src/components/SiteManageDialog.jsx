@@ -574,16 +574,16 @@ function RedisSection({ site }) {
 function CacheTab({ site }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
-  const [on, setOn] = useState(null); // full-page cache: true / false / null while unknown
+  const [on, setOn] = useState(null); // full-page cache: true / false, null while reading it, 'error' if it can't be read
   const [target, setTarget] = useState(null); // where the switch is heading while a change runs
 
   const refresh = async () => {
     try {
       const r = await api.cacheStatus(site.name);
       const m = /Full-page cache:\s*(on|off)/.exec(stripAnsi(r.stdout || ''));
-      setOn(m ? m[1] === 'on' : null);
+      setOn(m ? m[1] === 'on' : 'error');
     } catch {
-      setOn(null);
+      setOn('error');
     }
   };
 
@@ -614,12 +614,16 @@ function CacheTab({ site }) {
         <div className="switch-row">
           <span className="switch-text">
             <strong>Full-page cache</strong>
-            <span>Nginx serves repeat visitors a saved copy of each page. Logged-in users and wp-admin are never cached.</span>
+            <span>
+              Nginx serves repeat visitors a saved copy of each page. Logged-in users and wp-admin are never cached.
+              {on === 'error' && ' Couldn’t read its current state — update wpdev (wpdev update) and reopen this tab.'}
+            </span>
           </span>
           <Switch
             label="Full-page cache"
             checked={busy && target !== null ? target : on === true}
             loading={busy || on === null}
+            disabled={on === 'error'}
             onChange={(next) => toggle(next ? 'on' : 'off')}
           />
         </div>
