@@ -1,0 +1,19 @@
+# MySQL settings for local development, mounted into the mysql container
+# (docker-compose.yml). Tuned for speed, not for surviving a power cut: this
+# is a development database, and `wpdev backup` / snapshots cover the data.
+[mysqld]
+# Every commit used to wait for two disk syncs (redo log + binary log).
+# Flushing the redo log about once a second instead makes small writes (the
+# options, transients and sessions WordPress writes all the time) around 6x
+# faster. The only risk: an OS crash or power loss can lose the last second.
+innodb_flush_log_at_trx_commit = 2
+
+# No binary log. It is only for replication / point-in-time recovery, which a
+# local stack doesn't use, and it grew by hundreds of MB while slowing writes.
+skip-log-bin
+
+# 128M (the default) is small next to a few-hundred-MB site database.
+innodb_buffer_pool_size = 512M
+
+# Monitoring tables nobody here reads; off saves memory and CPU on every query.
+performance_schema = OFF
