@@ -503,23 +503,26 @@ function RedisSection({ site }) {
     }
   };
 
-  const enabled = state === 'Connected';
+  const known = state === 'Connected' || state === 'Not enabled' || state === 'Disabled';
   return (
     <>
-      <h3>Redis object cache</h3>
-      <p className="muted">
-        Status: {state ?? 'checking…'}. Turning it off only affects this site; the
-        shared Redis container keeps running.
-      </p>
-      <div className="button-row">
-        <button className="btn btn-primary" disabled={busy || state === null || enabled} onClick={() => run('enable')}>
-          Turn on
-        </button>
-        <button className="btn btn-secondary" disabled={busy || state === null || state === 'Not enabled' || state === 'Disabled'} onClick={() => run('disable')}>
-          Turn off
-        </button>
-      </div>
-      {result && <Output>{result}</Output>}
+    <div className="switch-row">
+      <span className="switch-text">
+        <strong>Redis object cache</strong>
+        <span>
+          Keeps database lookups in memory for this site. Turning it off only affects this site; the shared Redis
+          container keeps running.
+          {!known && state !== null && ` Status: ${state}.`}
+        </span>
+      </span>
+      <Switch
+        label="Redis object cache"
+        checked={state === 'Connected'}
+        disabled={busy || !known}
+        onChange={(next) => run(next ? 'enable' : 'disable')}
+      />
+    </div>
+    {result && <Output>{result}</Output>}
     </>
   );
 }
@@ -575,24 +578,28 @@ function CacheTab({ site }) {
 
   return (
     <div className="tab-panel">
-      <p className="muted">
-        Full-page nginx cache for this site:{' '}
-        <strong>{on === null ? 'checking…' : on ? 'on' : 'off'}</strong>. Purge clears the cache
-        shared by every site that has it enabled.
-      </p>
+      <div className="switch-list">
+        <div className="switch-row">
+          <span className="switch-text">
+            <strong>Full-page cache</strong>
+            <span>Nginx serves repeat visitors a saved copy of each page. Logged-in users and wp-admin are never cached.</span>
+          </span>
+          <Switch
+            label="Full-page cache"
+            checked={on === true}
+            disabled={busy || on === null}
+            onChange={(next) => toggle(next ? 'on' : 'off')}
+          />
+        </div>
+        <RedisSection site={site} />
+      </div>
       <div className="button-row">
-        <button className="btn btn-primary" disabled={busy || on === null || on} onClick={() => toggle('on')}>
-          Turn on
-        </button>
-        <button className="btn btn-secondary" disabled={busy || on === null || !on} onClick={() => toggle('off')}>
-          Turn off
-        </button>
         <button className="btn btn-secondary" disabled={busy || !on} onClick={() => setConfirmPurge(true)}>
           Purge cache
         </button>
       </div>
+      <p className="muted">Purge clears the full-page cache shared by every site that has it on.</p>
       {result && <Output>{result}</Output>}
-      <RedisSection site={site} />
       {confirmPurge && (
         <ConfirmDialog
           title="Purge the full-page cache?"
