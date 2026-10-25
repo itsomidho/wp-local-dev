@@ -476,7 +476,10 @@ function RedisSection({ site }) {
   // | 'Not installed' | other redis status text | 'unavailable' | null (unknown)
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [target, setTarget] = useState(null); // where the switch is heading while a change runs
   const [result, setResult] = useState(null);
+  // Refreshes the page's status table, which is what the site card's Redis chip reads.
+  const onChanged = useContext(PowerContext);
 
   const wp = (...args) => api.wpCli(site.name, args);
 
@@ -510,6 +513,7 @@ function RedisSection({ site }) {
 
   const run = async (turnOn) => {
     setBusy(true);
+    setTarget(turnOn);
     setResult(null);
     const out = [];
     try {
@@ -529,6 +533,8 @@ function RedisSection({ site }) {
       setResult(out.filter(Boolean).join('\n'));
       await refresh();
       setBusy(false);
+      setTarget(null);
+      onChanged();
     }
   };
 
@@ -551,7 +557,15 @@ function RedisSection({ site }) {
         {site.off ? (
           <Chip tone="muted">Site is off</Chip>
         ) : (
-          <Switch label="Redis object cache" checked={state === 'Connected'} disabled={busy || !known} onChange={run} />
+          <>
+            {busy && <span className="muted small">Working…</span>}
+            <Switch
+              label="Redis object cache"
+              checked={busy && target !== null ? target : state === 'Connected'}
+              disabled={busy || !known}
+              onChange={run}
+            />
+          </>
         )}
       </div>
       {result && <Output>{result}</Output>}
