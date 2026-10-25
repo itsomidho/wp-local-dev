@@ -451,7 +451,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev share [<site> [on [--for=1h] [--public] [--password=X] [--admin] \| off]]` | Share a site with other devices for a while: on your network, and with `--public` at a temporary https:// address |
 | `wpdev debug <site> [on\|off\|set <KEY> true\|false]` | Show or change `WP_DEBUG`, `WP_DEBUG_LOG`, `WP_DEBUG_DISPLAY`, `SCRIPT_DEBUG`, `SAVEQUERIES` |
 | `wpdev debug-log <site> [--lines=N] [--follow] \| <site> clear` | Show, follow or empty its `debug.log` (rotated to `.1` past 50 MB) |
-| `wpdev db-backup <site>... \| --all \| --due` | Back up those databases now into `backups/<site>/`; `--due`: whichever sites' schedules say it's time |
+| `wpdev db-backup <site>... \| --all \| --due [--suffix=<name>]` | Back up those databases now into `backups/<site>/`; `--due`: whichever sites' schedules say it's time; `--suffix`: ends the file name instead of `manual` (e.g. `before-import`), still kept until you delete it |
 | `wpdev db-backups <site> [schedule <interval\|off> [--keep=N] \| rm <file>]` | List a site's backups, set its automatic schedule (`6h`, `1d`...), or remove one |
 | `wpdev off <site>... \| --all` | Switch a site off to save resources: an "it's off" page, no WP-Cron, and its PHP container stops when no site that's on needs it (see [Switching a site off](#switching-a-site-off)) |
 | `wpdev on <site>... \| --all` | Switch it back on |

@@ -159,7 +159,7 @@ _wpdev() {
             fi
             ;;
         db-backup)
-            compadd -- $(_wpdev_sites) --all --due
+            compadd -- $(_wpdev_sites) --all --due --suffix=
             ;;
         update-check)
             compadd -- --porcelain

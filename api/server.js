@@ -2,6 +2,7 @@
 
 const express = require('express');
 const cors = require('cors');
+const zlib = require('zlib');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -402,9 +403,14 @@ app.get('/api/sites/:name/db/tables', requireValidSiteName, async (req, res) => 
   res.json({ tables });
 });
 
+// ?format=sql.gz (the default), gz or sql: the same dump, gzipped or
+// plain. gz is gzipped too -- the dashboard names it like an UpdraftPlus
+// database backup (backup_<date>_<site>_<hex>-db.gz).
 app.get('/api/sites/:name/db/export', requireValidSiteName, async (req, res) => {
   const tables = tablesFlag(req.query.tables);
   if (tables === null) return res.status(400).json({ error: 'tables must be a comma-separated list of table names' });
+  const format = req.query.format || 'sql.gz';
+  if (!['sql.gz', 'gz', 'sql'].includes(format)) return res.status(400).json({ error: 'format must be sql.gz, gz or sql' });
   const outFile = path.join(PROJECT_DIR, 'backups', `${req.params.name}_api_${Date.now()}.sql.gz`);
   const args = ['db-export', req.params.name, outFile];
   if (tables) args.push(tables);
@@ -412,11 +418,24 @@ app.get('/api/sites/:name/db/export', requireValidSiteName, async (req, res) => 
   if (code !== 0) return res.status(500).json({ code, stdout, stderr });
   // site_20261013-1530.sql.gz: the site and when, for the browser's Downloads.
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
-  res.download(outFile, `${req.params.name}_${stamp}.sql.gz`, (err) => {
-    // Best-effort cleanup -- this is a copy made just for this download, not
-    // the authoritative backup (that's `wpdev backup`/`db-export` run by hand).
-    if (!err) fs.unlink(outFile, () => {});
+  const name = `${req.params.name}_${stamp}.${format}`;
+  // Best-effort cleanup -- this is a copy made just for this download, not
+  // the authoritative backup (that's `wpdev backup`/`db-export` run by hand).
+  const cleanup = () => fs.unlink(outFile, () => {});
+  if (format !== 'sql') {
+    res.download(outFile, name, (err) => !err && cleanup());
+    return;
+  }
+  // Plain SQL: unzipped on the way out, never written to disk twice.
+  res.attachment(name);
+  res.type('application/sql');
+  const gunzip = zlib.createGunzip();
+  gunzip.on('error', (err) => {
+    cleanup();
+    res.destroy(err);
   });
+  fs.createReadStream(outFile).pipe(gunzip).pipe(res);
+  res.on('close', cleanup);
 });
 
 const uploadDir = path.join(PROJECT_DIR, '.api-uploads');
@@ -437,6 +456,19 @@ app.post('/api/sites/:name/db/import', requireValidSiteName, upload.single('file
   // The name it had in the browser, for wpdev's messages instead of the
   // upload's random temp name.
   if (req.body && req.body.filename) args.push(`--label=${path.basename(String(req.body.filename)).slice(0, 200)}`);
+  // ?stream=1 (the dashboard): wpdev's steps and "PROGRESS <n>" lines as
+  // Server-Sent Events while it runs, then `done` with the whole output.
+  if (req.query.stream === '1') {
+    streamWpdev(args, res, {
+      env: { WPDEV_PROGRESS: '1' },
+      keepOnClose: true,
+      onExit: ({ stdout, stderr }) => {
+        fs.unlink(req.file.path, () => {});
+        return { stdout: stdout.replace(/^PROGRESS \d+\n/gm, ''), stderr };
+      },
+    });
+    return;
+  }
   const { code, stdout, stderr } = await runWpdev(args, DB_TIMEOUT);
   fs.unlink(req.file.path, () => {});
   res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
@@ -446,7 +478,8 @@ app.post('/api/sites/:name/db/import', requireValidSiteName, upload.single('file
 // Per-site database backups (`wpdev db-backup` / `db-backups`): made now, or
 // on the site's schedule, into backups/<site>/.
 // ---------------------------------------------------------------------------
-const BACKUP_FILE_RE = /^[a-z0-9-]+_\d{8}-\d{6}Z_(auto|manual)\.sql\.gz$/;
+// The suffix is auto, manual or a name of your own (a manual backup).
+const BACKUP_FILE_RE = /^[a-z0-9-]+_\d{8}-\d{6}Z_([a-z0-9][a-z0-9-]{0,39})\.sql\.gz$/;
 function requireBackupFile(req, res, next) {
   const { name, file } = req.params;
   if (!BACKUP_FILE_RE.test(file) || !file.startsWith(`${name}_`)) {
@@ -455,7 +488,8 @@ function requireBackupFile(req, res, next) {
   next();
 }
 
-// {schedule: {every: '6h' | null, keep}, backups: [{file, kind, bytes, time}]}, newest first.
+// {schedule: {every: '6h' | null, keep}, backups: [{file, kind, label, bytes, time}]}, newest first;
+// label is a manual backup's own suffix, null for plain auto/manual.
 app.get('/api/sites/:name/backups', requireValidSiteName, async (req, res) => {
   const [list, schedule] = await Promise.all([
     runWpdev(['db-backups', req.params.name]),
@@ -469,15 +503,27 @@ app.get('/api/sites/:name/backups', requireValidSiteName, async (req, res) => {
     .split('\n')
     .map((line) => line.split('\t'))
     .filter((cols) => cols.length === 4 && BACKUP_FILE_RE.test(cols[0]))
-    .map(([file, kind, bytes, epoch]) => ({ file, kind, bytes: Number(bytes) || 0, time: Number(epoch) * 1000 }))
+    .map(([file, kind, bytes, epoch]) => {
+      const suffix = BACKUP_FILE_RE.exec(file)[1];
+      const label = suffix === 'auto' || suffix === 'manual' ? null : suffix;
+      return { file, kind, label, bytes: Number(bytes) || 0, time: Number(epoch) * 1000 };
+    })
     .reverse();
   const every = /every=(\S+)/.exec(schedule.stdout)?.[1];
   const keep = Number(/keep=(\d+)/.exec(schedule.stdout)?.[1]) || null;
   res.json({ schedule: { every: every && every !== 'off' ? every : null, keep }, backups });
 });
 
+// Body {suffix?}: ends the file name instead of "manual" (wpdev tidies it:
+// lower case, dashes); "auto" is the schedule's own.
 app.post('/api/sites/:name/backups', requireValidSiteName, async (req, res) => {
-  const { code, stdout, stderr } = await runWpdev(['db-backup', req.params.name], DB_TIMEOUT);
+  const args = ['db-backup', req.params.name];
+  const suffix = req.body && typeof req.body.suffix === 'string' ? req.body.suffix.trim() : '';
+  if (suffix) {
+    if (suffix.length > 60) return res.status(400).json({ error: 'suffix is too long (40 characters at most)' });
+    args.push(`--suffix=${suffix}`);
+  }
+  const { code, stdout, stderr } = await runWpdev(args, DB_TIMEOUT);
   res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
 });
 

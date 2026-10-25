@@ -3,7 +3,26 @@
 // size of the SQL that follows it (its rows) up to the next table. Works
 // on mysqldump, `wp db export`, phpMyAdmin and Adminer output alike. A
 // .gz is told by its magic bytes, not its name, and is streamed through
-// DecompressionStream, so a multi-GB dump never sits in memory whole.
+// fflate's streaming Gunzip, so a multi-GB dump never sits in memory whole.
+// Not the browser's DecompressionStream: that stops after the first gzip
+// member, and UpdraftPlus backups are many members joined end to end.
+
+import { Gunzip } from 'fflate';
+
+function gunzipStream() {
+  let gunzip;
+  return new TransformStream({
+    start(controller) {
+      gunzip = new Gunzip((data) => controller.enqueue(data));
+    },
+    transform(chunk) {
+      gunzip.push(chunk);
+    },
+    flush() {
+      gunzip.push(new Uint8Array(0), true);
+    },
+  });
+}
 
 // At the start of a line: dump tools write each statement on its own, and
 // escape newlines inside values, so "CREATE TABLE" in a post's content
@@ -27,7 +46,7 @@ export async function dumpTables(file, { onProgress, signal } = {}) {
       },
     }),
   );
-  if (gzip) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+  if (gzip) stream = stream.pipeThrough(gunzipStream());
   const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
 
   const tables = [];

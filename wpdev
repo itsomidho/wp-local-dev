@@ -31,7 +31,8 @@
 #                                   (--tables=a,b: only those tables)
 #   wpdev db-tables <site>          That site's tables: name, rows, bytes (tab-separated)
 #   wpdev db-backup <site>...       Back up those sites' databases now (--all: every site;
-#                                   --due: those whose schedule says it's time)
+#                                   --due: those whose schedule says it's time;
+#                                   --suffix=<name>: ends the file name, e.g. before-import)
 #   wpdev db-backups <site>         List its backups; "schedule <6h|1d|off> [--keep=N]"
 #                                   sets automatic ones, "rm <file>" removes one
 #   wpdev debug <site> [on|off]     WordPress debug settings (WP_DEBUG and friends);
@@ -418,7 +419,7 @@ show_help() {
     echo "  restore <site> [snap-id] [--yes]  Restore a site from a snapshot (defaults to the latest)"
     echo "  db-export <site> [file] [--tables=a,b]  Dump just that site's database (default: backups/<site>_<time>.sql.gz); --tables: only those"
     echo "  db-tables <site>          List that site's tables: name, rows, bytes"
-    echo "  db-backup <site>... | --all | --due  Back up databases now into backups/<site>/ (--due: whichever sites' schedules say it's time)"
+    echo "  db-backup <site>... | --all | --due [--suffix=<name>]  Back up databases now into backups/<site>/ (--due: whichever sites' schedules say it's time; --suffix: ends the file name instead of 'manual', e.g. before-import)"
     echo "  db-backups <site> [schedule <interval|off> [--keep=N] | rm <file>]  List a site's backups, set its automatic schedule (e.g. 6h, 1d, 1w), or remove one"
     echo "  debug <site> [on|off|set <KEY> true|false]  Show or change WP_DEBUG, WP_DEBUG_LOG, WP_DEBUG_DISPLAY, SCRIPT_DEBUG, SAVEQUERIES"
     echo "  debug-log <site> [--lines=N] [--follow] | <site> clear  Show (or follow, or empty) its debug.log; logs past 50 MB are rotated to .1"
@@ -4628,17 +4629,93 @@ cmd_db_export() {
 # error (a syntax error, a missing privilege in the dump's DEFINERs...) is
 # the useful part of a failed import, so it's printed -- minus the warning
 # about the password on the command line. Returns mysql's status.
+#
+# The dump goes through dump_defer_keys on its way (see there): MyISAM
+# tables load several times faster with their indexes built at the end.
+#
+# While it runs, how much of the file has been read is shown as a
+# percentage: a "PROGRESS <n>" line per change when WPDEV_PROGRESS=1 (the
+# dashboard reads these), or an updating "n%" on a terminal. The reader
+# (gunzip or cat) has the file as its stdin, so its position there is read
+# from /proc. The pipe to mysql is small, so that tracks the import closely.
 import_dump_into() {
-    local db="$1" file="$2" err rc=0
+    local db="$1" file="$2" err rc=0 reader=(cat) fd sql reader_pid watcher="" report=0 out
     err="$(mktemp)"
-    if gzip -t "$file" 2>/dev/null; then
-        gunzip -c "$file" | mysql_root "$db" 2>"$err" || rc=$?
-    else
-        mysql_root "$db" < "$file" 2>"$err" || rc=$?
+    gzip -t "$file" 2>/dev/null && reader=(gunzip -c)
+    [ "${WPDEV_PROGRESS:-}" = "1" ] && report=1
+    exec {out}>&1
+    # Two steps, not one pipeline, so $! is the reader itself: its stdin is
+    # the file, which is what dump_progress measures.
+    exec {fd}< <("${reader[@]}" < "$file")
+    reader_pid=$!
+    exec {sql}< <(dump_defer_keys "$report" <&"$fd" 2>&"$out")
+    if [ "$report" -eq 1 ] || [ -t 1 ]; then
+        dump_progress "$reader_pid" "$(stat -c %s "$file")" &
+        watcher=$!
+    fi
+    mysql_root "$db" <&"$sql" 2>"$err" || rc=$?
+    exec {sql}<&- {fd}<&- {out}>&-
+    if [ -n "$watcher" ]; then
+        kill "$watcher" 2>/dev/null || true
+        wait "$watcher" 2>/dev/null || true
+        [ -t 1 ] && [ "${WPDEV_PROGRESS:-}" != "1" ] && printf '\r\033[K'
     fi
     [ "$rc" -eq 0 ] || grep -v "Using a password on the command line" "$err" >&2 || true
     rm -f "$err"
     return "$rc"
+}
+
+# Copies a dump from stdin to stdout, adding "ALTER TABLE ... DISABLE KEYS"
+# after each MyISAM table's CREATE TABLE and "ENABLE KEYS" before the next
+# table starts (and at the end). MyISAM then builds the table's other
+# indexes once, by sorting, instead of updating them row by row: on an
+# UpdraftPlus dump (most of it MyISAM, and no DISABLE KEYS of its own,
+# unlike mysqldump) that made loading about 7x faster. Same rows either
+# way. Only a CREATE TABLE that ends on its ENGINE line is touched, so a
+# statement is never split. With $1=1, each table's name goes to stderr as
+# "TABLE <name>" as it starts, for the dashboard.
+dump_defer_keys() {
+    awk -v report="${1:-0}" '
+        function finish() { if (open != "") print "ALTER TABLE " open " ENABLE KEYS;"; open = "" }
+        /^CREATE TABLE / {
+            finish()
+            name = $0
+            sub(/^CREATE TABLE (IF NOT EXISTS )?/, "", name)
+            sub(/[ (].*$/, "", name)
+            if (report) {
+                shown = name
+                gsub(/`/, "", shown)
+                print "TABLE " shown > "/dev/stderr"
+                fflush("/dev/stderr")
+            }
+        }
+        { print }
+        /^\) ENGINE=MyISAM/ && /;[[:space:]]*$/ && name != "" {
+            print "ALTER TABLE " name " DISABLE KEYS;"
+            open = name
+        }
+        END { finish() }'
+}
+
+# dump_progress <pid> <size>: see import_dump_into.
+dump_progress() {
+    local info="/proc/$1/fdinfo/0" size="$2" pos pct last=-1
+    [ "$size" -gt 0 ] || return 0
+    while [ -r "$info" ]; do
+        pos="$(sed -n 's/^pos:[[:space:]]*//p' "$info" 2>/dev/null)" || pos=""
+        if [ -n "$pos" ]; then
+            pct=$(( pos * 100 / size ))
+            if [ "$pct" -ne "$last" ]; then
+                last="$pct"
+                if [ "${WPDEV_PROGRESS:-}" = "1" ]; then
+                    echo "PROGRESS ${pct}"
+                else
+                    printf '\r  %s%%' "$pct"
+                fi
+            fi
+        fi
+        sleep 1
+    done
 }
 
 cmd_db_import() {
@@ -4787,14 +4864,31 @@ cmd_db_import() {
     fi
 }
 
-# --- Database backups: backups/<site>/<site>_<UTC stamp>Z_<kind>.sql.gz ---
-# kind is "manual" (wpdev db-backup, kept until removed) or "auto" (made on
-# the site's schedule, BACKUP_EVERY, the newest BACKUP_KEEP of them kept).
+# --- Database backups: backups/<site>/<site>_<UTC stamp>Z_<suffix>.sql.gz ---
+# The suffix is "auto" (made on the site's schedule, BACKUP_EVERY, the
+# newest BACKUP_KEEP of them kept), "manual" (wpdev db-backup, kept until
+# removed), or a name of your own for a manual one (--suffix=before-import):
+# anything but "auto" is manual.
 # The stamp is UTC, marked Z, since backups are made both here and inside
 # the api container, whose clock is UTC whatever the host's zone; ages come
 # from the files' mtimes.
 BACKUP_KEEP_DEFAULT=7
-BACKUP_FILE_RE='^[a-z0-9-]+_[0-9]{8}-[0-9]{6}Z_(auto|manual)\.sql\.gz$'
+BACKUP_FILE_RE='^[a-z0-9-]+_[0-9]{8}-[0-9]{6}Z_([a-z0-9][a-z0-9-]{0,39})\.sql\.gz$'
+
+# A --suffix value as it goes in the file name: lower case, spaces and
+# underscores as dashes, anything else dropped. Nothing when that leaves
+# nothing usable, or "auto" (the schedule's own).
+backup_suffix() {
+    local s
+    s="$(printf '%s' "$1" | tr '[:upper:] _' '[:lower:]--' | tr -cd 'a-z0-9-' | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
+    s="${s:0:40}"
+    s="${s%-}"
+    [ -n "$s" ] && [ "$s" != "auto" ] || return 1
+    echo "$s"
+}
+
+# The kind of backup a suffix means: auto or manual.
+backup_kind() { [ "$1" = "auto" ] && echo auto || echo manual; }
 
 # "30m", "6h", "1d", "2w" -> seconds; nothing for anything else.
 backup_interval_seconds() {
@@ -4810,27 +4904,28 @@ backup_interval_seconds() {
 }
 
 # A site's backups, oldest first: one file name per line. $2 limits it to
-# one kind.
+# one kind (auto or manual).
 site_backup_files() {
     local f
     for f in "backups/${1}/${1}"_*.sql.gz; do
         [ -f "$f" ] || continue
         f="$(basename "$f")"
         [[ "$f" =~ $BACKUP_FILE_RE ]] || continue
-        [ -z "${2:-}" ] || [ "${BASH_REMATCH[1]}" = "$2" ] || continue
+        [ -z "${2:-}" ] || [ "$(backup_kind "${BASH_REMATCH[1]}")" = "$2" ] || continue
         echo "$f"
     done | sort
 }
 
-# db_backup_site <site-name> <manual|auto>: dump it, then (auto) drop the
-# oldest automatic backups past BACKUP_KEEP.
+# db_backup_site <site-name> <auto|manual|suffix>: dump it, then (auto)
+# drop the oldest automatic backups past BACKUP_KEEP.
 db_backup_site() {
-    local site="$1" kind="$2" dir file tmp err keep old
+    local site="$1" suffix="$2" kind dir file tmp err keep old
+    kind="$(backup_kind "$suffix")"
     db_site "$site"
     load_db_root_password
     dir="backups/${site_name}"
     mkdir -p "$dir"
-    file="${dir}/${site_name}_$(date -u +%Y%m%d-%H%M%S)Z_${kind}.sql.gz"
+    file="${dir}/${site_name}_$(date -u +%Y%m%d-%H%M%S)Z_${suffix}.sql.gz"
     # Written under a temp name and renamed once complete, so neither a
     # list nor the schedule ever takes a half-written dump for a backup.
     tmp="${dir}/.partial-$$.sql.gz"
@@ -4879,22 +4974,26 @@ db_backup_due() {
 }
 
 cmd_db_backup() {
-    local a sites=() all=0 site
+    local a sites=() all=0 site suffix=manual
     for a in "$@"; do
         case "$a" in
             --due) db_backup_due; return 0 ;;
             --all) all=1 ;;
+            --suffix=*)
+                suffix="$(backup_suffix "${a#--suffix=}")" \
+                    || print_error "Not a usable suffix: '${a#--suffix=}' -- letters, digits and dashes, and not 'auto'"
+                ;;
             *) sites+=("$a") ;;
         esac
     done
     [ "$all" -eq 0 ] || mapfile -t sites < <(site_names)
     if [ "${#sites[@]}" -eq 0 ]; then
-        print_warning "Usage: wpdev db-backup <site>... | --all | --due"
+        print_warning "Usage: wpdev db-backup <site>... | --all [--suffix=<name>] | --due"
         echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
     for site in "${sites[@]}"; do
-        db_backup_site "$site" manual
+        db_backup_site "$site" "$suffix"
     done
 }
 
@@ -4914,7 +5013,7 @@ cmd_db_backups() {
         "")
             site_backup_files "$site_name" | while read -r f; do
                 [[ "$f" =~ $BACKUP_FILE_RE ]]
-                kind="${BASH_REMATCH[1]}"
+                kind="$(backup_kind "${BASH_REMATCH[1]}")"
                 printf '%s\t%s\t%s\t%s\n' "$f" "$kind" "$(wc -c < "backups/${site_name}/${f}" | tr -d ' ')" "$(date -r "backups/${site_name}/${f}" +%s)"
             done
             ;;

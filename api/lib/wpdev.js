@@ -56,7 +56,11 @@ function runWpdev(args, { timeoutMs = 120000 } = {}) {
 // while and print real step-by-step progress (add, clone, snapshot,
 // restore, update, backup, restore-all), so a GUI can show live progress
 // instead of a spinner with no information until the whole thing finishes.
-function streamWpdev(args, res) {
+// Options: `env` adds to wpdev's environment; `keepOnClose` lets wpdev
+// finish when the client goes away (a half-done import is worse than an
+// unwatched one); `onExit({code, stdout, stderr})` runs before the final
+// `done` event and can return extra fields for it.
+function streamWpdev(args, res, { env, keepOnClose = false, onExit } = {}) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -67,31 +71,48 @@ function streamWpdev(args, res) {
   const send = (event, data) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
+  // An SSE comment every 15 s while wpdev is quiet (a long search-replace
+  // prints nothing for minutes): proxies and browsers drop a connection
+  // that carries nothing for a few minutes, and the client would lose the
+  // result of a command that's still running fine.
+  const keepalive = setInterval(() => res.write(': keepalive\n\n'), 15000);
+  res.on('close', () => clearInterval(keepalive));
 
   let child;
   try {
     child = spawn(WPDEV_BIN, args, {
       cwd: PROJECT_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: env ? { ...process.env, ...env } : process.env,
     });
   } catch (err) {
+    clearInterval(keepalive);
+    onExit?.({ code: -1, stdout: '', stderr: err.message });
     send('done', { code: -1, error: err.message });
     res.end();
     return;
   }
 
+  // A chunk can end mid-line, so the unfinished tail waits for the next.
+  const output = { stdout: '', stderr: '' };
+  const partial = { stdout: '', stderr: '' };
   const forward = (stream) => (chunk) => {
-    chunk
-      .toString('utf8')
-      .split('\n')
-      .filter((line) => line.length > 0)
-      .forEach((line) => send('line', { stream, line }));
+    const text = partial[stream] + chunk.toString('utf8');
+    output[stream] += chunk.toString('utf8');
+    const lines = text.split('\n');
+    partial[stream] = lines.pop();
+    lines.filter((line) => line.length > 0).forEach((line) => send('line', { stream, line }));
   };
   child.stdout.on('data', forward('stdout'));
   child.stderr.on('data', forward('stderr'));
 
   child.on('close', (code) => {
-    send('done', { code });
+    for (const stream of ['stdout', 'stderr']) {
+      if (partial[stream]) send('line', { stream, line: partial[stream] });
+    }
+    clearInterval(keepalive);
+    const extra = onExit?.({ code, ...output }) || {};
+    send('done', { code, ...extra });
     res.end();
   });
 
@@ -99,7 +120,7 @@ function streamWpdev(args, res) {
   // destructive or long-running command running unsupervised -- nobody is
   // left watching its result or able to confirm it finished cleanly.
   res.on('close', () => {
-    if (child.exitCode === null) child.kill('SIGTERM');
+    if (!keepOnClose && child.exitCode === null) child.kill('SIGTERM');
   });
 }
 
