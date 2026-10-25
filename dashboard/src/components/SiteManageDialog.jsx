@@ -466,17 +466,34 @@ function PowerTab({ site }) {
   );
 }
 
-// Redis object cache for one site, through WP-CLI's `wp redis` (the
-// redis-cache plugin). Disabling removes the site's object-cache drop-in, so
-// it stops using Redis; the shared Redis container keeps running.
+// Redis object cache for one site, through WP-CLI. "On" means the
+// redis-cache plugin is active and its object-cache drop-in is installed;
+// turning it off removes the drop-in AND deactivates the plugin, and turning
+// it on reactivates the plugin first. The shared Redis container is never
+// touched.
 function RedisSection({ site }) {
-  const [state, setState] = useState(null); // 'Connected' | 'Not enabled' | other status text | 'unavailable'
+  // 'Connected' | 'Not enabled' (plugin on, drop-in off) | 'Plugin inactive'
+  // | 'Not installed' | other redis status text | 'unavailable' | null (unknown)
+  const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
 
+  const wp = (...args) => api.wpCli(site.name, args);
+
   const refresh = async () => {
     try {
-      const r = await api.wpCli(site.name, ['redis', 'status']);
+      let plugin;
+      try {
+        plugin = stripAnsi((await wp('plugin', 'get', 'redis-cache', '--field=status')).stdout || '').trim();
+      } catch {
+        setState('Not installed');
+        return;
+      }
+      if (plugin !== 'active') {
+        setState('Plugin inactive');
+        return;
+      }
+      const r = await wp('redis', 'status');
       const m = /^Status:\s*(.+)$/m.exec(stripAnsi(r.stdout || ''));
       setState(m ? m[1].trim() : 'unavailable');
     } catch {
@@ -491,46 +508,53 @@ function RedisSection({ site }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [site.name, site.off]);
 
-  const run = async (action) => {
+  const run = async (turnOn) => {
     setBusy(true);
     setResult(null);
+    const out = [];
     try {
-      const r = await api.wpCli(site.name, ['redis', action]);
-      setResult(stripAnsi(r.stdout || r.stderr || ''));
+      const steps = turnOn
+        ? [['plugin', 'activate', 'redis-cache'], ['redis', 'enable']]
+        : [['redis', 'disable'], ['plugin', 'deactivate', 'redis-cache']];
+      for (const step of steps) {
+        // Skip a step that has nothing to do (e.g. activating an active plugin
+        // is fine, but `redis disable` needs the plugin's command to exist).
+        if (!turnOn && state === 'Plugin inactive' && step[0] === 'redis') continue;
+        const r = await wp(...step);
+        out.push(stripAnsi(r.stdout || r.stderr || '').trim());
+      }
     } catch (e) {
-      setResult(stripAnsi(e.data?.stderr || e.data?.stdout || e.message));
+      out.push(stripAnsi(e.data?.stderr || e.data?.stdout || e.message).trim());
     } finally {
+      setResult(out.filter(Boolean).join('\n'));
       await refresh();
       setBusy(false);
     }
   };
 
-  const known = state === 'Connected' || state === 'Not enabled' || state === 'Disabled';
+  const known = state === 'Connected' || state === 'Not enabled' || state === 'Plugin inactive';
   return (
     <>
-    <div className="switch-row">
-      <span className="switch-text">
-        <strong>Redis object cache</strong>
-        <span>
-          Keeps database lookups in memory for this site. Turning it off only affects this site; the shared Redis
-          container keeps running.
-          {site.off
-            ? ' Switch this site on to change it.'
-            : !known && state !== null && ` Status: ${state}.`}
+      <div className="switch-row">
+        <span className="switch-text">
+          <strong>Redis object cache</strong>
+          <span>
+            Keeps database lookups in memory for this site. Turning it off also deactivates the
+            redis-cache plugin on this site; the shared Redis container keeps running.
+            {site.off
+              ? ' Switch this site on to change it.'
+              : state === 'Not installed'
+                ? ' The redis-cache plugin isn’t installed on this site.'
+                : !known && state !== null && ` Status: ${state}.`}
+          </span>
         </span>
-      </span>
-      {site.off ? (
-        <Chip tone="muted">Site is off</Chip>
-      ) : (
-        <Switch
-          label="Redis object cache"
-          checked={state === 'Connected'}
-          disabled={busy || !known}
-          onChange={(next) => run(next ? 'enable' : 'disable')}
-        />
-      )}
-    </div>
-    {result && <Output>{result}</Output>}
+        {site.off ? (
+          <Chip tone="muted">Site is off</Chip>
+        ) : (
+          <Switch label="Redis object cache" checked={state === 'Connected'} disabled={busy || !known} onChange={run} />
+        )}
+      </div>
+      {result && <Output>{result}</Output>}
     </>
   );
 }
