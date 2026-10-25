@@ -557,15 +557,13 @@ function RedisSection({ site }) {
         {site.off ? (
           <Chip tone="muted">Site is off</Chip>
         ) : (
-          <>
-            {busy && <span className="muted small">Working…</span>}
-            <Switch
-              label="Redis object cache"
-              checked={busy && target !== null ? target : state === 'Connected'}
-              disabled={busy || !known}
-              onChange={run}
-            />
-          </>
+          <Switch
+            label="Redis object cache"
+            checked={busy && target !== null ? target : state === 'Connected'}
+            loading={busy || state === null}
+            disabled={!known}
+            onChange={run}
+          />
         )}
       </div>
       {result && <Output>{result}</Output>}
@@ -577,6 +575,7 @@ function CacheTab({ site }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [on, setOn] = useState(null); // full-page cache: true / false / null while unknown
+  const [target, setTarget] = useState(null); // where the switch is heading while a change runs
 
   const refresh = async () => {
     try {
@@ -595,6 +594,7 @@ function CacheTab({ site }) {
 
   const toggle = async (mode) => {
     setBusy(true);
+    setTarget(mode === 'on');
     setResult(null);
     try {
       const r = await api.cache(site.name, mode);
@@ -604,6 +604,7 @@ function CacheTab({ site }) {
     } finally {
       await refresh();
       setBusy(false);
+      setTarget(null);
     }
   };
 
@@ -617,8 +618,8 @@ function CacheTab({ site }) {
           </span>
           <Switch
             label="Full-page cache"
-            checked={on === true}
-            disabled={busy || on === null}
+            checked={busy && target !== null ? target : on === true}
+            loading={busy || on === null}
             onChange={(next) => toggle(next ? 'on' : 'off')}
           />
         </div>

@@ -3392,6 +3392,32 @@ button.version:hover {
   cursor: default;
 }
 
+/* Busy: a ring spinning inside the knob, not dimmed like a plain disabled one. */
+.switch.is-loading:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+.switch.is-loading .switch-knob {
+  background: #fff;
+}
+
+.switch.is-loading .switch-knob::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border: 2px solid var(--brand);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch.is-loading .switch-knob::after {
+    animation-duration: 1.6s;
+  }
+}
+
 .switch:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
