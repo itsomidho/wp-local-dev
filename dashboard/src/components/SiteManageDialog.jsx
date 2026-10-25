@@ -33,8 +33,11 @@ import {
   Timer,
   ExternalLink,
   Power,
+  Loader2,
+  CheckCircle2,
+  Circle,
 } from 'lucide-react';
-import { api, siteUrl } from '../api';
+import { api, siteUrl, exportFileName } from '../api';
 import ConfirmDialog, { TypeToConfirmDialog } from './ConfirmDialog';
 import { Avatar, Chip, Drawer, Output, Skeleton, useToast } from './ui';
 import { stripAnsi } from '../lib/parse';
@@ -1226,6 +1229,21 @@ function timeAgo(ms) {
 // Database backups into backups/<site>/: made now (kept until deleted) or
 // on a schedule the api keeps (the newest N kept). Restoring one first
 // backs up the current database, so a restore can itself be undone.
+// Suggestions for a backup's suffix, and the suffix as wpdev will save it
+// (its backup_suffix): lower case, spaces/underscores as dashes, the rest
+// dropped, 40 characters at most.
+const BACKUP_SUFFIXES = ['before-import', 'before-update', 'before-migration', 'before-plugin-change', 'clean-install'];
+function backupSuffix(text) {
+  return text
+    .toLowerCase()
+    .replace(/[ _]/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/, '');
+}
+
 function BackupsSection({ site, onRestored }) {
   const toast = useToast();
   const [data, setData] = useState(null); // {schedule: {every, keep}, backups: [...]}
@@ -1236,6 +1254,10 @@ function BackupsSection({ site, onRestored }) {
   const [busy, setBusy] = useState(null); // 'now' | 'schedule' | file being restored/deleted
   const [confirm, setConfirm] = useState(null); // {action: 'restore'|'delete', file}
   const [now, setNow] = useState(Date.now());
+  // Ends the next backup's file name instead of "manual"; wpdev tidies it.
+  const [suffix, setSuffix] = useState('');
+  const suffixClean = backupSuffix(suffix);
+  const suffixValid = !suffix.trim() || (suffixClean !== '' && suffixClean !== 'auto');
 
   const load = () =>
     api
@@ -1295,9 +1317,10 @@ function BackupsSection({ site, onRestored }) {
   const backupNow = async () => {
     setBusy('now');
     try {
-      await api.backupNow(site.name);
+      await api.backupNow(site.name, suffixClean || undefined);
       await load();
-      toast({ tone: 'success', title: 'Backed up', description: site.domain });
+      setSuffix('');
+      toast({ tone: 'success', title: 'Backed up', description: suffixClean ? `${site.domain} · ${suffixClean}` : site.domain });
     } catch (e) {
       toast({ tone: 'error', title: 'Backup failed', description: lastOutputLine(e), duration: 8000 });
     } finally {
@@ -1309,7 +1332,7 @@ function BackupsSection({ site, onRestored }) {
     setConfirm(null);
     setBusy(file);
     try {
-      await api.backupNow(site.name);
+      await api.backupNow(site.name, 'before-restore');
       await api.restoreBackup(site.name, file);
       await load();
       onRestored?.();
@@ -1346,10 +1369,41 @@ function BackupsSection({ site, onRestored }) {
     <section className="panel-section">
       <div className="section-row">
         <h4>Backups</h4>
-        <button type="button" className="btn btn-primary btn-sm" onClick={backupNow} disabled={busy !== null}>
-          <History size={14} /> {busy === 'now' ? 'Backing up…' : 'Back up now'}
-        </button>
+        <div className="backup-now">
+          <input
+            className="mono"
+            list="backup-suffixes"
+            placeholder="manual"
+            aria-label="Backup suffix (optional)"
+            title="Ends the file name instead of “manual”, e.g. before-import"
+            value={suffix}
+            disabled={busy !== null}
+            onChange={(e) => setSuffix(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && suffixValid && busy === null && backupNow()}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <datalist id="backup-suffixes">
+            {BACKUP_SUFFIXES.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
+          <button type="button" className="btn btn-primary btn-sm" onClick={backupNow} disabled={busy !== null || !suffixValid}>
+            <History size={14} /> {busy === 'now' ? 'Backing up…' : 'Back up now'}
+          </button>
+        </div>
       </div>
+      {suffix.trim() && (
+        <span className={`field-hint${suffixValid ? '' : ' field-hint-error'}`}>
+          {suffixValid ? (
+            <>
+              Saved as <code>{`${site.name}_<date>_${suffixClean}.sql.gz`}</code>, kept until you delete it.
+            </>
+          ) : (
+            'Letters, digits and dashes — and not “auto”, which is for scheduled backups.'
+          )}
+        </span>
+      )}
       {error && <p className="error">{error}</p>}
       {!data && !error && <Skeleton height={90} />}
       {data && (
@@ -1429,6 +1483,7 @@ function BackupsSection({ site, onRestored }) {
                     </strong>
                     <span className="backup-meta">
                       <Chip tone={b.kind === 'auto' ? 'info' : undefined}>{b.kind === 'auto' ? 'Automatic' : 'Manual'}</Chip>
+                      {b.label && <Chip>{b.label}</Chip>}
                       {formatBytes(b.bytes)}
                     </span>
                   </span>
@@ -1565,6 +1620,62 @@ function TablePicker({ tables, selected, onChange, disabled, sizeLabel = '' }) {
 // `wpdev db-export` / `db-import` through the api: the dump downloads to
 // the browser, and an uploaded one replaces the site's database -- or,
 // with only some of its tables checked, just those tables.
+// The import's steps as a checklist -- done, running, still to come --
+// with the running one's percentage and table, and the time so far, so a
+// long import visibly moves.
+function ImportProgress({ progress }) {
+  const { steps, current, pct, table, startedAt } = progress;
+  const [now, setNow] = useState(Date.now());
+  const ref = useRef(null);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  // Shown right after the confirmation closes, maybe below the fold of a
+  // long table list: bring it into view so the steps are what you watch.
+  useEffect(() => {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    ref.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
+  }, []);
+  const secs = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const elapsed = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  const percent = pct === null ? null : `${Math.round(pct * 100)}%`;
+  const detail = [percent, current === 1 ? table : null].filter(Boolean).join(' · ');
+  return (
+    <div className="import-progress" aria-live="polite" ref={ref}>
+      <ol className="import-steps">
+        {steps.map((label, i) => {
+          const state = i < current ? 'done' : i === current ? 'current' : 'pending';
+          const Icon = state === 'done' ? CheckCircle2 : state === 'current' ? Loader2 : Circle;
+          return (
+            <li key={label} className={`import-step is-${state}`}>
+              <Icon size={15} className={state === 'current' ? 'spin' : undefined} />
+              <span>{label}</span>
+              {state === 'current' && detail && <span className="import-step-detail mono">{detail}</span>}
+            </li>
+          );
+        })}
+      </ol>
+      <div className="progress" role="progressbar" aria-valuenow={pct === null ? undefined : Math.round(pct * 100)}>
+        <div className={`progress-bar${pct === null ? ' is-indeterminate' : ''}`} style={pct === null ? undefined : { width: `${pct * 100}%` }} />
+        <span className="progress-label">
+          Step {current + 1} of {steps.length} · {steps[current]}
+          {percent ? ` · ${percent}` : '…'}
+          <span className="progress-elapsed mono">{elapsed}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// The Export section's download formats; the choice is kept per browser.
+const EXPORT_FORMAT_KEY = 'wpdev.exportFormat';
+const EXPORT_FORMATS = [
+  { value: 'sql.gz', label: '.sql.gz', hint: 'Gzipped SQL: several times smaller; imports here and in most tools.' },
+  { value: 'gz', label: 'UpdraftPlus .gz', hint: 'Gzipped SQL named like an UpdraftPlus database backup, so its "Upload backup files" takes it.' },
+  { value: 'sql', label: '.sql', hint: 'Plain SQL: bigger, but opens in any text editor.' },
+];
+
 function DatabaseTab({ site }) {
   const toast = useToast();
   const url = siteUrl(site.domain);
@@ -1574,6 +1685,23 @@ function DatabaseTab({ site }) {
   const [tablesError, setTablesError] = useState(null);
   const [exportSel, setExportSel] = useState(new Set());
   const [exporting, setExporting] = useState(false);
+  // .sql.gz or .sql, remembered in this browser.
+  const [exportFormat, setExportFormatState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(EXPORT_FORMAT_KEY);
+      return EXPORT_FORMATS.some((f) => f.value === saved) ? saved : 'sql.gz';
+    } catch {
+      return 'sql.gz';
+    }
+  });
+  const setExportFormat = (f) => {
+    setExportFormatState(f);
+    try {
+      localStorage.setItem(EXPORT_FORMAT_KEY, f);
+    } catch {
+      // Private window or blocked storage: it just isn't remembered.
+    }
+  };
 
   useEffect(() => {
     api
@@ -1604,7 +1732,7 @@ function DatabaseTab({ site }) {
   const exportDb = async () => {
     setExporting(true);
     try {
-      const { size, filename } = await api.dbExport(site.name, exportAll || !tables ? undefined : [...exportSel]);
+      const { size, filename } = await api.dbExport(site.name, exportAll || !tables ? undefined : [...exportSel], exportFormat);
       toast({ tone: 'success', title: 'Database exported', description: `${filename}, ${formatBytes(size)}` });
     } catch (e) {
       toast({
@@ -1628,7 +1756,10 @@ function DatabaseTab({ site }) {
   const [importSel, setImportSel] = useState(new Set());
   const [rewriteUrls, setRewriteUrls] = useState(true);
   const [confirmImport, setConfirmImport] = useState(false);
-  // null when idle; 0..1 while uploading; 'importing' once wpdev has it.
+  // null when idle; else {steps, current, pct, table, startedAt}: steps
+  // are the labels (the upload, then wpdev's own), current the index of
+  // the running one, pct 0..1 or null when that step can't say, table the
+  // one being loaded.
   const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
   const importing = progress !== null;
@@ -1657,12 +1788,27 @@ function DatabaseTab({ site }) {
   const importDb = async () => {
     setConfirmImport(false);
     setResult(null);
-    setProgress(0);
+    const steps = ['Upload the dump', 'Import tables', 'Flush the cache'];
+    if (rewriteUrls) steps.push('Re-point URLs');
+    setProgress({ steps, current: 0, pct: 0, table: null, startedAt: Date.now() });
     try {
       const r = await api.dbImport(site.name, file, {
         tables: importAll ? undefined : [...importSel],
         rewriteUrls,
-        onProgress: (p) => setProgress(p === null ? 'importing' : p),
+        // All sent means wpdev has it; its first [STEP] line follows.
+        onUpload: (pct) => setProgress((p) => (pct < 1 ? { ...p, pct } : { ...p, current: 1, pct: 0 })),
+        onLine: ({ line }) => {
+          const text = stripAnsi(line);
+          const pct = /^PROGRESS (\d+)$/.exec(text);
+          if (pct) return setProgress((p) => ({ ...p, pct: Math.min(Number(pct[1]), 100) / 100 }));
+          const table = /^TABLE (\S+)$/.exec(text);
+          if (table) return setProgress((p) => ({ ...p, table: table[1] }));
+          const step = /\[STEP\]\s+(\d+)\/\d+\s/.exec(text);
+          if (step) {
+            const current = Number(step[1]);
+            setProgress((p) => ({ ...p, current, pct: current === 1 ? 0 : null, table: null }));
+          }
+        },
       });
       setResult(r.stdout);
       setFile(null);
@@ -1683,24 +1829,43 @@ function DatabaseTab({ site }) {
 
       <section className="panel-section">
         <h4>Export</h4>
-        <p className="muted">Download this site's database, or just the tables you check, as a gzipped SQL dump.</p>
+        <p className="muted">Download this site's database, or just the tables you check, as an SQL dump.</p>
         {tablesError && <p className="error">Couldn't list the tables: {tablesError}</p>}
         {!tables && !tablesError && <Skeleton height={120} />}
         {tables && <TablePicker tables={tables} selected={exportSel} onChange={setExportSel} disabled={exporting} />}
-        <div className="button-row">
+        <div className="export-row">
+          <div className="format-toggle" role="radiogroup" aria-label="File type">
+            {EXPORT_FORMATS.map((f) => (
+              <button
+                key={f.value}
+                type="button"
+                role="radio"
+                aria-checked={exportFormat === f.value}
+                className={exportFormat === f.value ? 'is-active' : undefined}
+                disabled={exporting}
+                onClick={() => setExportFormat(f.value)}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
           <button type="button" className="btn btn-primary" onClick={exportDb} disabled={exporting || (tables && exportSel.size === 0)}>
             <Download size={15} />{' '}
-            {exporting ? 'Exporting…' : exportAll || !tables ? 'Download .sql.gz' : `Download ${exportSel.size} table${exportSel.size === 1 ? '' : 's'}`}
+            {exporting ? 'Exporting…' : exportAll || !tables ? 'Download' : `Download ${exportSel.size} table${exportSel.size === 1 ? '' : 's'}`}
           </button>
         </div>
+        <p className="field-hint export-hint">
+          {EXPORT_FORMATS.find((f) => f.value === exportFormat).hint} Saved as{' '}
+          <code>{exportFileName(site.name, exportFormat, '<random>')}</code>
+        </p>
       </section>
 
       <section className="panel-section">
         <h4>Import</h4>
         <p className="muted">
-          Replace this site's database with a <code>.sql</code> or <code>.sql.gz</code> dump, for example one from production,
-          or uncheck tables to replace only the rest and keep this site's own. Nothing replaced is saved first: export it
-          above, or take a snapshot.
+          Replace this site's database with a <code>.sql</code> or <code>.sql.gz</code> dump, for example one from production
+          or an UpdraftPlus database backup (<code>…-db.gz</code>). Its tables are listed once the file is read: uncheck
+          any to keep this site's own. Nothing replaced is saved first: export it above, or take a snapshot.
         </p>
         <label className={`file-pick${file ? ' has-file' : ''}${importing ? ' is-disabled' : ''}`}>
           <input
@@ -1722,7 +1887,7 @@ function DatabaseTab({ site }) {
           ) : (
             <span className="file-pick-text">
               <strong>Choose a dump</strong>
-              <span>.sql or .sql.gz, up to 2 GB</span>
+              <span>.sql, .sql.gz or UpdraftPlus -db.gz, up to 2 GB</span>
             </span>
           )}
         </label>
@@ -1734,7 +1899,8 @@ function DatabaseTab({ site }) {
         )}
         {scanError && (
           <p className="field-hint field-hint-error">
-            Couldn't read this file ({scanError}). Is it a .sql or .sql.gz dump?
+            Couldn't list this file's tables ({scanError}). If it's a .sql or gzipped dump, it can still be
+            imported whole.
           </p>
         )}
         {dumpTablesList && dumpTablesList.length === 0 && (
@@ -1763,15 +1929,7 @@ function DatabaseTab({ site }) {
             </span>
           </span>
         </label>
-        {importing && (
-          <div className="progress" role="progressbar" aria-valuenow={progress === 'importing' ? undefined : Math.round(progress * 100)}>
-            <div
-              className={`progress-bar${progress === 'importing' ? ' is-indeterminate' : ''}`}
-              style={progress === 'importing' ? undefined : { width: `${progress * 100}%` }}
-            />
-            <span className="progress-label">{progress === 'importing' ? 'Importing…' : `Uploading ${Math.round(progress * 100)}%`}</span>
-          </div>
-        )}
+        {importing && <ImportProgress progress={progress} />}
         <div className="button-row">
           <button type="button" className="btn btn-danger" disabled={!canImport} onClick={() => setConfirmImport(true)}>
             <Upload size={15} />{' '}

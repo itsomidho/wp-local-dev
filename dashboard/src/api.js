@@ -100,7 +100,8 @@ export const api = {
   dbExport,
   dbImport,
   backups: (name) => request('GET', `/api/sites/${name}/backups`),
-  backupNow: (name) => request('POST', `/api/sites/${name}/backups`),
+  // suffix (optional) ends the file name instead of "manual".
+  backupNow: (name, suffix) => request('POST', `/api/sites/${name}/backups`, suffix ? { suffix } : undefined),
   backupSchedule: (name, body) => request('PUT', `/api/sites/${name}/backups/schedule`, body),
   restoreBackup: (name, file) => request('POST', `/api/sites/${name}/backups/${encodeURIComponent(file)}/restore`),
   deleteBackup: (name, file) => request('DELETE', `/api/sites/${name}/backups/${encodeURIComponent(file)}`),
@@ -123,12 +124,15 @@ export const api = {
   },
 };
 
-// The site's database as a .sql.gz, fetched rather than linked so the
+// The site's database as a dump, fetched rather than linked so the
 // Authorization header goes along, then handed to the browser to save.
-// `tables` limits it to those; omitted, it's every table.
-async function dbExport(name, tables) {
-  const query = tables ? `?tables=${encodeURIComponent(tables.join(','))}` : '';
-  const res = await fetch(`${apiBase()}/api/sites/${name}/db/export${query}`, { headers: authHeaders() });
+// `tables` limits it to those; omitted, it's every table. `format` is
+// 'sql.gz' (the default), 'gz' or 'sql'; exportFileName says what it's
+// saved as.
+async function dbExport(name, tables, format = 'sql.gz') {
+  const params = new URLSearchParams({ format });
+  if (tables) params.set('tables', tables.join(','));
+  const res = await fetch(`${apiBase()}/api/sites/${name}/db/export?${params}`, { headers: authHeaders() });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     const err = new Error(data.error || `HTTP ${res.status}`);
@@ -136,16 +140,28 @@ async function dbExport(name, tables) {
     throw err;
   }
   const blob = await res.blob();
-  // site_20261013-1530.sql.gz, in local time.
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `${name}_${stamp}.sql.gz`;
+  a.download = exportFileName(name, format);
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   return { size: blob.size, filename: a.download };
+}
+
+// What an export is saved as, stamped with local time:
+//   sql.gz / sql  site_20261025-1530.sql.gz
+//   gz            backup_2026-10-25-1530_site_<12 hex>-db.gz -- an
+//                 UpdraftPlus database backup's name, which its "Upload
+//                 backup files" accepts. The 12 hex are random unless
+//                 `hex` is given (a preview passes a placeholder).
+export function exportFileName(name, format, hex) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const ymd = [d.getFullYear(), pad(d.getMonth() + 1), pad(d.getDate())];
+  const hm = `${pad(d.getHours())}${pad(d.getMinutes())}`;
+  if (format !== 'gz') return `${name}_${ymd.join('')}-${hm}.${format}`;
+  const id = hex || [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `backup_${ymd.join('-')}-${hm}_${name}_${id}-db.gz`;
 }
 
 // One of the site's backups, saved by the browser under its own name.
@@ -178,11 +194,14 @@ async function downloadDebugLog(name) {
 }
 
 // Uploads a .sql/.sql.gz dump over the site's database. XHR rather than
-// fetch, for upload progress: onProgress(0..1) while the file goes up,
-// then onProgress(null) while wpdev imports it.
+// fetch, for upload progress: onUpload(0..1) while the file goes up. Then
+// wpdev's output arrives as Server-Sent Events on the same response (read
+// as it grows): onLine({stream, line}) per line -- its steps and
+// "PROGRESS <n>" lines. Resolves with {code, stdout, stderr} when it exits
+// 0, rejects with that as err.data otherwise.
 // `tables` replaces just those, keeping the rest; omitted, the whole
 // database is replaced.
-function dbImport(name, file, { tables, rewriteUrls, onProgress } = {}) {
+function dbImport(name, file, { tables, rewriteUrls, onUpload, onLine } = {}) {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append('rewriteUrls', rewriteUrls ? '1' : '0');
@@ -190,19 +209,50 @@ function dbImport(name, file, { tables, rewriteUrls, onProgress } = {}) {
     if (tables) form.append('tables', tables.join(','));
     form.append('file', file);
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${apiBase()}/api/sites/${name}/db/import`);
+    xhr.open('POST', `${apiBase()}/api/sites/${name}/db/import?stream=1`);
     for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
-    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
-    xhr.upload.onload = () => onProgress?.(null);
-    xhr.onerror = () => reject(new Error('Upload failed: the API is unreachable'));
+    let uploaded = false;
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      if (e.loaded >= e.total) uploaded = true;
+      onUpload?.(e.loaded / e.total);
+    };
+
+    let seen = 0;
+    let done = null;
+    const isStream = () => (xhr.getResponseHeader('Content-Type') || '').startsWith('text/event-stream');
+    const readFrames = () => {
+      if (!isStream()) return;
+      let idx;
+      while ((idx = xhr.responseText.indexOf('\n\n', seen)) !== -1) {
+        parseSSEFrame(xhr.responseText.slice(seen, idx), { onLine, onDone: (d) => (done = d) });
+        seen = idx + 2;
+      }
+    };
+    xhr.onprogress = readFrames;
+    xhr.onerror = () =>
+      reject(
+        new Error(
+          uploaded || seen > 0
+            ? 'Lost the connection to the API during the import. wpdev keeps going on its own: check the tables above again in a few minutes.'
+            : 'Upload failed: the API is unreachable',
+        ),
+      );
     xhr.onload = () => {
+      if (isStream()) {
+        readFrames();
+        if (done && done.code === 0) return resolve(done);
+        const err = new Error(done ? `wpdev exited with code ${done.code}` : 'The import stopped without a result');
+        err.data = done || {};
+        return reject(err);
+      }
+      // An error before wpdev started (a bad table list...) is plain JSON.
       let data;
       try {
         data = JSON.parse(xhr.responseText);
       } catch {
         data = { raw: xhr.responseText };
       }
-      if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
       const err = new Error(data.error || `HTTP ${xhr.status}`);
       err.status = xhr.status;
       err.data = data;

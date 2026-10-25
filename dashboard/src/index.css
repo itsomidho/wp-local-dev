@@ -3882,6 +3882,132 @@ button.version:hover {
   color: var(--text);
 }
 
+.progress-elapsed {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.export-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.format-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+}
+
+.format-toggle button {
+  height: 30px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+
+.format-toggle button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.format-toggle button.is-active {
+  background: var(--active);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.format-toggle button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-hint {
+  display: block;
+  margin: 8px 0 16px;
+  overflow-wrap: anywhere;
+}
+
+.backup-now {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backup-now input {
+  width: 170px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+@media (max-width: 560px) {
+  .backup-now input {
+    width: 120px;
+  }
+}
+
+.import-progress {
+  display: grid;
+  gap: 10px;
+}
+
+.import-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.import-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.import-step.is-done {
+  color: var(--text);
+}
+
+.import-step.is-done svg {
+  color: var(--success);
+}
+
+.import-step.is-current {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.import-step.is-current svg {
+  color: var(--brand);
+}
+
+.import-step-detail {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .danger-zone {
   display: flex;
   flex-direction: column;

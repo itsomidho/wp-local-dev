@@ -124,7 +124,7 @@ _wpdev_complete() {
             fi
             ;;
         db-backup)
-            COMPREPLY=($(compgen -W "$(_wpdev_sites) --all --due" -- "$cur"))
+            COMPREPLY=($(compgen -W "$(_wpdev_sites) --all --due --suffix=" -- "$cur"))
             ;;
         update-check)
             COMPREPLY=($(compgen -W "--porcelain" -- "$cur"))

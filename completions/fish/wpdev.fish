@@ -154,6 +154,7 @@ complete -c wpdev -f -n "__fish_seen_subcommand_from db-import db-export" -r -l 
 complete -c wpdev -f -n "__fish_seen_subcommand_from update-check" -l porcelain -d "KEY=value lines, for scripts"
 complete -c wpdev -f -n "__fish_seen_subcommand_from db-backup" -l all -d "Every site"
 complete -c wpdev -f -n "__fish_seen_subcommand_from db-backup" -l due -d "Sites whose schedule says it's time"
+complete -c wpdev -x -n "__fish_seen_subcommand_from db-backup" -l suffix -a "before-import before-update before-migration" -d "Ends the file name instead of manual"
 complete -c wpdev -f -n "__fish_seen_subcommand_from db-backups; and __wpdev_arg_n 3" -a "schedule rm"
 complete -c wpdev -f -n "__fish_seen_subcommand_from db-backups; and __fish_seen_subcommand_from schedule" -a "1h 6h 12h 1d 1w off"
 complete -c wpdev -f -n "__fish_seen_subcommand_from db-backups; and __fish_seen_subcommand_from schedule" -r -l keep -d "Automatic backups to keep"
