@@ -595,15 +595,18 @@ function CacheTab({ site }) {
       </div>
       <div className="button-row">
         <button className="btn btn-secondary" disabled={busy || !on} onClick={() => setConfirmPurge(true)}>
-          Purge cache
+          Purge full-page cache (all sites)
         </button>
       </div>
-      <p className="muted">Purge clears the full-page cache shared by every site that has it on.</p>
+      <p className="muted">
+        Deletes the saved pages in nginx&rsquo;s full-page cache. That cache is shared, so this clears it for every
+        site, not just {site.domain}. The Redis object cache isn&rsquo;t touched.
+      </p>
       {result && <Output>{result}</Output>}
       {confirmPurge && (
         <ConfirmDialog
-          title="Purge the full-page cache?"
-          message="Clears cached pages for every site that has caching enabled, not just this one."
+          title="Purge the full-page cache for all sites?"
+          message="Deletes the saved pages in nginx's full-page cache for every site that has it on, not just this one. Redis is not affected. Pages are cached again as they're visited."
           onCancel={() => setConfirmPurge(false)}
           onConfirm={purge}
         />
