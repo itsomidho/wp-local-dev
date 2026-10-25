@@ -466,6 +466,64 @@ function PowerTab({ site }) {
   );
 }
 
+// Redis object cache for one site, through WP-CLI's `wp redis` (the
+// redis-cache plugin). Disabling removes the site's object-cache drop-in, so
+// it stops using Redis; the shared Redis container keeps running.
+function RedisSection({ site }) {
+  const [state, setState] = useState(null); // 'Connected' | 'Not enabled' | other status text | 'unavailable'
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const refresh = async () => {
+    try {
+      const r = await api.wpCli(site.name, ['redis', 'status']);
+      const m = /^Status:\s*(.+)$/m.exec(stripAnsi(r.stdout || ''));
+      setState(m ? m[1].trim() : 'unavailable');
+    } catch {
+      setState('unavailable');
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
+
+  const run = async (action) => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.wpCli(site.name, ['redis', action]);
+      setResult(stripAnsi(r.stdout || r.stderr || ''));
+    } catch (e) {
+      setResult(stripAnsi(e.data?.stderr || e.data?.stdout || e.message));
+    } finally {
+      await refresh();
+      setBusy(false);
+    }
+  };
+
+  const enabled = state === 'Connected';
+  return (
+    <>
+      <h3>Redis object cache</h3>
+      <p className="muted">
+        Status: {state ?? 'checking…'}. Turning it off only affects this site; the
+        shared Redis container keeps running.
+      </p>
+      <div className="button-row">
+        <button className="btn btn-primary" disabled={busy || state === null || enabled} onClick={() => run('enable')}>
+          Turn on
+        </button>
+        <button className="btn btn-secondary" disabled={busy || state === null || state === 'Not enabled' || state === 'Disabled'} onClick={() => run('disable')}>
+          Turn off
+        </button>
+      </div>
+      {result && <Output>{result}</Output>}
+    </>
+  );
+}
+
 function CacheTab({ site }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -516,6 +574,7 @@ function CacheTab({ site }) {
         </button>
       </div>
       {result && <Output>{result}</Output>}
+      <RedisSection site={site} />
       {confirmPurge && (
         <ConfirmDialog
           title="Purge the full-page cache?"
