@@ -4,7 +4,7 @@ import { Server, Database, Zap, Mail, Code2, Terminal, LayoutDashboard, Table2, 
 // from `docker compose ps` is shown as stopped; one not listed here still
 // shows up (with a generic icon) if compose reports it.
 export const SERVICE_INFO = {
-  nginx: { label: 'Nginx', role: 'Web server and HTTPS for every site', icon: Server, impact: 'Every site is unreachable for a few seconds.' },
+  nginx: { label: 'Nginx', role: 'Web server and HTTPS for every site', icon: Server, purge: true, impact: 'Every site is unreachable for a few seconds.' },
   mysql: { label: 'MySQL', role: 'Databases for every site', icon: Database, impact: 'Every site shows a database error until MySQL is back, usually a few seconds.' },
   redis: { label: 'Redis', role: 'Object cache', icon: Zap, impact: 'The object cache starts empty, so the next page loads are slower while it refills.' },
   php74: { label: 'PHP 7.4', role: 'PHP-FPM', icon: Code2, php: '7.4', impact: 'Sites on PHP 7.4 return errors for a few seconds.' },

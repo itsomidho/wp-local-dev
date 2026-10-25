@@ -2119,6 +2119,7 @@ button.version:hover {
 
 .service-card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   /* Ghost buttons' own padding lines their text up with the card edges. */
   width: calc(100% + 20px);

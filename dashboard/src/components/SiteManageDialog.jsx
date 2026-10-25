@@ -484,10 +484,12 @@ function RedisSection({ site }) {
     }
   };
 
+  // A switched-off site has no PHP running, so WP-CLI (and so Redis) can't be
+  // reached until it's switched on.
   useEffect(() => {
-    refresh();
+    if (!site.off) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [site.name]);
+  }, [site.name, site.off]);
 
   const run = async (action) => {
     setBusy(true);
@@ -512,15 +514,21 @@ function RedisSection({ site }) {
         <span>
           Keeps database lookups in memory for this site. Turning it off only affects this site; the shared Redis
           container keeps running.
-          {!known && state !== null && ` Status: ${state}.`}
+          {site.off
+            ? ' Switch this site on to change it.'
+            : !known && state !== null && ` Status: ${state}.`}
         </span>
       </span>
-      <Switch
-        label="Redis object cache"
-        checked={state === 'Connected'}
-        disabled={busy || !known}
-        onChange={(next) => run(next ? 'enable' : 'disable')}
-      />
+      {site.off ? (
+        <Chip tone="muted">Site is off</Chip>
+      ) : (
+        <Switch
+          label="Redis object cache"
+          checked={state === 'Connected'}
+          disabled={busy || !known}
+          onChange={(next) => run(next ? 'enable' : 'disable')}
+        />
+      )}
     </div>
     {result && <Output>{result}</Output>}
     </>
@@ -530,7 +538,6 @@ function RedisSection({ site }) {
 function CacheTab({ site }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
-  const [confirmPurge, setConfirmPurge] = useState(false);
   const [on, setOn] = useState(null); // full-page cache: true / false / null while unknown
 
   const refresh = async () => {
@@ -562,20 +569,6 @@ function CacheTab({ site }) {
     }
   };
 
-  const purge = async () => {
-    setConfirmPurge(false);
-    setBusy(true);
-    setResult(null);
-    try {
-      const r = await api.cachePurge();
-      setResult(r.stdout);
-    } catch (e) {
-      setResult(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="tab-panel">
       <div className="switch-list">
@@ -593,24 +586,7 @@ function CacheTab({ site }) {
         </div>
         <RedisSection site={site} />
       </div>
-      <div className="button-row">
-        <button className="btn btn-secondary" disabled={busy || !on} onClick={() => setConfirmPurge(true)}>
-          Purge full-page cache (all sites)
-        </button>
-      </div>
-      <p className="muted">
-        Deletes the saved pages in nginx&rsquo;s full-page cache. That cache is shared, so this clears it for every
-        site, not just {site.domain}. The Redis object cache isn&rsquo;t touched.
-      </p>
       {result && <Output>{result}</Output>}
-      {confirmPurge && (
-        <ConfirmDialog
-          title="Purge the full-page cache for all sites?"
-          message="Deletes the saved pages in nginx's full-page cache for every site that has it on, not just this one. Redis is not affected. Pages are cached again as they're visited."
-          onCancel={() => setConfirmPurge(false)}
-          onConfirm={purge}
-        />
-      )}
     </div>
   );
 }

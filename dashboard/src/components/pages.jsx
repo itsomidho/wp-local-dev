@@ -22,6 +22,7 @@ import {
   Settings2,
   RotateCw,
   Loader2,
+  Eraser,
 } from 'lucide-react';
 import { siteUrl } from '../api';
 import MachineStats from './MachineStats';
@@ -381,7 +382,7 @@ export function stateTone(state) {
   return 'danger';
 }
 
-export function ServicesPage({ sites, services, status, onOpenTool, onShowLogs, onRefresh, onRestart, onShowDetails, restarting }) {
+export function ServicesPage({ sites, services, status, onOpenTool, onShowLogs, onRefresh, onRestart, onShowDetails, onPurgeCache, restarting }) {
   const merged = mergeServices(services, phpInUse(sites));
   const idlePhp = idlePhpVersions(services, phpInUse(sites));
   const loading = !status.checkedAt;
@@ -450,6 +451,17 @@ export function ServicesPage({ sites, services, status, onOpenTool, onShowLogs, 
                   <button type="button" className="btn btn-ghost btn-sm" onClick={() => onShowDetails(svc.service)} disabled={svc.state === 'stopped'}>
                     <Info size={14} /> Details
                   </button>
+                  {info.purge && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={onPurgeCache}
+                      disabled={loading || svc.state === 'stopped'}
+                      title="Delete the saved pages in the full-page cache, for every site"
+                    >
+                      <Eraser size={14} /> Purge page cache
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"

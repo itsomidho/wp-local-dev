@@ -127,6 +127,7 @@ export default function App() {
   const [confirmStack, setConfirmStack] = useState(null);
   const [showUpdates, setShowUpdates] = useState(false);
   const [confirmServiceRestart, setConfirmServiceRestart] = useState(null); // service name
+  const [confirmPurge, setConfirmPurge] = useState(false);
   const [restarting, setRestarting] = useState([]); // service names mid-restart
 
   // --- navigation (hash-based, so a reload or bookmark keeps the page) ---
@@ -540,6 +541,7 @@ export default function App() {
               onShowLogs={setLogsFor}
               onRefresh={refreshStatus}
               onRestart={setConfirmServiceRestart}
+              onPurgeCache={() => setConfirmPurge(true)}
               onShowDetails={setDetailsFor}
               restarting={restarting}
             />
@@ -598,6 +600,24 @@ export default function App() {
             const action = confirmStack;
             setConfirmStack(null);
             runStackAction(action);
+          }}
+        />
+      )}
+
+      {confirmPurge && (
+        <ConfirmDialog
+          title="Purge the full-page cache for all sites?"
+          message="Deletes the saved pages in nginx's full-page cache for every site that has it on. Redis is not affected. Pages are cached again as they're visited."
+          confirmLabel="Purge"
+          onCancel={() => setConfirmPurge(false)}
+          onConfirm={async () => {
+            setConfirmPurge(false);
+            try {
+              await api.cachePurge();
+              toast({ tone: 'success', title: 'Full-page cache purged', description: 'For every site that has it on.' });
+            } catch (e) {
+              toast({ tone: 'error', title: "Couldn't purge the cache", description: e.message });
+            }
           }}
         />
       )}

@@ -6352,7 +6352,10 @@ migrate_env_ports
 
 # A site that's off has no PHP running; these commands need it.
 case "${1:-}" in
-    wp|debug|cache|media-proxy|admin-domain|fix-perms|snapshot|restore|clone|db-import|remove)
+    cache)
+        # `cache <site> status` only reads the vhost; it needs no PHP.
+        [ "${3:-}" = "status" ] || wake_php_for_off_site "${2:-}" ;;
+    wp|debug|media-proxy|admin-domain|fix-perms|snapshot|restore|clone|db-import|remove)
         wake_php_for_off_site "${2:-}" ;;
 esac
 
