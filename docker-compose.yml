@@ -14,6 +14,8 @@ services:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
     volumes:
       - wp_mysql_data:/var/lib/mysql
+      # Dev tuning (no binary log, lazier fsync, bigger buffer pool) -- see the file.
+      - ./mysql/wpdev.cnf:/etc/mysql/conf.d/wpdev.cnf:ro
     networks:
       - network
 
@@ -111,6 +113,7 @@ services:
       - ./php/crontab:/usr/local/share/wpdev/crontab:ro
       - ./php/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
       - ./php/mail.ini:/usr/local/etc/php/conf.d/mail.ini
+      - ./php/fpm-pool.conf:/usr/local/etc/php-fpm.d/zz-wpdev.conf:ro
       - ./php/msmtprc:/etc/msmtprc
       - ./php/wp-cron-runner.sh:/usr/local/bin/wp-cron-runner.sh
       # wpdev's per-site settings, read-only, so the cron runner knows each

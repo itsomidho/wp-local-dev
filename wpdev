@@ -1715,12 +1715,15 @@ update_notice() {
 # the server is up -- and over TCP, which the init-time server doesn't
 # listen on.
 mysql_state() {
-    if ! docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then
-        echo 0
-    elif docker compose exec -T mysql mysqladmin ping -h127.0.0.1 --silent </dev/null >/dev/null 2>&1; then
+    # The ping first: when MySQL is healthy (nearly always) that's one docker
+    # call, not two. 1 = answering, 2 = container up but not answering yet,
+    # 0 = container not running.
+    if docker compose exec -T mysql mysqladmin ping -h127.0.0.1 --silent </dev/null >/dev/null 2>&1; then
         echo 1
-    else
+    elif docker compose exec -T mysql true </dev/null >/dev/null 2>&1; then
         echo 2
+    else
+        echo 0
     fi
 }
 
@@ -1729,7 +1732,7 @@ mysql_state() {
 # redis status`, boots WordPress, so doing sites one after another made
 # status take seconds per site.
 status_site_row() {
-    local domain="$1" mysql_up="$2" mysql_version="$3"
+    local domain="$1" mysql_up="$2" mysql_version="$3" redis_up="${4:-0}"
     local site_name config php_version php_svc http_code db_status db_name php_reachable cache_status wp_version
     site_name="$(site_name_of "$domain")"
     config="sites/${site_name}/wp-config.php"
@@ -1760,15 +1763,17 @@ status_site_row() {
         db_status="down"
     fi
 
-    php_reachable=0
-    if [ "$http_code" != "off" ] && [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
-        php_reachable=1
-    fi
-
+    # The object cache is "Connected" when the redis-cache drop-in is in place
+    # and Redis answers (one ping for the whole table, in cmd_status). Reading
+    # the file is instant; the old way ran `wp redis status`, which boots all
+    # of WordPress for every site -- most of what made `status` slow.
     cache_status="n/a"
-    if [ "$php_reachable" -eq 1 ]; then
-        cache_status="$(php_exec "$php_svc" wp redis status --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null | grep "^Status:" | awk '{print $2}')"
-        [ -z "$cache_status" ] && cache_status="off"
+    if [ "$http_code" != "off" ] && [ -f "$config" ]; then
+        if [ "$redis_up" -eq 1 ] && grep -qs "Redis Object Cache Drop-In" "sites/${site_name}/wp-content/object-cache.php"; then
+            cache_status="Connected"
+        else
+            cache_status="off"
+        fi
     fi
 
     # Straight from the core's own version.php when it's where WordPress
@@ -1781,7 +1786,7 @@ status_site_row() {
     fi
     if [ -z "$wp_version" ] || [ "$wp_version" = "n/a" ]; then
         wp_version="n/a"
-        if [ "$php_reachable" -eq 1 ]; then
+        if [ "$http_code" != "off" ] && [ -f "$config" ] && php_exec "$php_svc" true </dev/null >/dev/null 2>&1; then
             wp_version="$(php_exec "$php_svc" wp core version --path="/var/www/${site_name}" --allow-root </dev/null 2>/dev/null)"
             [ -z "$wp_version" ] && wp_version="n/a"
         fi
@@ -1820,6 +1825,10 @@ cmd_status() {
         [ -z "$mysql_version" ] && mysql_version="n/a"
     fi
 
+    # Redis is shared too: one ping here instead of a WordPress boot per site.
+    local redis_up=0
+    if docker compose exec -T redis redis-cli ping </dev/null 2>/dev/null | grep -q PONG; then redis_up=1; fi
+
     printf "%-28s %-6s %-9s %-9s %-6s %-10s %s\n" "DOMAIN" "PHP" "WP" "MYSQL" "HTTP" "DATABASE" "CACHE"
     # Rows are checked in parallel, at most 6 sites at a time, each into its
     # own file, then printed in the usual order.
@@ -1829,7 +1838,7 @@ cmd_status() {
     rows="$(mktemp -d)"
     for domain in $domains; do
         row_domains+=("$domain")
-        status_site_row "$domain" "$mysql_up" "$mysql_version" >"${rows}/${i}" 2>/dev/null &
+        status_site_row "$domain" "$mysql_up" "$mysql_version" "$redis_up" >"${rows}/${i}" 2>/dev/null &
         i=$((i + 1))
         if [ $((i % 6)) -eq 0 ]; then wait; fi
     done

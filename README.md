@@ -914,6 +914,27 @@ In the dashboard: the share button on a site's card, or **Manage →
 Share**, with copy buttons, QR codes, the countdown, **+1 hour** and **Stop
 sharing**. Shared sites carry a *Shared* chip.
 
+## Performance
+
+Defaults are tuned for a development machine, not for surviving a power cut:
+
+- **MySQL** (`mysql/wpdev.cnf`) runs with no binary log, flushes its redo log
+  about once a second instead of on every commit, has a 512M buffer pool, and
+  `performance_schema` off. Small writes (WordPress makes many) are around 6x
+  faster. The trade-off: an OS crash or power loss can lose the last second of
+  writes. Your data is otherwise safe; `wpdev backup` and snapshots are
+  unaffected. Edit the file and run `wpdev restart mysql` to change it.
+- **PHP-FPM** (`php/fpm-pool.conf`) allows up to 16 workers per PHP version
+  (the image default is 5), so a busy admin screen doesn't queue behind itself.
+- **`wpdev status`** reads whether the Redis object cache is connected from the
+  site's drop-in file and one ping, rather than booting WordPress per site.
+
+Upgrading from a version without `mysql/wpdev.cnf`: MySQL's old binary logs
+stay on disk (they were hundreds of MB). Once `wpdev update` has recreated the
+database container, remove them with
+`docker exec wp-mysql sh -c 'rm -f /var/lib/mysql/binlog.*'` and
+`wpdev restart mysql`.
+
 ## Xdebug
 
 Xdebug is installed but only attaches on demand
@@ -1578,10 +1599,14 @@ wp-local-dev/
 │           ├── AddSiteDialog.jsx, SiteManageDialog.jsx, ConfirmDialog.jsx
 │           ├── LogModal.jsx, StatusTable.jsx, Terminal.jsx
 │
+├── mysql/
+│   └── wpdev.cnf                # MySQL dev tuning: no binary log, lazier fsync, 512M buffer pool
+│
 ├── php/
 │   ├── Dockerfile               # wordpress:php${PHP_VERSION}-fpm + xdebug + phpredis + msmtp + cron + wp-cli
 │   ├── install-php-extensions   # mlocati/docker-php-extension-installer, used by the Dockerfile
 │   ├── xdebug.ini
+│   ├── fpm-pool.conf            # PHP-FPM worker pool (up to 16 workers instead of 5)
 │   ├── mail.ini                 # sendmail_path -> msmtp
 │   ├── msmtprc                  # msmtp: relay to mailpit:1025
 │   ├── crontab                  # /etc/cron.d entry — baked into the image, see "Real WP-Cron"
