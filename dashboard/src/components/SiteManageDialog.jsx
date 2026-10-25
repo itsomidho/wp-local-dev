@@ -466,13 +466,135 @@ function PowerTab({ site }) {
   );
 }
 
+// Redis object cache for one site, through WP-CLI. "On" means the
+// redis-cache plugin is active and its object-cache drop-in is installed;
+// turning it off removes the drop-in AND deactivates the plugin, and turning
+// it on reactivates the plugin first. The shared Redis container is never
+// touched.
+function RedisSection({ site }) {
+  // 'Connected' | 'Not enabled' (plugin on, drop-in off) | 'Plugin inactive'
+  // | 'Not installed' | other redis status text | 'unavailable' | null (unknown)
+  const [state, setState] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [target, setTarget] = useState(null); // where the switch is heading while a change runs
+  const [result, setResult] = useState(null);
+  // Refreshes the page's status table, which is what the site card's Redis chip reads.
+  const onChanged = useContext(PowerContext);
+
+  const wp = (...args) => api.wpCli(site.name, args);
+
+  const refresh = async () => {
+    try {
+      let plugin;
+      try {
+        plugin = stripAnsi((await wp('plugin', 'get', 'redis-cache', '--field=status')).stdout || '').trim();
+      } catch {
+        setState('Not installed');
+        return;
+      }
+      if (plugin !== 'active') {
+        setState('Plugin inactive');
+        return;
+      }
+      const r = await wp('redis', 'status');
+      const m = /^Status:\s*(.+)$/m.exec(stripAnsi(r.stdout || ''));
+      setState(m ? m[1].trim() : 'unavailable');
+    } catch {
+      setState('unavailable');
+    }
+  };
+
+  // A switched-off site has no PHP running, so WP-CLI (and so Redis) can't be
+  // reached until it's switched on.
+  useEffect(() => {
+    if (!site.off) refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name, site.off]);
+
+  const run = async (turnOn) => {
+    setBusy(true);
+    setTarget(turnOn);
+    setResult(null);
+    const out = [];
+    try {
+      const steps = turnOn
+        ? [['plugin', 'activate', 'redis-cache'], ['redis', 'enable']]
+        : [['redis', 'disable'], ['plugin', 'deactivate', 'redis-cache']];
+      for (const step of steps) {
+        // Skip a step that has nothing to do (e.g. activating an active plugin
+        // is fine, but `redis disable` needs the plugin's command to exist).
+        if (!turnOn && state === 'Plugin inactive' && step[0] === 'redis') continue;
+        const r = await wp(...step);
+        out.push(stripAnsi(r.stdout || r.stderr || '').trim());
+      }
+    } catch (e) {
+      out.push(stripAnsi(e.data?.stderr || e.data?.stdout || e.message).trim());
+    } finally {
+      setResult(out.filter(Boolean).join('\n'));
+      await refresh();
+      setBusy(false);
+      setTarget(null);
+      onChanged();
+    }
+  };
+
+  const known = state === 'Connected' || state === 'Not enabled' || state === 'Plugin inactive';
+  return (
+    <>
+      <div className="switch-row">
+        <span className="switch-text">
+          <strong>Redis object cache</strong>
+          <span>
+            Keeps database lookups in memory for this site. Turning it off also deactivates the
+            redis-cache plugin on this site; the shared Redis container keeps running.
+            {site.off
+              ? ' Switch this site on to change it.'
+              : state === 'Not installed'
+                ? ' The redis-cache plugin isn’t installed on this site.'
+                : !known && state !== null && ` Status: ${state}.`}
+          </span>
+        </span>
+        {site.off ? (
+          <Chip tone="muted">Site is off</Chip>
+        ) : (
+          <Switch
+            label="Redis object cache"
+            checked={busy && target !== null ? target : state === 'Connected'}
+            loading={busy || state === null}
+            disabled={!known}
+            onChange={run}
+          />
+        )}
+      </div>
+      {result && <Output>{result}</Output>}
+    </>
+  );
+}
+
 function CacheTab({ site }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
-  const [confirmPurge, setConfirmPurge] = useState(false);
+  const [on, setOn] = useState(null); // full-page cache: true / false, null while reading it, 'error' if it can't be read
+  const [target, setTarget] = useState(null); // where the switch is heading while a change runs
+
+  const refresh = async () => {
+    try {
+      const r = await api.cacheStatus(site.name);
+      const m = /Full-page cache:\s*(on|off)/.exec(stripAnsi(r.stdout || ''));
+      setOn(m ? m[1] === 'on' : 'error');
+    } catch {
+      setOn('error');
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
 
   const toggle = async (mode) => {
     setBusy(true);
+    setTarget(mode === 'on');
     setResult(null);
     try {
       const r = await api.cache(site.name, mode);
@@ -480,50 +602,34 @@ function CacheTab({ site }) {
     } catch (e) {
       setResult(e.data?.stdout || e.data?.stderr || e.message);
     } finally {
+      await refresh();
       setBusy(false);
-    }
-  };
-
-  const purge = async () => {
-    setConfirmPurge(false);
-    setBusy(true);
-    setResult(null);
-    try {
-      const r = await api.cachePurge();
-      setResult(r.stdout);
-    } catch (e) {
-      setResult(e.message);
-    } finally {
-      setBusy(false);
+      setTarget(null);
     }
   };
 
   return (
     <div className="tab-panel">
-      <p className="muted">
-        Full-page nginx cache for this site. Purge clears the cache shared by
-        every site that has it enabled.
-      </p>
-      <div className="button-row">
-        <button className="btn btn-primary" disabled={busy} onClick={() => toggle('on')}>
-          Turn on
-        </button>
-        <button className="btn btn-secondary" disabled={busy} onClick={() => toggle('off')}>
-          Turn off
-        </button>
-        <button className="btn btn-secondary" disabled={busy} onClick={() => setConfirmPurge(true)}>
-          Purge cache
-        </button>
+      <div className="switch-list">
+        <div className="switch-row">
+          <span className="switch-text">
+            <strong>Full-page cache</strong>
+            <span>
+              Nginx serves repeat visitors a saved copy of each page. Logged-in users and wp-admin are never cached.
+              {on === 'error' && ' Couldn’t read its current state — update wpdev (wpdev update) and reopen this tab.'}
+            </span>
+          </span>
+          <Switch
+            label="Full-page cache"
+            checked={busy && target !== null ? target : on === true}
+            loading={busy || on === null}
+            disabled={on === 'error'}
+            onChange={(next) => toggle(next ? 'on' : 'off')}
+          />
+        </div>
+        <RedisSection site={site} />
       </div>
       {result && <Output>{result}</Output>}
-      {confirmPurge && (
-        <ConfirmDialog
-          title="Purge the full-page cache?"
-          message="Clears cached pages for every site that has caching enabled, not just this one."
-          onCancel={() => setConfirmPurge(false)}
-          onConfirm={purge}
-        />
-      )}
     </div>
   );
 }

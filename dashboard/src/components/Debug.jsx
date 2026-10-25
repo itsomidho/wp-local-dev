@@ -25,15 +25,18 @@ const LOG_LINES = 2000;
 // Rows rendered before "Show more", so a huge log can't stall the page.
 const ROW_PAGE = 200;
 
-export function Switch({ checked, onChange, disabled, label }) {
+// loading: a change (or the first read of its state) is in progress -- shows a
+// spinner in the knob and ignores clicks, but looks busy rather than dimmed.
+export function Switch({ checked, onChange, disabled, label, loading }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
-      className={`switch${checked ? ' is-on' : ''}`}
-      disabled={disabled}
+      aria-busy={loading || undefined}
+      className={`switch${checked ? ' is-on' : ''}${loading ? ' is-loading' : ''}`}
+      disabled={disabled || loading}
       onClick={() => onChange(!checked)}
     >
       <span className="switch-knob" />

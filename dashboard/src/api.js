@@ -81,6 +81,7 @@ export const api = {
   adminDomain: (name, body) => request('POST', `/api/sites/${name}/admin-domain`, body),
   snapshots: (name) => request('GET', `/api/sites/${name}/snapshots`),
   wpCli: (name, args) => request('POST', `/api/sites/${name}/wp`, { args }),
+  cacheStatus: (name) => request('GET', `/api/sites/${name}/cache`),
   cache: (name, mode) => request('POST', `/api/sites/${name}/cache`, { mode }),
   cachePurge: () => request('POST', '/api/cache/purge'),
   stackUp: () => request('POST', '/api/stack/up'),

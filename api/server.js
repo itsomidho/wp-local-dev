@@ -310,6 +310,7 @@ app.post('/api/sites/:name/wp', requireValidSiteName, async (req, res) => {
   res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
 });
 
+app.get('/api/sites/:name/cache', requireValidSiteName, sync((req) => ['cache', req.params.name, 'status']));
 app.post('/api/sites/:name/cache', requireValidSiteName, async (req, res) => {
   const mode = req.body && req.body.mode;
   if (mode !== 'on' && mode !== 'off') {

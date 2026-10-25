@@ -414,7 +414,7 @@ show_help() {
     echo "  mailpit                   Open Mailpit in the browser (every site's outgoing mail, caught)"
     echo "  dashboard                 Open the web dashboard in the browser (GUI for everything above)"
     echo "  reload-nginx              Test and reload Nginx config"
-    echo "  cache <site> on|off       Toggle nginx full-page cache for a site (bypassed when logged in, on POST, wp-admin, etc.)"
+    echo "  cache <site> on|off|status  Toggle (or show) the nginx full-page cache for a site (bypassed when logged in, on POST, wp-admin, etc.)"
     echo "  cache-purge               Clear the full-page cache (shared across every site that has it enabled)"
     echo "  backup                    mysqldump --all-databases to backups/"
     echo "  restore-all [file] [--yes]  Replace every database from a backup (defaults to the latest in backups/)"
@@ -3346,19 +3346,29 @@ cmd_cache() {
     arg="$1"
     mode="$2"
     if [ -z "$arg" ] || [ -z "$mode" ]; then
-        print_warning "Usage: wpdev cache <site-name> <on|off>"
+        print_warning "Usage: wpdev cache <site-name> <on|off|status>"
         echo "Known sites: $(site_names | tr '\n' ' ')"
         return 1
     fi
     case "$mode" in
-        on|off) ;;
-        *) print_error "Mode must be 'on' or 'off', got '${mode}'" ;;
+        on|off|status) ;;
+        *) print_error "Mode must be 'on', 'off' or 'status', got '${mode}'" ;;
     esac
 
     resolve_site "$arg"
 
     if [ ! -f "nginx/sites/${domain}.conf" ]; then
         print_error "No such site: ${site_name} (checked nginx/sites/${domain}.conf)"
+    fi
+
+    if [ "$mode" = "status" ]; then
+        # The cached vhost is the only one that sets fastcgi_cache.
+        if grep -q '^[[:space:]]*fastcgi_cache ' "nginx/sites/${domain}.conf"; then
+            echo "Full-page cache: on"
+        else
+            echo "Full-page cache: off"
+        fi
+        return 0
     fi
 
     php_svc="$(site_php_service "$site_name")"
@@ -6342,7 +6352,10 @@ migrate_env_ports
 
 # A site that's off has no PHP running; these commands need it.
 case "${1:-}" in
-    wp|debug|cache|media-proxy|admin-domain|fix-perms|snapshot|restore|clone|db-import|remove)
+    cache)
+        # `cache <site> status` only reads the vhost; it needs no PHP.
+        [ "${3:-}" = "status" ] || wake_php_for_off_site "${2:-}" ;;
+    wp|debug|media-proxy|admin-domain|fix-perms|snapshot|restore|clone|db-import|remove)
         wake_php_for_off_site "${2:-}" ;;
 esac
 
