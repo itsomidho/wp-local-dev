@@ -528,6 +528,22 @@ function CacheTab({ site }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [confirmPurge, setConfirmPurge] = useState(false);
+  const [on, setOn] = useState(null); // full-page cache: true / false / null while unknown
+
+  const refresh = async () => {
+    try {
+      const r = await api.cacheStatus(site.name);
+      const m = /Full-page cache:\s*(on|off)/.exec(stripAnsi(r.stdout || ''));
+      setOn(m ? m[1] === 'on' : null);
+    } catch {
+      setOn(null);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
 
   const toggle = async (mode) => {
     setBusy(true);
@@ -538,6 +554,7 @@ function CacheTab({ site }) {
     } catch (e) {
       setResult(e.data?.stdout || e.data?.stderr || e.message);
     } finally {
+      await refresh();
       setBusy(false);
     }
   };
@@ -559,17 +576,18 @@ function CacheTab({ site }) {
   return (
     <div className="tab-panel">
       <p className="muted">
-        Full-page nginx cache for this site. Purge clears the cache shared by
-        every site that has it enabled.
+        Full-page nginx cache for this site:{' '}
+        <strong>{on === null ? 'checking…' : on ? 'on' : 'off'}</strong>. Purge clears the cache
+        shared by every site that has it enabled.
       </p>
       <div className="button-row">
-        <button className="btn btn-primary" disabled={busy} onClick={() => toggle('on')}>
+        <button className="btn btn-primary" disabled={busy || on === null || on} onClick={() => toggle('on')}>
           Turn on
         </button>
-        <button className="btn btn-secondary" disabled={busy} onClick={() => toggle('off')}>
+        <button className="btn btn-secondary" disabled={busy || on === null || !on} onClick={() => toggle('off')}>
           Turn off
         </button>
-        <button className="btn btn-secondary" disabled={busy} onClick={() => setConfirmPurge(true)}>
+        <button className="btn btn-secondary" disabled={busy || !on} onClick={() => setConfirmPurge(true)}>
           Purge cache
         </button>
       </div>
