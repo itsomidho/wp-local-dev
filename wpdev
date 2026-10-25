@@ -97,12 +97,26 @@ export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 # Compose copies it into the bake target but never passes --allow. So ask
 # Compose for its bake definition and hand that to buildx ourselves, with
 # the grant. Compose versions without --print just build the old way.
+#
+# A host proxy (http_proxy/https_proxy/no_proxy, either case) is passed to
+# the build too: builds don't inherit your shell's environment, so behind a
+# local proxy (e.g. 127.0.0.1:10808) npm ci / apt-get would go direct and
+# stall. The builds use the host network, so 127.0.0.1 reaches it. These
+# are BuildKit's predefined proxy args: no Dockerfile changes, and they
+# aren't saved in the image.
 compose_build() {
-    local def
+    local def var val bake_args=() build_args=()
+    for var in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+        val="${!var:-}"
+        [ -n "$val" ] || { local lc="${var,,}"; val="${!lc:-}"; }
+        [ -n "$val" ] || continue
+        bake_args+=(--set "*.args.${var}=${val}" --set "*.args.${var,,}=${val}")
+        build_args+=(--build-arg "${var}=${val}" --build-arg "${var,,}=${val}")
+    done
     if def="$(docker compose build --print "$@" 2>/dev/null)" && [ -n "$def" ]; then
-        printf '%s\n' "$def" | docker buildx bake -f - --allow=network.host
+        printf '%s\n' "$def" | docker buildx bake -f - --allow=network.host "${bake_args[@]}"
     else
-        docker compose build "$@"
+        docker compose build "${build_args[@]}" "$@"
     fi
 }
 
