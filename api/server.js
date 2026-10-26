@@ -136,6 +136,9 @@ function parseUpdateCheck(stdout) {
     else kv[m[1]] = m[2];
   }
   return {
+    // 'release' (installed from a GitHub release: no .git, updates by
+    // release) or 'git' (a checkout: updates by git pull).
+    install: kv.INSTALL === 'release' ? 'release' : 'git',
     current: kv.CURRENT || null,
     currentTag: kv.CURRENT_TAG || null,
     latestTag: kv.LATEST_TAG || null,

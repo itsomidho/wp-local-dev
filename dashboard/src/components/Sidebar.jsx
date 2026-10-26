@@ -105,7 +105,9 @@ export default function Sidebar({ page, onNavigate, counts, onOpenTool, onOpenSe
                   {updateInfo.latestTag && updateInfo.latestTag !== updateInfo.currentTag ? `${updateInfo.latestTag} available` : 'Update available'}
                 </strong>
                 <small>
-                  {updateInfo.behind ? `${updateInfo.behind} change${updateInfo.behind === 1 ? '' : 's'} · see what's new` : "See what's new"}
+                  {updateInfo.behind
+                    ? `${updateInfo.behind} ${updateInfo.install === 'release' ? 'release' : 'change'}${updateInfo.behind === 1 ? '' : 's'} · see what's new`
+                    : "See what's new"}
                 </small>
               </span>
             </button>

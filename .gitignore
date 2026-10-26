@@ -75,3 +75,7 @@ Thumbs.db
 
 # wpdev's own state: the last update check (`wpdev update-check`)
 .wpdev/
+
+# A release install's version and file checksums (install.sh, wpdev update)
+/VERSION
+/.wpdev-manifest

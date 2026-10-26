@@ -90,12 +90,23 @@ curl -fsSL https://raw.githubusercontent.com/itsomidho/wp-local-dev/main/install
 ```
 
 [`install.sh`](install.sh) is worth a skim before piping it into a shell —
-it's short. It clones this repo into `~/wp-local-dev` (override with
-`WP_LOCAL_DEV_DIR=/some/path`), copies `.env.example` to `.env`, and
-symlinks `wpdev` onto `~/.local/bin`. No `sudo`, no package installs — it
-doesn't touch anything outside the clone and that one symlink. Re-running
-it is safe: it detects an existing checkout and leaves `.env` alone rather
-than clobbering either.
+it's short. It downloads the latest [release](https://github.com/itsomidho/wp-local-dev/releases)
+into `~/wp-local-dev` as plain files, with no git: it's a tool you run, not
+a repository you work in. Then it copies `.env.example` to `.env` and
+symlinks `wpdev` onto `~/.local/bin`. No `sudo`, no package installs, and
+no git needed — just `curl` (or `wget`) and `tar`. It doesn't touch
+anything outside that folder and the one symlink. Re-running it is safe:
+it sees an existing install and leaves it, and `.env`, alone.
+
+| Variable | Effect |
+|---|---|
+| `WP_LOCAL_DEV_DIR=/some/path` | Install there instead of `~/wp-local-dev` |
+| `WP_LOCAL_DEV_VERSION=v2.5.0` | That release instead of the latest |
+| `WP_LOCAL_DEV_GIT=1` | A git clone instead, to work on wp-local-dev itself (see [Manual install](#manual-install)) |
+
+The folder holds a `VERSION` file (the release you're on) and
+`.wpdev-manifest` (a checksum of each of its files, so `wpdev update` can
+tell if you've changed one).
 
 Check it worked:
 
@@ -105,7 +116,8 @@ wpdev help
 
 ### Manual install
 
-Prefer to clone it yourself:
+To work on wp-local-dev itself, clone it instead. A git checkout updates
+with `git pull` rather than by release (see [Updating](#updating)):
 
 ```bash
 git clone https://github.com/itsomidho/wp-local-dev.git
@@ -186,9 +198,10 @@ wpdev update-check    # is there anything new? lists the incoming changes
 wpdev update          # install it
 ```
 
-**Knowing there's an update.** `wpdev update-check` fetches `origin` and
-lists what's new: one line per merged pull request (its title), and the
-latest release tag. `wpdev up` and `wpdev status` end with a one-line
+**Knowing there's an update.** `wpdev update-check` lists what's new since
+your version: for an install from `install.sh`, each newer release (its
+title); for a git checkout, one line per merged pull request since your
+commit. `wpdev up` and `wpdev status` end with a one-line
 notice when there's something to install; they look at most once a day
 (the answer is kept in `.wpdev/update-check`) and give up after 15 seconds
 offline, so they never get slow. `WPDEV_UPDATE_CHECK=off` in `.env` turns
@@ -200,14 +213,23 @@ list of changes, whether local changes would stop the update, a **Check
 now** button and **Update now**. `wpdev update-check --porcelain` prints
 the same as `KEY=value` lines, for scripts.
 
-`git pull --ff-only`, then `docker compose build && docker compose up -d
+**What `update` does** depends on how wp-local-dev got there:
+
+- **Installed with `install.sh`** (a `VERSION` file, no `.git`): downloads
+  the newest release and puts its files in place of the old ones. Files a
+  release dropped are removed. Your own files are never part of a release,
+  so they're never touched: `.env`, `sites/`, `config/sites/`, `backups/`,
+  `logs/`, `data/`, snapshots. If you've edited one of wp-local-dev's own
+  files (say `docker-compose.yml`), it stops and lists them instead of
+  overwriting; keep a copy of your change, then `wpdev update --force`.
+- **A git checkout**: `git pull --ff-only`. It refuses to run if you have
+  uncommitted local changes (commit or stash first), and never
+  auto-merges: if your branch has local commits origin doesn't have, it
+  fails loudly and tells you to rebase rather than guessing what you want.
+
+Either way it then runs `docker compose build && docker compose up -d
 --force-recreate`. A few deliberate choices:
 
-- Refuses to run at all if you have uncommitted local changes — commit or
-  stash first.
-- Fast-forward only, never an auto-merge: if your branch has local commits
-  origin doesn't have, it fails loudly and tells you to rebase rather than
-  guessing what you want.
 - Always rebuilds and force-recreates every container, even for a change
   that looks docs-only. A plain `docker compose up -d` only restarts a
   container whose *compose service config* changed — it has no way to
@@ -414,7 +436,7 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev up` | Start all containers |
 | `wpdev down` | Stop all containers |
 | `wpdev restart [service...]` | Restart all containers, or just the named services (e.g. `wpdev restart nginx php83`) |
-| `wpdev update` | `git pull` (fast-forward only), then rebuild + recreate every container |
+| `wpdev update [--force]` | Get the newest release (or `git pull --ff-only` in a git checkout), then rebuild + recreate every container; `--force` replaces wp-local-dev files you've changed |
 | `wpdev update-check [--porcelain]` | Fetch and report whether an update is available, and what's in it — no changes made |
 | `wpdev status` | Container status, plus a per-site table: PHP/WordPress/MySQL versions, reachable? DB connected? Redis cache connected? |
 | `wpdev doctor` | Proactive health check — CA trust, orphan containers, per-site DB sanity (see below) |
