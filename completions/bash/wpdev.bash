@@ -35,11 +35,24 @@ _wpdev_sites() {
     done
 }
 
+# A site's links (`wpdev unlink <site> <link>`): the paths wpdev recorded
+# (LINKS in its config), and the names of linked plugins and themes.
+_wpdev_links() {
+    local root l e
+    root="$(_wpdev_root)" || return
+    for e in $(sed -n 's/^LINKS=//p' "$root/config/sites/$1.env" 2>/dev/null); do
+        echo "${e%:rw}"
+    done
+    for l in "$root/sites/$1/wp-content/plugins"/* "$root/sites/$1/wp-content/themes"/*; do
+        [ -L "$l" ] && echo "${l##*/}"
+    done
+}
+
 _wpdev_complete() {
     local cur prev cmds subcmd
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain wp help"
+    cmds="up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain link unlink links link-browse wp help"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
@@ -125,6 +138,28 @@ _wpdev_complete() {
             ;;
         db-backup)
             COMPREPLY=($(compgen -W "$(_wpdev_sites) --all --due --suffix=" -- "$cur"))
+            ;;
+        link)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                COMPREPLY=($(compgen -d -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "--to= --name= --writable" -- "$cur"))
+            fi
+            ;;
+        unlink)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_sites)" -- "$cur"))
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                COMPREPLY=($(compgen -W "$(_wpdev_links "${COMP_WORDS[2]}")" -- "$cur"))
+            fi
+            ;;
+        links)
+            COMPREPLY=($(compgen -W "$(_wpdev_sites) --json" -- "$cur"))
+            ;;
+        link-browse)
+            COMPREPLY=($(compgen -d -- "$cur"))
             ;;
         update-check)
             COMPREPLY=($(compgen -W "--porcelain" -- "$cur"))

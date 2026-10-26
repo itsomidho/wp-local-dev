@@ -79,3 +79,8 @@ Thumbs.db
 # A release install's version and file checksums (install.sh, wpdev update)
 /VERSION
 /.wpdev-manifest
+
+# Local Compose additions, e.g. extra folders mounted into the containers
+docker-compose.override.yml
+# Written by wpdev from the sites' linked plugins/themes (`wpdev link`)
+docker-compose.links.yml

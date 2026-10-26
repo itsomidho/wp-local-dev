@@ -60,6 +60,12 @@
 #   wpdev fix-perms <name>    Give a site's files back to you (owner + write); --all for every site
 #   wpdev media-proxy <name> [url|on|off]  Load uploads missing locally from production
 #   wpdev admin-domain <name> [domain|on|off]  Move the site's wp-admin to a separate domain
+#   wpdev link <site> <folder> [--to=<path>] [--name=<name>] [--writable]  Use a folder from
+#                             outside this project in a site (a plugin, a theme, uploads, anything):
+#                             symlinked, and mounted at the same path, read-only unless --writable
+#   wpdev unlink <site> <path|name>  Remove that link (deactivating a plugin first)
+#   wpdev links [site] [--json]  List the links and whether their folders are still there
+#   wpdev link-browse [folder]  A folder's subfolders, marking which are plugins/themes
 #   wpdev wp <name> <args...> Run any WP-CLI command against a site, e.g.:
 #                               wpdev wp mysite plugin list
 #
@@ -124,6 +130,8 @@ compose_build() {
 # ${BASH_SOURCE[0]} alone would point at the symlink's own directory, not
 # this project, when invoked as the bare `wpdev` command.
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Where wpdev was run from, for an argument that's a relative path (`link`).
+CALLER_DIR="$PWD"
 cd "$SCRIPT_DIR"
 
 GREEN='\033[0;32m'
@@ -452,6 +460,11 @@ show_help() {
     echo "  fix-perms <name>|--all    Give a site's files back to you (owner + write), e.g. after copying a site in"
     echo "  media-proxy <name> [url|on|off]  Load uploads missing locally from production, through the local site"
     echo "  admin-domain <name> [domain|on|off]  Move wp-admin to a separate domain, like production's admin proxy"
+    echo "  link <site> <folder> [--to=<path>] [--name=<name>] [--writable]  Use a folder from outside this project in a site, without moving or copying it:"
+    echo "                            a plugin or theme goes in its place by itself; anything else at --to (e.g. wp-content/uploads). Read-only unless --writable"
+    echo "  unlink <site> <path|name> Remove a link from a site (deactivates a plugin first; the folder is untouched)"
+    echo "  links [site] [--json]     List linked folders, and whether they're still there"
+    echo "  link-browse [folder] [--json]  A folder's subfolders, marking plugins and themes (default: your home folder)"
     echo "  wp <name> <args...>       Run a WP-CLI command against a site"
     echo ""
     echo "Examples:"
@@ -4221,6 +4234,595 @@ cmd_wp() {
     php_exec "$(site_php_service "$site")" wp --path="/var/www/${site}" --allow-root "$@"
 }
 
+# ---------------------------------------------------------------------------
+# Linked folders (`wpdev link`)
+# ---------------------------------------------------------------------------
+# A folder that lives outside this project -- a plugin or theme (a shared
+# plugins folder, its own repo), uploads, anything -- used by a site without
+# moving or copying it. Two parts:
+#   - a symlink at a path inside the site (wp-content/plugins/<name> for a
+#     plugin, wp-content/themes/<name> for a theme, wherever you say for
+#     anything else) to the folder's real path, so each site chooses its own;
+#   - a bind mount of that folder into every PHP container and nginx, at the
+#     SAME path it has on the host: read-only unless a link asks for
+#     writable. The containers are shared by every site, so the mount is
+#     too. Same path means the one symlink resolves everywhere: on the host
+#     (editor, git), in PHP, and in nginx, which serves the CSS/JS itself.
+#
+# LINKS in a site's config records the links wpdev made, as "<path>" or
+# "<path>:rw" words (paths relative to the site). A symlink you make by hand
+# in wp-content/plugins or themes counts too, read-only. The mounts are
+# worked out from the links (link_mounts) into LINKS_COMPOSE_FILE, and
+# COMPOSE_FILE in .env adds that file on top of docker-compose.yml -- so a
+# bare `docker compose up` keeps the mounts too. Without them a link
+# dangles, and WordPress deactivates a plugin whose file it can't find.
+LINKS_COMPOSE_FILE="docker-compose.links.yml"
+
+# Everything wpdev needs to know about folders outside this project, as one
+# POSIX sh script: `host_sh` runs it on the host directly, or -- from the
+# api container, which sees only this project -- in a throwaway container
+# with the host's / mounted read-only and chrooted into, so it's the host's
+# own sh and paths either way. Operations:
+#   resolve <path>   "<real path>\t<plugins|themes|->", or fails if it isn't a folder
+#   exists <path>... the ones that are folders
+#   browse [<path>]  its real path, then "<name>\t<plugins|themes|->" per
+#                    subfolder (hidden ones left out; default: your home folder)
+# ~ and ~/ are your home folder (the api passes your uid, WPDEV_UID).
+HOST_SH='
+if [ -n "${WPDEV_UID:-}" ]; then
+    HOME="$(awk -F: -v u="$WPDEV_UID" "\$3 == u { print \$6; exit }" /etc/passwd)"
+fi
+kind() {
+    if [ -f "$1/style.css" ] && head -c 8192 "$1/style.css" 2>/dev/null | grep -qiE "^[[:space:]/*#@]*Theme Name:"; then
+        echo themes
+        return 0
+    fi
+    for f in "$1"/*.php; do
+        [ -f "$f" ] || continue
+        if head -c 8192 "$f" 2>/dev/null | grep -qiE "^[[:space:]/*#@]*Plugin Name:"; then
+            echo plugins
+            return 0
+        fi
+    done
+    echo -
+}
+real_dir() {
+    case "$1" in
+        "~") p="$HOME" ;;
+        "~/"*) p="$HOME/${1#??}" ;;
+        *) p="$1" ;;
+    esac
+    [ -d "$p" ] && (cd "$p" 2>/dev/null && pwd -P)
+}
+op="$1"
+shift
+case "$op" in
+    resolve)
+        p="$(real_dir "$1")" || exit 1
+        printf "%s\t%s\n" "$p" "$(kind "$p")"
+        ;;
+    exists)
+        for p in "$@"; do
+            [ -d "$p" ] && printf "%s\n" "$p"
+        done
+        ;;
+    browse)
+        p="$(real_dir "${1:-~}")" || exit 1
+        printf "%s\n" "$p"
+        n=0
+        for d in "$p"/*/; do
+            [ -d "$d" ] || continue
+            n=$((n + 1))
+            [ "$n" -le 500 ] || break
+            d="${d%/}"
+            printf "%s\t%s\n" "${d##*/}" "$(kind "$d")"
+        done
+        ;;
+    *) exit 2 ;;
+esac
+exit 0
+'
+
+host_sh() {
+    if [ -z "${WPDEV_IN_API:-}" ]; then
+        sh -c "$HOST_SH" host_sh "$@"
+        return
+    fi
+    # nginx's image: always pulled already, and its busybox has chroot.
+    local image
+    image="$(docker inspect -f '{{.Config.Image}}' wp-nginx 2>/dev/null)" || image="nginx:alpine"
+    docker run --rm --network none -e WPDEV_UID="${API_UID:-}" \
+        --mount type=bind,source=/,target=/host,readonly \
+        --entrypoint chroot "$image" /host /bin/sh -c "$HOST_SH" host_sh "$@"
+}
+
+# What a link at <path> (inside a site) is, from where it sits.
+link_kind() {
+    case "$1" in
+        wp-content/plugins/*/* | wp-content/themes/*/*) echo folder ;;
+        wp-content/plugins/*) echo plugin ;;
+        wp-content/themes/*) echo theme ;;
+        *) echo folder ;;
+    esac
+}
+
+# A path inside a site that a link can go at, tidied ("./a/b/" -> "a/b"):
+# relative, plain names only (letters, digits, . _ -), no "." or ".." parts.
+# Fails otherwise.
+site_link_path() {
+    local p="${1#./}" part
+    p="${p%/}"
+    [ "${#p}" -le 512 ] || return 1
+    [[ "$p" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || return 1
+    local IFS=/
+    for part in $p; do
+        [ "$part" != "." ] && [ "$part" != ".." ] || return 1
+    done
+    echo "$p"
+}
+
+# Every link of the given sites (default: all), as
+# "<site>\t<plugin|theme|folder>\t<path in the site>\t<target>\t<ro|rw>"
+# lines: the ones LINKS records that are still symlinks, then any other
+# symlink in wp-content/plugins and themes.
+site_links() {
+    local site l entry path mode seen
+    for site in ${1:-$(site_names)}; do
+        seen=" "
+        for entry in $(site_get "$site" LINKS); do
+            path="${entry%:rw}"
+            mode=ro
+            [ "$path" = "$entry" ] || mode=rw
+            [ -L "sites/${site}/${path}" ] || continue
+            seen="${seen}${path} "
+            printf '%s\t%s\t%s\t%s\t%s\n' "$site" "$(link_kind "$path")" "$path" "$(readlink "sites/${site}/${path}")" "$mode"
+        done
+        for l in "sites/${site}/wp-content/plugins"/* "sites/${site}/wp-content/themes"/*; do
+            [ -L "$l" ] || continue
+            path="${l#"sites/${site}/"}"
+            case "$seen" in *" ${path} "*) continue ;; esac
+            printf '%s\t%s\t%s\t%s\tro\n' "$site" "$(link_kind "$path")" "$path" "$(readlink "$l")"
+        done
+    done
+}
+
+# Adds or replaces <path>'s entry in a site's LINKS (mode ro or rw), or,
+# with no mode, drops it.
+record_link() {
+    local site="$1" path="$2" mode="${3:-}" entry out=""
+    for entry in $(site_get "$site" LINKS); do
+        [ "${entry%:rw}" = "$path" ] || out="${out:+${out} }${entry}"
+    done
+    if [ -n "$mode" ]; then
+        out="${out:+${out} }${path}"
+        [ "$mode" != rw ] || out="${out}:rw"
+    fi
+    if [ -n "$out" ]; then
+        site_set "$site" LINKS "$out"
+    else
+        site_unset "$site" LINKS
+    fi
+}
+
+# A path the generated compose file can hold as-is: absolute, and nothing
+# YAML quoting or Compose's ${} interpolation would read differently.
+mountable_path() {
+    case "$1" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *'"'* | *'\'* | *'$'* | *$'\n'* | *$'\t'*) return 1 ;;
+    esac
+    return 0
+}
+
+# The mountable absolute targets of every link, once each, as
+# "<target>\t<ro|rw>": rw when any link to it is writable, since there's
+# one mount per folder for all the sites.
+link_targets() {
+    local target mode
+    site_links | while IFS=$'\t' read -r _ _ _ target mode; do
+        [ "$target" = "/" ] || target="${target%/}"
+        mountable_path "$target" && printf '%s\t%s\n' "$target" "$mode"
+    done | sort -t $'\t' -k1,1 -k2,2r | awk -F'\t' '!seen[$1]++'
+}
+
+# The folders to mount, as link_targets lines: each target that exists. A
+# missing one is left out -- Compose refuses to start a service whose bind
+# source is gone. Relative links resolve inside /var/www and need nothing.
+link_mounts() {
+    local targets found
+    targets="$(link_targets)"
+    [ -n "$targets" ] || return 0
+    # shellcheck disable=SC2046
+    found="$(IFS=$'\n'; set -f; host_sh exists $(cut -f1 <<<"$targets"))" || return 1
+    [ -n "$found" ] || return 0
+    awk -F'\t' 'NR == FNR { ok[$0] = 1; next } $1 in ok' <(printf '%s\n' "$found") - <<<"$targets"
+}
+
+# Rewrites LINKS_COMPOSE_FILE from link_mounts (or removes it when nothing
+# is linked). True only when that changed something; 2 when the folders
+# couldn't be checked, leaving the file as it was.
+#
+# Every wpdev run on the host does this, so the mounts follow the links
+# whatever changed them. In the api container (the dashboard runs wpdev
+# there, some of it every minute) only link/unlink do ("now"): it needs a
+# helper container to see the folders (host_sh), too slow for every call.
+write_links_compose() {
+    [ -z "${WPDEV_IN_API:-}" ] || [ "${1:-}" = now ] || return 1
+    local mounts tmp m mode v
+    # Couldn't check the folders: keep what's there rather than drop it all.
+    mounts="$(link_mounts)" || return 2
+    if [ -z "$mounts" ]; then
+        [ -f "$LINKS_COMPOSE_FILE" ] || return 1
+        rm -f "$LINKS_COMPOSE_FILE"
+        return 0
+    fi
+    tmp="$(mktemp "${LINKS_COMPOSE_FILE}.XXXXXX")"
+    {
+        echo "# Written by wpdev from the sites' linked folders -- see 'wpdev links'."
+        echo "# Rewritten on every wpdev run, so don't edit it; put your own"
+        echo "# additions in docker-compose.override.yml instead."
+        echo ""
+        echo "x-linked: &linked"
+        echo "  volumes:"
+        while IFS=$'\t' read -r m mode; do
+            printf '    - type: bind\n      source: "%s"\n      target: "%s"\n      read_only: %s\n' \
+                "$m" "$m" "$([ "$mode" = rw ] && echo false || echo true)"
+        done <<<"$mounts"
+        echo ""
+        echo "services:"
+        for v in $SUPPORTED_PHP_VERSIONS; do echo "  $(php_slug "$v"): *linked"; done
+        echo "  nginx: *linked"
+    } >"$tmp"
+    if cmp -s "$tmp" "$LINKS_COMPOSE_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod 644 "$tmp"
+    mv "$tmp" "$LINKS_COMPOSE_FILE"
+}
+
+# The COMPOSE_FILE value wpdev wants: docker-compose.yml, your own override
+# file if there is one (Compose stops reading it by itself once COMPOSE_FILE
+# is set), then the links file. Empty when nothing is linked.
+wanted_compose_files() {
+    local files="docker-compose.yml" f
+    [ -f "$LINKS_COMPOSE_FILE" ] || return 0
+    for f in docker-compose.override.yml docker-compose.override.yaml; do
+        [ -f "$f" ] && files="${files}:${f}"
+    done
+    echo "${files}:${LINKS_COMPOSE_FILE}"
+}
+
+# A COMPOSE_FILE value wpdev wrote (or none). Any other value is yours, and
+# wpdev leaves it alone.
+wpdev_compose_files() {
+    [ -z "$1" ] || [[ "$1" =~ ^docker-compose\.yml(:docker-compose\.override\.ya?ml)*:docker-compose\.links\.yml$ ]]
+}
+
+# Keeps COMPOSE_FILE in .env and in this process in step with the links
+# file. Exported too, since a value already in the environment (the api
+# container gets .env as its environment) wins over .env's for Compose.
+sync_compose_files() {
+    local want have
+    want="$(wanted_compose_files)"
+    have="$(sed -n 's/^COMPOSE_FILE=//p' .env 2>/dev/null | tail -1)"
+    if ! wpdev_compose_files "$have" || ! wpdev_compose_files "${COMPOSE_FILE:-}"; then
+        return 0
+    fi
+    if [ -f .env ] && [ "$have" != "$want" ]; then
+        if [ -n "$want" ]; then
+            set_env_var COMPOSE_FILE "$want"
+        else
+            sed -i '/^COMPOSE_FILE=/d' .env
+        fi
+    fi
+    if [ -n "$want" ]; then
+        export COMPOSE_FILE="$want"
+    else
+        unset COMPOSE_FILE
+    fi
+}
+
+# Your own COMPOSE_FILE (in .env or the environment) that leaves the links
+# file out, i.e. one wpdev won't touch -- echoed, for a warning.
+foreign_compose_files() {
+    local v
+    for v in "$(sed -n 's/^COMPOSE_FILE=//p' .env 2>/dev/null | tail -1)" "${COMPOSE_FILE:-}"; do
+        wpdev_compose_files "$v" && continue
+        case ":${v}:" in *":${LINKS_COMPOSE_FILE}:"*) continue ;; esac
+        echo "$v"
+        return 0
+    done
+    return 1
+}
+
+# After link/unlink: rewrite the mounts, and recreate whichever PHP
+# containers and nginx are running so they pick them up (a few seconds).
+# Ones that aren't running get them when they next start.
+apply_link_mounts() {
+    local svcs="" v svc mine out rc=0
+    write_links_compose now || rc=$?
+    [ "$rc" -ne 2 ] || print_error "Couldn't check the linked folders, so the containers' mounts weren't updated. Run 'wpdev up' on the host to apply them."
+    [ "$rc" -eq 0 ] || return 0
+    sync_compose_files
+    if mine="$(foreign_compose_files)"; then
+        print_warning "COMPOSE_FILE is set to '${mine}', which wpdev leaves alone -- add :${LINKS_COMPOSE_FILE} to it, or the containers won't see linked folders."
+    fi
+    for v in $SUPPORTED_PHP_VERSIONS; do
+        svc="$(php_slug "$v")"
+        container_running "wp-${svc}" && svcs="${svcs} ${svc}"
+    done
+    container_running wp-nginx && svcs="${svcs} nginx"
+    [ -n "$svcs" ] || return 0
+    echo "Updating the mounts in:${svcs} (sites pause for a few seconds)..."
+    # shellcheck disable=SC2086
+    if ! out="$(docker compose up -d --no-deps $svcs 2>&1)"; then
+        echo "$out" >&2
+        print_error "Couldn't recreate${svcs}. Fix the error above, then run: wpdev up"
+    fi
+}
+
+# A JSON string literal (quotes included) for one line of text.
+json_str() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\r'/\\r}"
+    printf '"%s"' "$s"
+}
+
+cmd_link() {
+    local site_arg="${1:-}" src="${2:-}" name="" to="" mode=ro arg info kind rel dest current p noun how
+    local usage="Usage: wpdev link <site> <folder> [--to=<path in the site>] [--name=<name>] [--writable]"
+    if [ -z "$site_arg" ] || [ -z "$src" ]; then
+        print_error "$usage"
+    fi
+    shift 2
+    for arg in "$@"; do
+        case "$arg" in
+            --name=*) name="${arg#--name=}" ;;
+            --to=*) to="${arg#--to=}" ;;
+            --writable) mode=rw ;;
+            *) print_error "Unknown option: ${arg}. ${usage}" ;;
+        esac
+    done
+    resolve_site "$site_arg"
+    [ -d "sites/${site_name}/wp-content" ] || print_error "No site '${site_arg}' (sites/${site_name}/wp-content doesn't exist)."
+
+    case "$src" in
+        /* | "~" | "~/"*) ;;
+        *)
+            # Relative to where you ran wpdev, not this project. The api
+            # has no "where you ran it".
+            [ -z "${WPDEV_IN_API:-}" ] || print_error "Give the folder's full path (starting with / or ~/)."
+            src="${CALLER_DIR}/${src}"
+            ;;
+    esac
+    # Its real path: a link through another symlink would need that one
+    # mounted too.
+    info="$(host_sh resolve "$src")" || print_error "No such folder: ${src}"
+    src="${info%%$'\t'*}"
+    kind="${info##*$'\t'}"
+    mountable_path "$src" || print_error "Can't mount ${src}: its path has a character (\" \\ \$, a tab or a newline) the compose file can't hold. Rename or move it."
+    case "$src/" in
+        "${SCRIPT_DIR}/sites/${site_name}/"*) print_error "${src} is inside ${site_name} already." ;;
+    esac
+    case "$src" in
+        / | /bin | /boot | /dev | /etc | /lib | /lib64 | /proc | /root | /run | /sbin | /sys | /usr | /var | /home | /tmp)
+            print_error "Won't mount ${src} into the containers: pick the folder you need inside it." ;;
+    esac
+
+    # Where it goes in the site: --to, or a plugin's or theme's own place.
+    if [ -n "$to" ]; then
+        [ -z "$name" ] || print_error "Give --to or --name, not both (--to is the whole path, name included)."
+        rel="$(site_link_path "$to")" || print_error "'${to}' can't be a path in the site: give one relative to the site's folder, made of plain names (letters, digits, . _ -), like wp-content/uploads"
+    else
+        [ "$kind" != "-" ] || print_error "${src} isn't a plugin or a theme, so say where it goes in the site with --to=<path>, e.g. --to=wp-content/uploads"
+        [ -n "$name" ] || name="${src##*/}"
+        [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || print_error "'${name}' can't be a ${kind%s} folder name; give one with --name=<name> (letters, digits, . _ -)."
+        rel="wp-content/${kind}/${name}"
+    fi
+    dest="sites/${site_name}/${rel}"
+    # Every folder on the way must be the site's own: through a link, the
+    # new one would land somewhere else.
+    p="$rel"
+    while [ "$p" != "${p%/*}" ]; do
+        p="${p%/*}"
+        [ ! -L "sites/${site_name}/${p}" ] || print_error "sites/${site_name}/${p} is a link itself, so ${rel} can't go inside it."
+    done
+
+    how="$([ "$mode" = rw ] && echo writable || echo read-only)"
+    if [ -L "$dest" ]; then
+        current="$(readlink "$dest")"
+        [ "${current%/}" = "$src" ] || print_error "${dest} already links to ${current}. Unlink it first: wpdev unlink ${site_name} ${rel}"
+        if [ "$(site_links "$site_name" | awk -F'\t' -v p="$rel" '$3 == p { print $5 }')" = "$mode" ]; then
+            print_info "${rel} is already linked into ${site_name}."
+        else
+            print_info "${rel} in ${site_name} is now ${how}."
+        fi
+    elif [ -e "$dest" ] && ! { [ -d "$dest" ] && [ -z "$(ls -A "$dest" 2>/dev/null)" ]; }; then
+        print_error "${dest} already exists and isn't empty. Move what's in it out of the way first (into ${src}, say), or link somewhere else."
+    else
+        # An empty folder in the way (a fresh site's uploads) loses nothing.
+        [ ! -d "$dest" ] || rmdir "$dest"
+        mkdir -p "${dest%/*}"
+        ln -s "$src" "$dest"
+        print_info "Linked ${src} into ${site_name} at ${rel} (${how} inside the containers)."
+    fi
+    record_link "$site_name" "$rel" "$mode"
+    if [ "$mode" = ro ] && site_links | awk -F'\t' -v t="$src" '($4 == t || $4 == t "/") && $5 == "rw" { f = 1 } END { exit !f }'; then
+        print_warning "Another link makes ${src} writable, and the containers are shared, so it's writable in ${site_name} too."
+    fi
+    apply_link_mounts
+
+    noun="$(link_kind "$rel")"
+    if [ "$noun" != folder ]; then
+        echo "Activate it with: wpdev wp ${site_name} ${noun} activate ${rel##*/}"
+    fi
+}
+
+# <link>: a path in the site (as `wpdev links` shows it), or just the
+# folder name of a linked plugin or theme -- or of any link, when only one
+# has that name.
+cmd_unlink() {
+    local site_arg="${1:-}" want="${2:-}" rel="" kind name dest svc p matches
+    if [ -z "$site_arg" ] || [ -z "$want" ]; then
+        print_error "Usage: wpdev unlink <site> <path or name>   (see: wpdev links <site>)"
+    fi
+    resolve_site "$site_arg"
+    case "$want" in
+        */*)
+            rel="$(site_link_path "$want")" || print_error "'${want}' isn't a path in the site. See: wpdev links ${site_name}"
+            ;;
+        *)
+            for p in "wp-content/plugins/${want}" "wp-content/themes/${want}"; do
+                if [ -L "sites/${site_name}/${p}" ]; then
+                    rel="$p"
+                    break
+                fi
+            done
+            if [ -z "$rel" ]; then
+                matches="$(site_links "$site_name" | awk -F'\t' -v n="$want" '{ k = $3; sub(".*/", "", k) } k == n { print $3 }')"
+                [ "$(grep -c . <<<"$matches")" -le 1 ] || print_error "More than one link in ${site_name} is called '${want}'; give its path: $(tr '\n' ' ' <<<"$matches")"
+                rel="$matches"
+            fi
+            ;;
+    esac
+    dest="sites/${site_name}/${rel}"
+    if [ -z "$rel" ] || [ ! -L "$dest" ]; then
+        if [ -n "$rel" ] && [ -e "$dest" ]; then
+            print_error "${dest} is a real folder, not a link -- wpdev only removes links."
+        fi
+        if [ -n "$rel" ] && site_get "$site_name" LINKS | tr ' ' '\n' | grep -qxE "${rel//./\\.}(:rw)?"; then
+            record_link "$site_name" "$rel"
+            print_info "${rel} was no longer a link in ${site_name}; forgot it."
+            apply_link_mounts
+            return 0
+        fi
+        print_error "${site_name} has no link '${want}'. See: wpdev links ${site_name}"
+    fi
+    kind="$(link_kind "$rel")"
+    name="${rel##*/}"
+
+    # Deactivate it the proper way while WordPress can still load it (when
+    # the site's running) -- otherwise WordPress drops it with a "plugin
+    # file does not exist" error on the next admin page.
+    svc="$(site_php_service "$site_name")"
+    if [ "$kind" != folder ] && [ -f "$(site_config_file "$site_name")" ] && ! site_is_off "$site_name" && container_running "wp-${svc}"; then
+        if [ "$kind" = plugin ]; then
+            if php_exec "$svc" wp plugin is-active "$name" --path="/var/www/${site_name}" </dev/null >/dev/null 2>&1; then
+                php_exec "$svc" wp plugin deactivate "$name" --path="/var/www/${site_name}" </dev/null >/dev/null
+                print_info "Deactivated ${name} on ${site_name}."
+            fi
+        elif php_exec "$svc" wp theme is-active "$name" --path="/var/www/${site_name}" </dev/null >/dev/null 2>&1; then
+            print_error "${name} is ${site_name}'s active theme. Switch to another one first: wpdev wp ${site_name} theme activate <theme>"
+        fi
+    fi
+
+    rm "$dest"
+    record_link "$site_name" "$rel"
+    print_info "Unlinked ${rel} from ${site_name} (the folder itself is untouched)."
+    apply_link_mounts
+}
+
+# Every link, or one site's: what it is, where it points, and whether that
+# folder is there. --json: one object per line, for the api.
+cmd_links() {
+    local site="" json="" arg site_l kind rel target mode state lines found t
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json=1 ;;
+            -*) print_error "Usage: wpdev links [site] [--json]" ;;
+            *) resolve_site "$arg"; site="$site_name" ;;
+        esac
+    done
+    if [ -n "$site" ] && [ ! -d "sites/${site}/wp-content" ]; then
+        print_error "No site '${site}' (sites/${site}/wp-content doesn't exist)."
+    fi
+    lines="$(site_links "$site")"
+    if [ -z "$lines" ]; then
+        [ -n "$json" ] || echo "Nothing linked${site:+ into ${site}}. Add a folder with: wpdev link <site> <folder>"
+        return 0
+    fi
+    # Which absolute targets are there, checked in one go (one helper
+    # container from the api, not one per link).
+    # shellcheck disable=SC2046
+    found="$(cut -f4 <<<"$lines" | grep '^/' | sed 's|\(.\)/$|\1|' | sort -u | (IFS=$'\n'; set -f; host_sh exists $(cat)) || true)"
+    [ -n "$json" ] || printf "%-22s %-7s %-36s %-5s %-11s %s\n" "SITE" "KIND" "PATH" "MODE" "STATE" "FOLDER"
+    while IFS=$'\t' read -r site_l kind rel target mode; do
+        case "$target" in
+            /*)
+                t="$target"
+                [ "$t" = "/" ] || t="${t%/}"
+                if ! grep -qxF -- "$t" <<<"$found"; then
+                    state=missing
+                elif ! mountable_path "$t"; then
+                    state=unmountable
+                else
+                    state=ok
+                fi
+                ;;
+            *) [ -d "sites/${site_l}/${rel}/" ] && state=ok || state=missing ;;
+        esac
+        if [ -n "$json" ]; then
+            printf '{"site":%s,"kind":"%s","name":%s,"path":%s,"target":%s,"mode":"%s","state":"%s"}\n' \
+                "$(json_str "$site_l")" "$kind" "$(json_str "${rel##*/}")" "$(json_str "$rel")" "$(json_str "$target")" "$mode" "$state"
+        else
+            printf "%-22s %-7s %-36s %-5s %-11s %s\n" "$site_l" "$kind" "$rel" "$mode" "$state" "$target"
+        fi
+    done <<<"$lines"
+}
+
+# A folder's subfolders, and which are plugins or themes -- for picking one
+# to link (the dashboard's folder browser). Default: your home folder.
+# --json: {"path": ..., "parent": ..., "entries": [{"name", "kind"}]}.
+cmd_link_browse() {
+    local dir="" json="" arg out path parent name kind first=1
+    for arg in "$@"; do
+        case "$arg" in
+            --json) json=1 ;;
+            -*) print_error "Usage: wpdev link-browse [folder] [--json]" ;;
+            *) dir="$arg" ;;
+        esac
+    done
+    case "$dir" in
+        "" | /* | "~" | "~/"*) ;;
+        *)
+            [ -z "${WPDEV_IN_API:-}" ] || print_error "Give the folder's full path (starting with / or ~/)."
+            dir="${CALLER_DIR}/${dir}"
+            ;;
+    esac
+    out="$(host_sh browse ${dir:+"$dir"})" || print_error "No such folder: ${dir:-~}"
+    path="$(head -1 <<<"$out")"
+    parent="${path%/*}"
+    [ -n "$parent" ] || parent="/"
+    [ "$path" != "/" ] || parent=""
+    if [ -z "$json" ]; then
+        echo "$path"
+        tail -n +2 <<<"$out" | while IFS=$'\t' read -r name kind; do
+            case "$kind" in
+                plugins) printf "  %-40s plugin\n" "$name/" ;;
+                themes) printf "  %-40s theme\n" "$name/" ;;
+                *) printf "  %s\n" "$name/" ;;
+            esac
+        done
+        return 0
+    fi
+    printf '{"path":%s,"parent":%s,"entries":[' "$(json_str "$path")" "$(json_str "$parent")"
+    while IFS=$'\t' read -r name kind; do
+        [ -n "$name" ] || continue
+        [ -n "$first" ] || printf ','
+        first=""
+        case "$kind" in plugins) kind=plugin ;; themes) kind=theme ;; *) kind="" ;; esac
+        printf '{"name":%s,"kind":"%s"}' "$(json_str "$name")" "$kind"
+    done < <(tail -n +2 <<<"$out")
+    printf ']}\n'
+}
+
 cmd_remove() {
     assume_yes=0
     args=()
@@ -4474,11 +5076,12 @@ cmd_clone() {
         done' sh "$source_name" "$new_name" </dev/null
     fix_site_ownership "$php_svc" "$new_name" || print_warning "Couldn't hand sites/${new_name} over to you — run: wpdev fix-perms ${new_name}"
     # Settings that describe the copy too: same PHP, same admin login (same
-    # database), same production and cache rules. Not the DB password (the
-    # clone gets its own user below), the admin domain (one site's), or the
-    # page cache (the clone's vhost starts plain).
+    # database), same production and cache rules, same linked folders (the
+    # copied links point at them). Not the DB password (the clone gets its
+    # own user below), the admin domain (one site's), or the page cache
+    # (the clone's vhost starts plain).
     rm -f "$(site_config_file "$new_name")"
-    for key in PHP_VERSION ADMIN_PASSWORD PRODUCTION_URL CACHE_TTL CACHE_BYPASS_COOKIES CACHE_BYPASS_PATHS; do
+    for key in PHP_VERSION ADMIN_PASSWORD PRODUCTION_URL CACHE_TTL CACHE_BYPASS_COOKIES CACHE_BYPASS_PATHS LINKS; do
         value="$(site_get "$source_name" "$key")"
         if [ -n "$value" ]; then site_set "$new_name" "$key" "$value"; fi
     done
@@ -6540,6 +7143,12 @@ fi
 migrate_site_configs
 migrate_env_ports
 
+# Linked folders: the mounts follow the links, whatever changed them
+# (link/unlink, a removed site, a folder that's gone), before any compose
+# command runs.
+write_links_compose || true
+sync_compose_files
+
 # A site that's off has no PHP running; these commands need it.
 case "${1:-}" in
     cache)
@@ -6606,6 +7215,10 @@ case "${1:-help}" in
     fix-perms) cmd_fix_perms "$2" ;;
     media-proxy) cmd_media_proxy "$2" "$3" ;;
     admin-domain) cmd_admin_domain "$2" "$3" ;;
+    link) shift; cmd_link "$@" ;;
+    unlink) shift; cmd_unlink "$@" ;;
+    links) shift; cmd_links "$@" ;;
+    link-browse) shift; cmd_link_browse "$@" ;;
     wp) shift; cmd_wp "$@" ;;
     help|-h|--help) show_help ;;
     *)

@@ -36,6 +36,13 @@ import {
   Loader2,
   CheckCircle2,
   Circle,
+  Link2,
+  Unlink,
+  Puzzle,
+  Palette,
+  Folder,
+  FolderOpen,
+  CornerLeftUp,
 } from 'lucide-react';
 import { api, siteUrl, exportFileName } from '../api';
 import ConfirmDialog, { TypeToConfirmDialog } from './ConfirmDialog';
@@ -56,6 +63,7 @@ const TAB_GROUPS = [
       { id: 'Cache', icon: Gauge },
       { id: 'Media', icon: Image },
       { id: 'Admin domain', icon: ShieldCheck },
+      { id: 'Linked folders', icon: Link2 },
     ],
   },
   {
@@ -126,6 +134,7 @@ export default function SiteManageDialog({ site, initialTab = 'Overview', onClos
         {tab === 'Cache' && <CacheTab site={site} />}
         {tab === 'Media' && <MediaTab site={site} />}
         {tab === 'Admin domain' && <AdminDomainTab site={site} />}
+        {tab === 'Linked folders' && <LinkedTab site={site} />}
         {tab === 'Snapshots' && <SnapshotsTab site={site} onRunAction={onRunAction} />}
         {tab === 'Database' && <DatabaseTab site={site} />}
         {tab === 'Clone' && <CloneTab site={site} onRunAction={onRunAction} />}
@@ -851,6 +860,344 @@ function AdminDomainTab({ site }) {
           confirmLabel="Turn off"
           onCancel={() => setConfirmOff(false)}
           onConfirm={() => run({ mode: 'off' })}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Linked folders: folders from outside the project, used in place (`wpdev link`)
+// ---------------------------------------------------------------------------
+const LAST_FOLDER_KEY = 'wpdev_link_folder';
+
+function readLastFolder() {
+  try {
+    return localStorage.getItem(LAST_FOLDER_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveLastFolder(path) {
+  try {
+    localStorage.setItem(LAST_FOLDER_KEY, path);
+  } catch {
+    // Private window or blocked storage: the browser just starts at home.
+  }
+}
+
+// Names WordPress has active, for the kinds this site links ('plugin',
+// 'theme'). Null when it can't tell, e.g. the site is off.
+async function activeNames(site, kinds) {
+  const active = new Set();
+  try {
+    for (const kind of kinds) {
+      const r = await api.wpCli(site.name, [kind, 'list', '--status=active', '--field=name']);
+      stripAnsi(r.stdout)
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .forEach((n) => active.add(`${kind}:${n}`));
+    }
+    return active;
+  } catch {
+    return null;
+  }
+}
+
+const LINK_ICON = { plugin: Puzzle, theme: Palette, folder: Folder };
+
+function LinkedTab({ site }) {
+  const toast = useToast();
+  const [links, setLinks] = useState(null);
+  const [active, setActive] = useState(null);
+  const [error, setError] = useState(null);
+  const [folder, setFolder] = useState(readLastFolder);
+  const [to, setTo] = useState('');
+  const [writable, setWritable] = useState(false);
+  const [browser, setBrowser] = useState(null); // {path, parent, entries} while open
+  const [browseError, setBrowseError] = useState(null);
+  const [busy, setBusy] = useState(null); // what's running, for its button's spinner
+  const [failure, setFailure] = useState(null);
+  const [confirmUnlink, setConfirmUnlink] = useState(null);
+
+  const refresh = async () => {
+    try {
+      const r = await api.linked(site.name);
+      setLinks(r.links);
+      setError(null);
+      const kinds = [...new Set(r.links.map((l) => l.kind).filter((k) => k !== 'folder'))];
+      setActive(kinds.length ? await activeNames(site, kinds) : new Set());
+    } catch (e) {
+      setError(lastOutputLine(e));
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
+
+  const browse = async (path) => {
+    setBrowseError(null);
+    try {
+      const r = await api.hostFolders(path);
+      setBrowser(r);
+      setFolder(r.path);
+      saveLastFolder(r.path);
+    } catch (e) {
+      setBrowseError(e.status === 404 ? `No such folder: ${path}` : lastOutputLine(e));
+    }
+  };
+
+  const run = async (key, action, success) => {
+    setBusy(key);
+    setFailure(null);
+    try {
+      await action();
+      toast({ tone: 'success', title: success });
+      return true;
+    } catch (e) {
+      setFailure(stripAnsi(e.data?.stdout || '') + stripAnsi(e.data?.stderr || '') || e.data?.error || e.message);
+      return false;
+    } finally {
+      setBusy(null);
+      refresh();
+    }
+  };
+
+  // A plugin or theme from the browser goes in its own place; the form
+  // sends the "Inside the site" path too.
+  const link = (path, where) =>
+    run(
+      `link:${path}`,
+      () => api.link(site.name, path, { to: where || undefined, writable }),
+      `Linked ${path.split('/').pop()} into ${site.domain}${where ? ` at ${where}` : ''}`,
+    );
+
+  const linkFromForm = async () => {
+    if (await link(folder.trim(), to.trim())) setTo('');
+  };
+
+  const unlink = (l) => {
+    setConfirmUnlink(null);
+    run(`unlink:${l.path}`, () => api.unlink(site.name, l.path), `Unlinked ${l.path} from ${site.domain}`);
+  };
+
+  const setActivation = (l, on) =>
+    run(
+      `activate:${l.path}`,
+      () => api.wpCli(site.name, [l.kind, on ? 'activate' : 'deactivate', l.name]),
+      `${on ? 'Activated' : 'Deactivated'} ${l.name}`,
+    );
+
+  const linkedTargets = new Set((links || []).map((l) => l.target));
+  const isActive = (l) => active && active.has(`${l.kind}:${l.name}`);
+
+  return (
+    <div className="tab-panel">
+      <p className="muted">
+        Use a folder that lives outside this project in this site, without moving or copying it: a plugin or theme (a
+        shared plugins folder, its own repo), uploads, or anything else. The site gets a link to the folder, and the
+        folder is mounted into the containers. It's read-only unless you make it writable, so wp-admin can't update
+        or delete shared code: change it in its own folder, and every site that links it sees the change. Linking or
+        unlinking pauses the sites for a few seconds while the containers pick it up.
+      </p>
+      {error && <p className="error">{error}</p>}
+
+      {links === null ? (
+        !error && <Skeleton height={56} />
+      ) : links.length === 0 ? (
+        <div className="empty empty-sm">
+          <span className="empty-icon">
+            <Link2 size={20} />
+          </span>
+          <p>Nothing linked into {site.domain} yet.</p>
+        </div>
+      ) : (
+        <>
+          <div className="section-row">
+            <h4>
+              {links.length} linked folder{links.length > 1 ? 's' : ''}
+            </h4>
+          </div>
+          <ul className="snapshot-list">
+            {links.map((l) => {
+              const KindIcon = LINK_ICON[l.kind] || Folder;
+              const wp = l.kind === 'plugin' || l.kind === 'theme';
+              const on = wp && isActive(l);
+              return (
+                <li key={l.path}>
+                  <span className="snapshot-icon">
+                    <KindIcon size={15} />
+                  </span>
+                  <span className="snapshot-text">
+                    <strong>
+                      {wp ? l.name : l.path} <Chip>{l.kind}</Chip>{' '}
+                      {l.mode === 'rw' && (
+                        <Chip tone="warning" title="WordPress can change and delete files in it.">
+                          writable
+                        </Chip>
+                      )}{' '}
+                      {l.state !== 'ok' ? (
+                        <Chip tone="danger" title="The folder isn't there any more, so it isn't mounted.">
+                          folder missing
+                        </Chip>
+                      ) : on ? (
+                        <Chip tone="success">active</Chip>
+                      ) : null}
+                    </strong>
+                    <code title={l.target}>{l.target}</code>
+                  </span>
+                  {wp && l.state === 'ok' && active && (l.kind === 'plugin' || !on) && (
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      disabled={busy !== null}
+                      onClick={() => setActivation(l, !on)}
+                    >
+                      {busy === `activate:${l.path}` && <Loader2 size={14} className="spin" />}
+                      {on ? 'Deactivate' : 'Activate'}
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={busy !== null}
+                    onClick={() => setConfirmUnlink(l)}
+                  >
+                    {busy === `unlink:${l.path}` ? <Loader2 size={14} className="spin" /> : <Unlink size={14} />} Unlink
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+
+      <div className="section-row" style={{ marginTop: 20 }}>
+        <h4>Link a folder</h4>
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="linkFolder">
+          Folder on your computer
+        </label>
+        <div className="button-row">
+          <input
+            id="linkFolder"
+            name="linkFolder"
+            placeholder="/full/path/to/folder  or  ~/wp-plugins/my-plugin"
+            value={folder}
+            onChange={(e) => setFolder(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && folder.trim() && browse(folder.trim())}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <button className="btn btn-secondary" disabled={busy !== null} onClick={() => browse(folder.trim() || undefined)}>
+            <FolderOpen size={15} /> Browse
+          </button>
+        </div>
+      </div>
+      {browseError && <p className="error">{browseError}</p>}
+
+      {browser && (
+        <div className="folder-browser">
+          <div className="folder-browser-head">
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={!browser.parent}
+              onClick={() => browse(browser.parent)}
+              title="Up one folder"
+            >
+              <CornerLeftUp size={14} /> Up
+            </button>
+            <code title={browser.path}>
+              {/* Isolated, so the right-to-left ellipsis trick keeps the slashes in place. */}
+              <bdi>{browser.path}</bdi>
+            </code>
+            <button className="btn btn-icon btn-ghost btn-sm" onClick={() => setBrowser(null)} aria-label="Close the folder browser">
+              <X size={14} />
+            </button>
+          </div>
+          {browser.entries.length === 0 ? (
+            <p className="muted folder-browser-empty">No folders in here. This one is picked: say where it goes below.</p>
+          ) : (
+            <ul className="snapshot-list">
+              {browser.entries.map((entry) => {
+                const path = browser.path === '/' ? `/${entry.name}` : `${browser.path}/${entry.name}`;
+                const KindIcon = LINK_ICON[entry.kind] || Folder;
+                return (
+                  <li key={entry.name}>
+                    <span className="snapshot-icon">
+                      <KindIcon size={15} />
+                    </span>
+                    <span className="snapshot-text">
+                      <button type="button" className="folder-browser-name" onClick={() => browse(path)}>
+                        {entry.name}
+                      </button>
+                    </span>
+                    {entry.kind && <Chip tone="info">{entry.kind}</Chip>}
+                    {linkedTargets.has(path) ? (
+                      <Chip tone="success">linked</Chip>
+                    ) : (
+                      entry.kind && (
+                        <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={() => link(path)}>
+                          {busy === `link:${path}` ? <Loader2 size={14} className="spin" /> : <Link2 size={14} />} Link
+                        </button>
+                      )
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <div className="field">
+        <label className="field-label" htmlFor="linkTo">
+          Inside the site
+        </label>
+        <input
+          id="linkTo"
+          name="linkTo"
+          placeholder="wp-content/uploads"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && folder.trim() && busy === null && linkFromForm()}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <p className="field-hint">
+          Where the folder shows up, from the site's own folder. Leave it empty for a plugin or theme: it goes into
+          wp-content/plugins or wp-content/themes by itself.
+        </p>
+      </div>
+      <label className="check">
+        <input type="checkbox" checked={writable} disabled={busy !== null} onChange={(e) => setWritable(e.target.checked)} />
+        <span>
+          Writable
+          <span className="field-hint">
+            {' '}
+            WordPress can add, change and delete files in it, as uploads need. Leave it off for code you share.
+          </span>
+        </span>
+      </label>
+      <div className="button-row">
+        <button className="btn btn-primary" disabled={busy !== null || !folder.trim()} onClick={linkFromForm}>
+          {busy === `link:${folder.trim()}` ? <Loader2 size={15} className="spin" /> : <Link2 size={15} />} Link
+        </button>
+      </div>
+
+      {failure && <Output>{failure}</Output>}
+      {confirmUnlink && (
+        <ConfirmDialog
+          title={`Unlink ${confirmUnlink.path}?`}
+          message={`${site.domain} stops using it${
+            confirmUnlink.kind === 'plugin' ? ' (it is deactivated first)' : ''
+          }. The folder itself isn't touched, and other sites that link it keep it.`}
+          confirmLabel="Unlink"
+          onCancel={() => setConfirmUnlink(null)}
+          onConfirm={() => unlink(confirmUnlink)}
         />
       )}
     </div>

@@ -79,6 +79,12 @@ export const api = {
   mediaProxy: (name, body) => request('POST', `/api/sites/${name}/media-proxy`, body),
   adminDomainStatus: (name) => request('GET', `/api/sites/${name}/admin-domain`),
   adminDomain: (name, body) => request('POST', `/api/sites/${name}/admin-domain`, body),
+  linked: (name) => request('GET', `/api/sites/${name}/linked`),
+  // opts: {to?, name?, writable?}; `to` is where it goes in the site.
+  link: (name, folder, opts = {}) => request('POST', `/api/sites/${name}/linked`, { folder, ...opts }),
+  // linkPath: the link's path in the site (wp-content/uploads), or its folder name.
+  unlink: (name, linkPath) => request('DELETE', `/api/sites/${name}/linked/${encodeURIComponent(linkPath)}`),
+  hostFolders: (path) => request('GET', `/api/host-folders${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   snapshots: (name) => request('GET', `/api/sites/${name}/snapshots`),
   wpCli: (name, args) => request('POST', `/api/sites/${name}/wp`, { args }),
   cacheStatus: (name) => request('GET', `/api/sites/${name}/cache`),

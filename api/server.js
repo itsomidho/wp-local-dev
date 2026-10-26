@@ -362,6 +362,73 @@ app.post('/api/sites/:name/admin-domain', requireValidSiteName, async (req, res)
   res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
 });
 
+// Linked folders (`wpdev link`/`unlink`/`links`/`link-browse`).
+// Folders outside the project are the host's: wpdev checks them through a
+// helper container, since this one only sees the project. A folder is a
+// full path (/ or ~/), since there's no "current folder" here; wpdev
+// resolves and checks it, this only keeps it to one sane line.
+const LINK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// A path inside the site (wp-content/uploads); wpdev checks it properly.
+const SITE_PATH_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*\/?$/;
+const sitePath = (value) => typeof value === 'string' && value.length <= 512 && SITE_PATH_RE.test(value);
+const hostFolder = (value) =>
+  typeof value === 'string' &&
+  value.length > 0 &&
+  value.length < 4096 &&
+  (value.startsWith('/') || value === '~' || value.startsWith('~/')) &&
+  !/[\0\n\r]/.test(value);
+const jsonLines = (stdout) =>
+  (stdout || '')
+    .split('\n')
+    .filter((l) => l.trim().startsWith('{'))
+    .map((l) => JSON.parse(l));
+
+app.get('/api/sites/:name/linked', requireValidSiteName, async (req, res) => {
+  const { code, stdout, stderr } = await runWpdev(['links', req.params.name, '--json']);
+  if (code !== 0) return res.status(500).json({ code, stdout, stderr });
+  res.json({ links: jsonLines(stdout) });
+});
+// {folder, to?, name?, writable?}: `to` is where it goes in the site
+// (needed unless it's a plugin or theme). Recreates the running PHP
+// containers and nginx when the mounts change, so it can take a few seconds.
+app.post('/api/sites/:name/linked', requireValidSiteName, async (req, res) => {
+  const { folder, name, to, writable } = req.body || {};
+  if (!hostFolder(folder)) {
+    return res.status(400).json({ error: "send {folder: '/full/path' or '~/path', to?, name?, writable?}" });
+  }
+  if (name !== undefined && name !== '' && !(typeof name === 'string' && LINK_NAME_RE.test(name))) {
+    return res.status(400).json({ error: 'name: letters, digits, . _ - only' });
+  }
+  if (to !== undefined && to !== '' && !sitePath(to)) {
+    return res.status(400).json({ error: 'to: a path inside the site, like wp-content/uploads' });
+  }
+  if (writable !== undefined && typeof writable !== 'boolean') {
+    return res.status(400).json({ error: 'writable: true or false' });
+  }
+  const args = ['link', req.params.name, folder.trim()];
+  if (to) args.push(`--to=${to}`);
+  if (name) args.push(`--name=${name}`);
+  if (writable) args.push('--writable');
+  const { code, stdout, stderr } = await runWpdev(args);
+  res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
+});
+// :link is the link's path in the site (URL-encoded), or its folder name.
+app.delete('/api/sites/:name/linked/:link', requireValidSiteName, async (req, res) => {
+  if (!sitePath(req.params.link)) return res.status(400).json({ error: 'invalid link path' });
+  const { code, stdout, stderr } = await runWpdev(['unlink', req.params.name, req.params.link]);
+  res.status(code === 0 ? 200 : 500).json({ code, stdout, stderr });
+});
+// ?path= (default: your home folder) -> {path, parent, entries: [{name, kind}]}
+app.get('/api/host-folders', async (req, res) => {
+  const folder = req.query.path;
+  if (folder !== undefined && !hostFolder(folder)) {
+    return res.status(400).json({ error: 'path: a full path, starting with / or ~/' });
+  }
+  const { code, stdout, stderr } = await runWpdev(folder ? ['link-browse', folder, '--json'] : ['link-browse', '--json']);
+  if (code !== 0) return res.status(404).json({ code, stdout, stderr, error: 'No such folder' });
+  res.json(JSON.parse(stdout));
+});
+
 app.get('/api/sites/:name/snapshots', requireValidSiteName, sync((req) => ['snapshots', req.params.name]));
 
 app.post('/api/sites/:name/snapshots', requireValidSiteName, (req, res) => {
