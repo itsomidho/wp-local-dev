@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSlug from 'rehype-slug';
@@ -13,6 +13,14 @@ import { Search } from 'lucide-react';
 // else here -- `wpdev update` picks up a changed README the same way it
 // picks up a changed component.
 import readmeRaw from '../../../README.md?raw';
+import Cheatsheet from './Cheatsheet';
+import { parseCommandReference } from '../lib/cheatsheet';
+
+const MODE_KEY = 'wpdev.docsMode';
+const DOCS_MODES = [
+  { value: 'cheatsheet', label: 'Cheatsheet' },
+  { value: 'readme', label: 'Full README' },
+];
 
 const HEADING_RE = /^(#{2,3})\s+(.+)$/gm;
 
@@ -95,7 +103,39 @@ function scrollToAnchor(e) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-export default function DocsPage() {
+function readMode() {
+  try {
+    return localStorage.getItem(MODE_KEY) === 'readme' ? 'readme' : 'cheatsheet';
+  } catch {
+    return 'cheatsheet';
+  }
+}
+
+// The cheatsheet (every command, ready to copy) or the full README; the
+// choice is kept per browser.
+export default function DocsPage({ sites = [] }) {
+  const [mode, setModeState] = useState(readMode);
+  const pendingAnchor = useRef(null);
+  const setMode = (m) => {
+    setModeState(m);
+    try {
+      localStorage.setItem(MODE_KEY, m);
+    } catch {
+      // Private window or blocked storage: it just isn't remembered.
+    }
+  };
+  const commands = useMemo(() => parseCommandReference(readmeRaw), []);
+  // A cheatsheet link into the README: switch, then scroll once it's there.
+  const openInReadme = (id) => {
+    pendingAnchor.current = id;
+    setMode('readme');
+  };
+  useEffect(() => {
+    if (mode !== 'readme' || !pendingAnchor.current) return;
+    document.getElementById(pendingAnchor.current)?.scrollIntoView({ block: 'start' });
+    pendingAnchor.current = null;
+  }, [mode]);
+
   const [query, setQuery] = useState('');
 
   const toc = useMemo(() => buildToc(readmeRaw), []);
@@ -114,41 +154,74 @@ export default function DocsPage() {
     return set;
   }, [query, toc, sections]);
 
-  return (
-    <div className="docs-page" onClick={scrollToAnchor}>
-      <aside className="docs-sidebar">
-        <label className="input-search">
-          <Search size={15} />
-          <input name="docsSearch" placeholder="Search docs…" value={query} onChange={(e) => setQuery(e.target.value)} />
-        </label>
-        <nav className="docs-toc">
-          {toc.map((entry) => {
-            const visible = !matchedSlugs || matchedSlugs.has(entry.slug);
-            if (!visible) return null;
-            return (
-              <a
-                key={entry.slug}
-                href={`#${entry.slug}`}
-                className={entry.level === 3 ? 'docs-toc-link docs-toc-sub' : 'docs-toc-link'}
-              >
-                {entry.title}
-              </a>
-            );
-          })}
-          {matchedSlugs && matchedSlugs.size === 0 && (
-            <p className="muted small docs-no-results">No matches.</p>
-          )}
-        </nav>
-      </aside>
+  const modeSwitch = (
+    <div className="docs-modebar">
+      <div className="format-toggle docs-mode" role="radiogroup" aria-label="Docs view">
+        {DOCS_MODES.map((m) => (
+          <button
+            key={m.value}
+            type="button"
+            role="radio"
+            aria-checked={mode === m.value}
+            className={mode === m.value ? 'is-active' : undefined}
+            onClick={() => setMode(m.value)}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 
-      <div className="docs-content">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSlug, rehypeHighlight]}
-          components={{ pre: CodeBlock }}
-        >
-          {readmeRaw}
-        </ReactMarkdown>
+  if (mode === 'cheatsheet') {
+    return (
+      <div className="docs-wrap">
+        {modeSwitch}
+        <div className="docs-page" onClick={scrollToAnchor}>
+          <Cheatsheet commands={commands} sites={sites} onAnchor={openInReadme} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="docs-wrap">
+      {modeSwitch}
+      <div className="docs-page" onClick={scrollToAnchor}>
+        <aside className="docs-sidebar">
+          <label className="input-search">
+            <Search size={15} />
+            <input name="docsSearch" placeholder="Search docs…" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </label>
+          <nav className="docs-toc">
+            {toc.map((entry) => {
+              const visible = !matchedSlugs || matchedSlugs.has(entry.slug);
+              if (!visible) return null;
+              return (
+                <a
+                  key={entry.slug}
+                  href={`#${entry.slug}`}
+                  className={entry.level === 3 ? 'docs-toc-link docs-toc-sub' : 'docs-toc-link'}
+                >
+                  {entry.title}
+                </a>
+              );
+            })}
+            {matchedSlugs && matchedSlugs.size === 0 && (
+              <p className="muted small docs-no-results">No matches.</p>
+            )}
+          </nav>
+        </aside>
+
+        <div className="docs-content">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSlug, rehypeHighlight]}
+            components={{ pre: CodeBlock }}
+          >
+            {readmeRaw}
+          </ReactMarkdown>
+        </div>
       </div>
     </div>
   );

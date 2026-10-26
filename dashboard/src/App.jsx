@@ -43,7 +43,7 @@ const PAGE_META = {
   docker: { title: 'Docker', subtitle: 'Resource use, images and volumes of this stack' },
   doctor: { title: 'Doctor', subtitle: 'Find and explain anything misconfigured' },
   debug: { title: 'Debug', subtitle: "WordPress's debug settings and debug.log, site by site" },
-  docs: { title: 'Docs', subtitle: 'The README, searchable' },
+  docs: { title: 'Docs', subtitle: 'Every command, and the README, searchable' },
 };
 
 const STACK_CONFIRM = {
@@ -549,7 +549,7 @@ export default function App() {
           {page === 'docker' && <DockerPage onShowDetails={setDetailsFor} />}
           {page === 'doctor' && <DoctorPage doctor={doctor} onRun={runDoctor} />}
           {page === 'debug' && <DebugPage sites={sites === null ? null : siteList} siteName={pageSub} onSelectSite={(name) => navigate('debug', name)} />}
-          {page === 'docs' && <DocsPage />}
+          {page === 'docs' && <DocsPage sites={siteList} />}
         </main>
       </div>
 

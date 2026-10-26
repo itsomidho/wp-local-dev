@@ -1446,7 +1446,7 @@ The sidebar has six pages:
 | **Services** | A card per container: state, uptime, published ports, an Open button for Adminer/Mailpit, **Logs** — `wpdev logs <service> --tail=200`, followed live until you close it — and **Restart** (`wpdev restart <service>`, after a confirmation saying what it interrupts) |
 | **Docker** | A container manager scoped to this project: live CPU/memory/network/disk per container, images (remove unused ones, clean up old builds) and volumes (delete an unused one after typing its name). Each container's **Details** (also on its Services card) shows its ports, networks, mounts and environment, secrets masked |
 | **Doctor** | `wpdev doctor` as a checklist grouped by section and site, with a pass/warning/fail summary |
-| **Docs** | This README (see below) |
+| **Docs** | A command cheatsheet, and this README (see below) |
 
 The folder icon on a site card opens its project folder, `sites/<name>`:
 **Open in VS Code** (a `vscode://` link the browser hands to VS Code),
@@ -1513,6 +1513,12 @@ build time (not copied), so it can't drift out of sync with this file; the
 search box filters the table of contents to headings whose title or body
 text matches, and each entry jumps to its section like any in-page anchor
 link.
+
+It opens on a **Cheatsheet**: every command from [Command reference](#command-reference),
+grouped, with a filter and a copy button on each. Pick a site and it's filled
+in wherever a command takes one (`wpdev cache <site> on|off` becomes
+`wpdev cache mysite on|off`). It's read from that table, so a command added
+there shows up here too; **Full README** switches to the whole text.
 
 **Worth knowing:**
 
