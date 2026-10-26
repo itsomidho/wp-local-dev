@@ -18,6 +18,9 @@ jobs:
   smoke-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Steps run under bash -e, which never stops on a failing `! cmd`:
+    # bash exempts negated commands from errexit. So every "this must not
+    # happen" check is written `! cmd || exit 1`.
     steps:
       - uses: actions/checkout@v5
 
@@ -81,8 +84,8 @@ jobs:
           echo "$plugins"
           echo "$plugins" | grep -qx "query-monitor"
           echo "$plugins" | grep -qx "wp-crontrol"
-          ! ls sites/citest/wp-content/plugins/ | grep -qx "hello"
-          ! ls sites/citest/wp-content/plugins/ | grep -qx "akismet"
+          ! ls sites/citest/wp-content/plugins/ | grep -qx "hello" || exit 1
+          ! ls sites/citest/wp-content/plugins/ | grep -qx "akismet" || exit 1
 
       - name: >
           Regression test -- a site must still provision and become
@@ -136,9 +139,9 @@ jobs:
           cat logs/cron.log
           grep -q "citest (php8.2)" logs/cron.log
           grep -q "citest-clone (php8.2)" logs/cron.log
-          ! grep -q "could not be opened" logs/cron.log
-          ! grep -q "syntax error" logs/cron.log
-          ! grep -qE "You are running 8\.[^2]" logs/cron.log
+          ! grep -q "could not be opened" logs/cron.log || exit 1
+          ! grep -q "syntax error" logs/cron.log || exit 1
+          ! grep -qE "You are running 8\.[^2]" logs/cron.log || exit 1
 
       - name: >
           Regression test -- restarting a phpXX container must not break
@@ -186,7 +189,7 @@ jobs:
           docker exec wp-nginx nginx -t
           sleep 1
           off_headers=$(curl -sk -D - -o /dev/null --resolve citest.test:443:127.0.0.1 https://citest.test/)
-          ! echo "$off_headers" | grep -qi "^x-fastcgi-cache:"
+          ! echo "$off_headers" | grep -qi "^x-fastcgi-cache:" || exit 1
           echo "$off_headers" | grep -qi "^x-content-type-options:"
 
       - name: >
@@ -415,10 +418,10 @@ jobs:
           # can't write into it, fix-perms hands it back.
           docker exec wp-php82 sh -c 'mkdir -m 755 /var/www/citest/wp-content/upgrade-temp-backup && touch /var/www/citest/wp-content/upgrade-temp-backup/old'
           ./wpdev doctor | grep -q "Run: wpdev fix-perms citest"
-          ! docker exec -u www-data wp-php82 mkdir /var/www/citest/wp-content/upgrade-temp-backup/plugins 2>/dev/null
+          ! docker exec -u www-data wp-php82 mkdir /var/www/citest/wp-content/upgrade-temp-backup/plugins 2>/dev/null || exit 1
           ./wpdev fix-perms citest
           docker exec -u www-data wp-php82 mkdir /var/www/citest/wp-content/upgrade-temp-backup/plugins
-          ! ./wpdev doctor | grep -q "Run: wpdev fix-perms citest"
+          ! ./wpdev doctor | grep -q "Run: wpdev fix-perms citest" || exit 1
           rm -rf sites/citest/wp-content/upgrade-temp-backup
 
           # Through the api too (dashboard button).
@@ -493,7 +496,7 @@ jobs:
 
           ./wpdev remove flagtest --yes </dev/null
           rm -rf snapshots/flagtest
-          ! ./wpdev list | grep -q flagtest.test
+          ! ./wpdev list | grep -q flagtest.test || exit 1
 
       - name: >
           Regression test -- the api service (thin HTTP wrapper around
@@ -543,7 +546,7 @@ jobs:
           # response's stdout field contains a real \n escape sequence.
           check=$(curl -s http://127.0.0.1:39005/api/update-check)
           printf '%s\n' "$check"
-          ! printf '%s' "$check" | grep -qi "not a git checkout"
+          ! printf '%s' "$check" | grep -qi "not a git checkout" || exit 1
           printf '%s' "$check" | python3 -c "import json, sys; json.load(sys.stdin)"
 
           add_out=$(curl -N -s -X POST http://127.0.0.1:39005/api/sites \
@@ -571,7 +574,7 @@ jobs:
           remove_out=$(curl -N -s -X DELETE http://127.0.0.1:39005/api/sites/apicitest --max-time 60)
           echo "$remove_out" | grep -qi "apicitest.test removed"
 
-          ! ./wpdev list | grep -q apicitest.test
+          ! ./wpdev list | grep -q apicitest.test || exit 1
 
       - name: >
           Regression test -- the dashboard (React GUI for the api service,
@@ -599,8 +602,8 @@ jobs:
           # would leave behind.
           config=$(curl -s http://127.0.0.1:39006/config.js)
           echo "$config" | grep -qE '__WPDEV_APP_VERSION__ = "[^"]+"'
-          ! echo "$config" | grep -q '__WPDEV_APP_VERSION__ = "unknown"'
-          ! echo "$config" | grep -q '\${APP_VERSION}'
+          ! echo "$config" | grep -q '__WPDEV_APP_VERSION__ = "unknown"' || exit 1
+          ! echo "$config" | grep -q '\${APP_VERSION}' || exit 1
 
           # Regression test -- the Docs page bundles the real README.md at
           # build time (Dockerfile must copy it to the same relative depth
@@ -617,7 +620,7 @@ jobs:
           the api killed it (bash exited, the follower didn't), one more
           per view, forever.
         run: |
-          ! ./wpdev logs redis --tail=abc </dev/null
+          ! ./wpdev logs redis --tail=abc </dev/null || exit 1
 
           out=$(curl -sN -m 5 "http://127.0.0.1:39005/api/logs/redis?tail=2" || true)
           echo "$out"
@@ -632,7 +635,7 @@ jobs:
           service (the dashboard's per-service Restart), rejects unknown
           names, and the api route refuses anything but a plain name.
         run: |
-          ! ./wpdev restart nosuch </dev/null
+          ! ./wpdev restart nosuch </dev/null || exit 1
 
           before=$(docker inspect -f '{{.State.StartedAt}}' wp-redis)
           other=$(docker inspect -f '{{.State.StartedAt}}' wp-mailpit)
@@ -660,7 +663,7 @@ jobs:
           redis = [i for i in imgs if "redis:alpine" in i["tags"]]
           assert redis and "wp-redis" in redis[0]["usedBy"], imgs'
           # In use: Docker itself refuses.
-          ! ./wpdev images rm "$(docker inspect -f '{{.Image}}' wp-redis)" </dev/null
+          ! ./wpdev images rm "$(docker inspect -f '{{.Image}}' wp-redis)" </dev/null || exit 1
           # Not this project's: refused before Docker is asked.
           docker pull -q hello-world >/dev/null
           out=$(./wpdev images rm "$(docker image inspect -f '{{.Id}}' hello-world)" </dev/null || true)
@@ -669,7 +672,7 @@ jobs:
           docker rmi hello-world >/dev/null
 
           ./wpdev volumes --json | grep -q '"volume":"wp_mysql_data"'
-          ! ./wpdev volumes rm "$(docker volume ls -q | grep '_wp_mysql_data$')" --yes </dev/null
+          ! ./wpdev volumes rm "$(docker volume ls -q | grep '_wp_mysql_data$')" --yes </dev/null || exit 1
           docker volume inspect "$(docker volume ls -q | grep '_wp_mysql_data$')" >/dev/null
           docker volume create citest-foreign >/dev/null
           out=$(./wpdev volumes rm citest-foreign --yes </dev/null || true)
@@ -678,8 +681,8 @@ jobs:
 
           root_pw=$(sed -n 's/^DB_ROOT_PASSWORD=//p' .env)
           ./wpdev inspect mysql | grep -q '"MYSQL_ROOT_PASSWORD=\*\*\*\*\*\*\*\*"'
-          ! ./wpdev inspect mysql | grep -qF "$root_pw"
-          ! curl -s http://127.0.0.1:39005/api/services/mysql/inspect | grep -qF "$root_pw"
+          ! ./wpdev inspect mysql | grep -qF "$root_pw" || exit 1
+          ! curl -s http://127.0.0.1:39005/api/services/mysql/inspect | grep -qF "$root_pw" || exit 1
           [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://127.0.0.1:39005/api/docker/images/not-an-id/remove')" = "400" ]
 
       - name: >
@@ -691,7 +694,7 @@ jobs:
           docker pull -q busybox >/dev/null
           docker run -d --name wp-portainer --label "com.docker.compose.project=${project}" busybox sleep 600 >/dev/null
           ./wpdev up </dev/null
-          ! docker inspect wp-portainer >/dev/null 2>&1
+          ! docker inspect wp-portainer >/dev/null 2>&1 || exit 1
 
           # Same name, another project's label: left alone.
           docker run -d --name wp-portainer --label com.docker.compose.project=someone-else busybox sleep 600 >/dev/null
@@ -700,7 +703,7 @@ jobs:
           docker rm -f wp-portainer >/dev/null
           docker rmi busybox >/dev/null
 
-          ! ./wpdev portainer </dev/null
+          ! ./wpdev portainer </dev/null || exit 1
 
       - name: >
           Regression test -- an .env from before the port renumbering moves
@@ -720,7 +723,7 @@ jobs:
           grep -qx "MAILPIT_SMTP_PORT=39004" .env
           grep -qx "API_PORT=41234" .env
           grep -qx "DASHBOARD_PORT=39006" .env
-          ! grep -q "^PORTAINER_PORT=" .env
+          ! grep -q "^PORTAINER_PORT=" .env || exit 1
           # Once only: a second run changes nothing.
           before=$(md5sum < .env)
           ./wpdev list >/dev/null 2>&1
@@ -735,7 +738,7 @@ jobs:
           running_php() { docker ps --format '{{.Names}}' | grep '^wp-php' | sort; }
           used_php() { for f in config/sites/*.env; do sed -n 's/^PHP_VERSION=//p' "$f"; done | sort -u | sed 's/\.//; s/^/wp-php/' | sort; }
           [ "$(running_php)" = "$(used_php)" ]
-          ! docker inspect wp-php85 >/dev/null 2>&1
+          ! docker inspect wp-php85 >/dev/null 2>&1 || exit 1
 
           ./wpdev add --domain=php85test.test --php=8.5 </dev/null
           [ "$(docker exec wp-php85 php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')" = "8.5" ]
@@ -749,10 +752,10 @@ jobs:
           [ "$(running_php)" = "$(used_php)" ]
 
           ./wpdev remove php85test --yes </dev/null
-          ! docker inspect wp-php85 >/dev/null 2>&1
+          ! docker inspect wp-php85 >/dev/null 2>&1 || exit 1
 
           ./wpdev up </dev/null
-          ! docker inspect wp-php85 >/dev/null 2>&1
+          ! docker inspect wp-php85 >/dev/null 2>&1 || exit 1
           [ "$(running_php)" = "$(used_php)" ]
           ./wpdev doctor | grep -q "PHP in use:"
 
@@ -812,7 +815,7 @@ jobs:
             echo "$r" | grep -q "https://${site}:8444/wp-login.php"
           done
           ! docker compose exec -T php82 wp --path=/var/www/portclone --allow-root \
-              post list --post_type=any --fields=guid --format=csv | grep -q '8444:8444'
+              post list --post_type=any --fields=guid --format=csv | grep -q '8444:8444' || exit 1
 
           ./wpdev status | grep -E '^porttest\.test ' | grep -qw 200
           ./wpdev list | grep -q 'https://porttest.test:8444'
@@ -849,7 +852,7 @@ jobs:
           ./wpdev doctor | grep -q "wasn't issued by the current mkcert CA"
 
           ./wpdev cert citest
-          ! ./wpdev doctor | grep -q "wasn't issued by the current mkcert CA"
+          ! ./wpdev doctor | grep -q "wasn't issued by the current mkcert CA" || exit 1
           sleep 1
           curl -sf --noproxy '*' --resolve citest.test:443:127.0.0.1 -o /dev/null https://citest.test/
 
@@ -873,7 +876,7 @@ jobs:
           # match would SIGPIPE `up` partway through its work.
           out=$(./wpdev up 2>&1); echo "$out"
           echo "$out" | grep -q 'interrupted recreate'
-          ! docker ps -a --format '{{.Names}}' | grep -q abcdef123456_wp-ci
+          ! docker ps -a --format '{{.Names}}' | grep -q abcdef123456_wp-ci || exit 1
 
       - name: >
           Regression test -- an Up from the dashboard applies the api's own
@@ -901,14 +904,14 @@ jobs:
           docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
           cat logs/api-updater.log
           grep -q 'exit 0' logs/api-updater.log
-          ! docker ps -a --format '{{.Names}}' | grep -qE 'wpdev-api-updater|^[0-9a-f]{12}_wp-'
+          ! docker ps -a --format '{{.Names}}' | grep -qE 'wpdev-api-updater|^[0-9a-f]{12}_wp-' || exit 1
 
           before=$(docker inspect -f '{{.Id}}' wp-api)
           sed -i '/^WPDEV_SELF_UPDATE_TEST=1$/d' .env
           resp=$(curl -s -X POST http://127.0.0.1:39005/api/stack/up); echo "$resp"
           echo "$resp" | grep -q 'api restarts itself'
           wait_for_new_api "$before"
-          ! docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST
+          ! docker exec wp-api printenv WPDEV_SELF_UPDATE_TEST || exit 1
 
       - name: >
           Feature test -- `wpdev media-proxy` serves uploads missing locally
@@ -931,8 +934,8 @@ jobs:
           wpconfig_before=$(sha256sum sites/citest/wp-config.php)
 
           ./wpdev media-proxy citest | grep -q 'Off'
-          ! ./wpdev media-proxy citest 'https://s.w.org/a;b'
-          ! ./wpdev media-proxy citest 'ftp://s.w.org'
+          ! ./wpdev media-proxy citest 'https://s.w.org/a;b' || exit 1
+          ! ./wpdev media-proxy citest 'ftp://s.w.org' || exit 1
           get citest.test "$path" | grep -q '^HTTP/1.1 404'
 
           ./wpdev media-proxy citest "$prod/"
@@ -941,7 +944,7 @@ jobs:
           h=$(get citest.test "$path"); echo "$h"
           echo "$h" | grep -q '^HTTP/1.1 200'
           echo "$h" | grep -qi '^content-type: image/'
-          ! echo "$h" | grep -qiE '^(set-cookie|strict-transport-security|alt-svc):'
+          ! echo "$h" | grep -qiE '^(set-cookie|strict-transport-security|alt-svc):' || exit 1
           # Local files win; PHP in uploads stays blocked.
           mkdir -p sites/citest/wp-content/uploads/wpdev-test
           printf 'local' > sites/citest/wp-content/uploads/wpdev-test/local.txt
@@ -1006,8 +1009,8 @@ jobs:
           plugin=sites/citest/wp-content/mu-plugins/wpdev-admin-domain.php
 
           ./wpdev admin-domain citest | grep -q 'Off'
-          ! ./wpdev admin-domain citest 'a;b'
-          ! ./wpdev admin-domain citest citest.test
+          ! ./wpdev admin-domain citest 'a;b' || exit 1
+          ! ./wpdev admin-domain citest citest.test || exit 1
 
           # A vhost from before this feature lacks the include; `on` adds it.
           sed -i '/admin-domain\/frontend/d' nginx/sites/citest.test.conf
@@ -1044,7 +1047,7 @@ jobs:
           # the admin domain (a throwaway probe mu-plugin reports them).
           lp=$(page citest-admin.test /wp-login.php)
           echo "$lp" | grep -q 'action="https://citest-admin.test/wp-login.php'
-          ! echo "$lp" | grep -qE '(src|action)="https://citest.test'
+          ! echo "$lp" | grep -qE '(src|action)="https://citest.test' || exit 1
           cat > sites/citest/wp-content/mu-plugins/wpdev-ci-probe.php <<'PHP'
           <?php
           add_action('init', function () {
@@ -1110,7 +1113,7 @@ jobs:
           ./wpdev wp citest rewrite structure ''
           # A cached vhost from before this feature is regenerated by `on`.
           sed -i '/http_x_forwarded_host/,+2d' nginx/sites/citest.test.conf
-          ! grep -q http_x_forwarded_host nginx/sites/citest.test.conf
+          ! grep -q http_x_forwarded_host nginx/sites/citest.test.conf || exit 1
           ./wpdev admin-domain citest on | grep -q 'Regenerated citest.test'
           grep -q http_x_forwarded_host nginx/sites/citest.test.conf
           ./wpdev cache citest off
@@ -1119,11 +1122,11 @@ jobs:
 
           # A clone starts without one (or wpdev's plugin); remove cleans up.
           ./wpdev clone citest adclone --yes </dev/null
-          ! grep -q '^ADMIN_DOMAIN=' config/sites/adclone.env
+          ! grep -q '^ADMIN_DOMAIN=' config/sites/adclone.env || exit 1
           [ ! -e sites/adclone/wp-content/mu-plugins/wpdev-admin-domain.php ]
           ./wpdev admin-domain adclone | grep -qx '.*Off'
-          ! get adclone.test /wp-admin/ | grep -q 'admin.test'
-          ! ./wpdev admin-domain adclone citest-admin.test
+          ! get adclone.test /wp-admin/ | grep -q 'admin.test' || exit 1
+          ! ./wpdev admin-domain adclone citest-admin.test || exit 1
           ./wpdev admin-domain adclone adclone-admin.test
           [ "$(code adclone-admin.test /wp-login.php)" = 200 ]
           # Changing the domain moves everything and drops the old cert.
@@ -1146,7 +1149,7 @@ jobs:
           curl -sf "$api" | grep -q 'On: https://citest-admin.test'
           [ "$(post '{"mode":"off"}')" = 200 ]
           curl -sf "$api" | grep -q 'Off (last admin domain: citest-admin.test)'
-          ! docker exec wp-nginx nginx -T 2>/dev/null | grep -q 'server_name citest-admin.test'
+          ! docker exec wp-nginx nginx -T 2>/dev/null | grep -q 'server_name citest-admin.test' || exit 1
           [ "$(post '{"domain":"citest-admin.test"}')" = 200 ]
           [ "$(code citest-admin.test /wp-login.php)" = 200 ]
           [ "$(post '{"domain":"a;b"}')" = 400 ]
@@ -1157,7 +1160,7 @@ jobs:
           [ ! -e nginx/sites/admin-domain/citest.test.conf ]
           [ ! -e nginx/sites/admin-domain/frontend/citest.test.conf ]
           [ ! -e "$plugin" ]
-          ! get citest.test /wp-admin/ | grep -q 'citest-admin.test'
+          ! get citest.test /wp-admin/ | grep -q 'citest-admin.test' || exit 1
           sed -i '/^ADMIN_DOMAIN=/d' config/sites/citest.env
           rm -f sites/citest/wp-content/mu-plugins/wpdev-ci-probe.php \
             nginx/ssl/certs/citest-admin.test.pem nginx/ssl/private/citest-admin.test-key.pem
@@ -1221,7 +1224,7 @@ jobs:
           [ "$(sed -n 's/^ADMIN_PASSWORD=//p' "$c")" = "$(sed -n 's/^ADMIN_PASSWORD=//p' "$f")" ]
           [ "$(sed -n 's/^CACHE_TTL=//p' "$c")" = 5m ]
           [ "$(sed -n 's/^DB_PASSWORD=//p' "$c")" != "$(sed -n 's/^DB_PASSWORD=//p' "$f")" ]
-          ! grep -q '^ADMIN_DOMAIN=' "$c"
+          ! grep -q '^ADMIN_DOMAIN=' "$c" || exit 1
           ./wpdev wp cfgclone option get siteurl | grep -q cfgclone.test
           ./wpdev remove cfgclone --yes </dev/null
           [ ! -e "$c" ]
@@ -1265,7 +1268,7 @@ jobs:
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone
           printf 'citest.test\n' | ./wpdev remove citest
           ./wpdev doctor | tee /tmp/doctor2.log
-          ! grep -q "thing(s) need fixing" /tmp/doctor2.log
+          ! grep -q "thing(s) need fixing" /tmp/doctor2.log || exit 1
 
       - name: Dump logs on failure
         if: failure()
