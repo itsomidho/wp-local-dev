@@ -1,2 +1,4 @@
 # Only for the README on GitHub: not part of an install (release tarballs)
 docs/ export-ignore
+# Maintainer-only: builds the GitHub wiki from README.md
+scripts/wiki-sync.mjs export-ignore
