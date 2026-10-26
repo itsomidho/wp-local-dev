@@ -867,7 +867,7 @@ function AdminDomainTab({ site }) {
 }
 
 // ---------------------------------------------------------------------------
-// Linked folders: plugins and themes from outside the project (`wpdev link`)
+// Linked folders: folders from outside the project, used in place (`wpdev link`)
 // ---------------------------------------------------------------------------
 const LAST_FOLDER_KEY = 'wpdev_link_folder';
 
@@ -906,12 +906,16 @@ async function activeNames(site, kinds) {
   }
 }
 
+const LINK_ICON = { plugin: Puzzle, theme: Palette, folder: Folder };
+
 function LinkedTab({ site }) {
   const toast = useToast();
   const [links, setLinks] = useState(null);
   const [active, setActive] = useState(null);
   const [error, setError] = useState(null);
   const [folder, setFolder] = useState(readLastFolder);
+  const [to, setTo] = useState('');
+  const [writable, setWritable] = useState(false);
   const [browser, setBrowser] = useState(null); // {path, parent, entries} while open
   const [browseError, setBrowseError] = useState(null);
   const [busy, setBusy] = useState(null); // what's running, for its button's spinner
@@ -923,7 +927,7 @@ function LinkedTab({ site }) {
       const r = await api.linked(site.name);
       setLinks(r.links);
       setError(null);
-      const kinds = [...new Set(r.links.map((l) => l.kind))];
+      const kinds = [...new Set(r.links.map((l) => l.kind).filter((k) => k !== 'folder'))];
       setActive(kinds.length ? await activeNames(site, kinds) : new Set());
     } catch (e) {
       setError(lastOutputLine(e));
@@ -953,25 +957,37 @@ function LinkedTab({ site }) {
     try {
       await action();
       toast({ tone: 'success', title: success });
+      return true;
     } catch (e) {
-      setFailure(stripAnsi(e.data?.stdout || '') + stripAnsi(e.data?.stderr || '') || e.message);
+      setFailure(stripAnsi(e.data?.stdout || '') + stripAnsi(e.data?.stderr || '') || e.data?.error || e.message);
+      return false;
     } finally {
       setBusy(null);
       refresh();
     }
   };
 
-  const link = (path) =>
-    run(`link:${path}`, () => api.link(site.name, path), `Linked ${path.split('/').pop()} into ${site.domain}`);
+  // A plugin or theme from the browser goes in its own place; the form
+  // sends the "Inside the site" path too.
+  const link = (path, where) =>
+    run(
+      `link:${path}`,
+      () => api.link(site.name, path, { to: where || undefined, writable }),
+      `Linked ${path.split('/').pop()} into ${site.domain}${where ? ` at ${where}` : ''}`,
+    );
+
+  const linkFromForm = async () => {
+    if (await link(folder.trim(), to.trim())) setTo('');
+  };
 
   const unlink = (l) => {
     setConfirmUnlink(null);
-    run(`unlink:${l.name}`, () => api.unlink(site.name, l.name), `Unlinked ${l.name} from ${site.domain}`);
+    run(`unlink:${l.path}`, () => api.unlink(site.name, l.path), `Unlinked ${l.path} from ${site.domain}`);
   };
 
   const setActivation = (l, on) =>
     run(
-      `activate:${l.name}`,
+      `activate:${l.path}`,
       () => api.wpCli(site.name, [l.kind, on ? 'activate' : 'deactivate', l.name]),
       `${on ? 'Activated' : 'Deactivated'} ${l.name}`,
     );
@@ -982,10 +998,11 @@ function LinkedTab({ site }) {
   return (
     <div className="tab-panel">
       <p className="muted">
-        Use a plugin or theme that lives outside this project (a shared plugins folder, its own repo) without
-        copying it. The site gets a link to the folder, and the folder is mounted read-only into the containers,
-        so wp-admin can't update or delete it: change it in its own folder, and every site that links it sees the
-        change. Linking or unlinking pauses the sites for a few seconds while the containers pick it up.
+        Use a folder that lives outside this project in this site, without moving or copying it: a plugin or theme (a
+        shared plugins folder, its own repo), uploads, or anything else. The site gets a link to the folder, and the
+        folder is mounted into the containers. It's read-only unless you make it writable, so wp-admin can't update
+        or delete shared code: change it in its own folder, and every site that links it sees the change. Linking or
+        unlinking pauses the sites for a few seconds while the containers pick it up.
       </p>
       {error && <p className="error">{error}</p>}
 
@@ -1007,16 +1024,22 @@ function LinkedTab({ site }) {
           </div>
           <ul className="snapshot-list">
             {links.map((l) => {
-              const KindIcon = l.kind === 'theme' ? Palette : Puzzle;
-              const on = isActive(l);
+              const KindIcon = LINK_ICON[l.kind] || Folder;
+              const wp = l.kind === 'plugin' || l.kind === 'theme';
+              const on = wp && isActive(l);
               return (
-                <li key={`${l.kind}:${l.name}`}>
+                <li key={l.path}>
                   <span className="snapshot-icon">
                     <KindIcon size={15} />
                   </span>
                   <span className="snapshot-text">
                     <strong>
-                      {l.name} <Chip>{l.kind}</Chip>{' '}
+                      {wp ? l.name : l.path} <Chip>{l.kind}</Chip>{' '}
+                      {l.mode === 'rw' && (
+                        <Chip tone="warning" title="WordPress can change and delete files in it.">
+                          writable
+                        </Chip>
+                      )}{' '}
                       {l.state !== 'ok' ? (
                         <Chip tone="danger" title="The folder isn't there any more, so it isn't mounted.">
                           folder missing
@@ -1027,13 +1050,13 @@ function LinkedTab({ site }) {
                     </strong>
                     <code title={l.target}>{l.target}</code>
                   </span>
-                  {l.state === 'ok' && active && (l.kind === 'plugin' || !on) && (
+                  {wp && l.state === 'ok' && active && (l.kind === 'plugin' || !on) && (
                     <button
                       className="btn btn-secondary btn-sm"
                       disabled={busy !== null}
                       onClick={() => setActivation(l, !on)}
                     >
-                      {busy === `activate:${l.name}` && <Loader2 size={14} className="spin" />}
+                      {busy === `activate:${l.path}` && <Loader2 size={14} className="spin" />}
                       {on ? 'Deactivate' : 'Activate'}
                     </button>
                   )}
@@ -1042,7 +1065,7 @@ function LinkedTab({ site }) {
                     disabled={busy !== null}
                     onClick={() => setConfirmUnlink(l)}
                   >
-                    {busy === `unlink:${l.name}` ? <Loader2 size={14} className="spin" /> : <Unlink size={14} />} Unlink
+                    {busy === `unlink:${l.path}` ? <Loader2 size={14} className="spin" /> : <Unlink size={14} />} Unlink
                   </button>
                 </li>
               );
@@ -1054,26 +1077,25 @@ function LinkedTab({ site }) {
       <div className="section-row" style={{ marginTop: 20 }}>
         <h4>Link a folder</h4>
       </div>
-      <div className="button-row">
-        <input
-          name="linkFolder"
-          placeholder="/full/path/to/plugin  or  ~/wp-plugins/my-plugin"
-          value={folder}
-          onChange={(e) => setFolder(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && folder.trim() && browse(folder.trim())}
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <button className="btn btn-secondary" disabled={busy !== null} onClick={() => browse(folder.trim() || undefined)}>
-          <FolderOpen size={15} /> Browse
-        </button>
-        <button
-          className="btn btn-primary"
-          disabled={busy !== null || !folder.trim()}
-          onClick={() => link(folder.trim())}
-        >
-          {busy === `link:${folder.trim()}` ? <Loader2 size={15} className="spin" /> : <Link2 size={15} />} Link
-        </button>
+      <div className="field">
+        <label className="field-label" htmlFor="linkFolder">
+          Folder on your computer
+        </label>
+        <div className="button-row">
+          <input
+            id="linkFolder"
+            name="linkFolder"
+            placeholder="/full/path/to/folder  or  ~/wp-plugins/my-plugin"
+            value={folder}
+            onChange={(e) => setFolder(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && folder.trim() && browse(folder.trim())}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <button className="btn btn-secondary" disabled={busy !== null} onClick={() => browse(folder.trim() || undefined)}>
+            <FolderOpen size={15} /> Browse
+          </button>
+        </div>
       </div>
       {browseError && <p className="error">{browseError}</p>}
 
@@ -1097,12 +1119,12 @@ function LinkedTab({ site }) {
             </button>
           </div>
           {browser.entries.length === 0 ? (
-            <p className="muted folder-browser-empty">No folders in here.</p>
+            <p className="muted folder-browser-empty">No folders in here. This one is picked: say where it goes below.</p>
           ) : (
             <ul className="snapshot-list">
               {browser.entries.map((entry) => {
                 const path = browser.path === '/' ? `/${entry.name}` : `${browser.path}/${entry.name}`;
-                const KindIcon = entry.kind === 'theme' ? Palette : entry.kind === 'plugin' ? Puzzle : Folder;
+                const KindIcon = LINK_ICON[entry.kind] || Folder;
                 return (
                   <li key={entry.name}>
                     <span className="snapshot-icon">
@@ -1114,14 +1136,15 @@ function LinkedTab({ site }) {
                       </button>
                     </span>
                     {entry.kind && <Chip tone="info">{entry.kind}</Chip>}
-                    {entry.kind &&
-                      (linkedTargets.has(path) ? (
-                        <Chip tone="success">linked</Chip>
-                      ) : (
+                    {linkedTargets.has(path) ? (
+                      <Chip tone="success">linked</Chip>
+                    ) : (
+                      entry.kind && (
                         <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={() => link(path)}>
                           {busy === `link:${path}` ? <Loader2 size={14} className="spin" /> : <Link2 size={14} />} Link
                         </button>
-                      ))}
+                      )
+                    )}
                   </li>
                 );
               })}
@@ -1130,10 +1153,45 @@ function LinkedTab({ site }) {
         </div>
       )}
 
+      <div className="field">
+        <label className="field-label" htmlFor="linkTo">
+          Inside the site
+        </label>
+        <input
+          id="linkTo"
+          name="linkTo"
+          placeholder="wp-content/uploads"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && folder.trim() && busy === null && linkFromForm()}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <p className="field-hint">
+          Where the folder shows up, from the site's own folder. Leave it empty for a plugin or theme: it goes into
+          wp-content/plugins or wp-content/themes by itself.
+        </p>
+      </div>
+      <label className="check">
+        <input type="checkbox" checked={writable} disabled={busy !== null} onChange={(e) => setWritable(e.target.checked)} />
+        <span>
+          Writable
+          <span className="field-hint">
+            {' '}
+            WordPress can add, change and delete files in it, as uploads need. Leave it off for code you share.
+          </span>
+        </span>
+      </label>
+      <div className="button-row">
+        <button className="btn btn-primary" disabled={busy !== null || !folder.trim()} onClick={linkFromForm}>
+          {busy === `link:${folder.trim()}` ? <Loader2 size={15} className="spin" /> : <Link2 size={15} />} Link
+        </button>
+      </div>
+
       {failure && <Output>{failure}</Output>}
       {confirmUnlink && (
         <ConfirmDialog
-          title={`Unlink ${confirmUnlink.name}?`}
+          title={`Unlink ${confirmUnlink.path}?`}
           message={`${site.domain} stops using it${
             confirmUnlink.kind === 'plugin' ? ' (it is deactivated first)' : ''
           }. The folder itself isn't touched, and other sites that link it keep it.`}

@@ -82,9 +82,9 @@ _wpdev() {
         "fix-perms:Give a site's files back to you"
         "media-proxy:Load uploads missing locally from production"
         "admin-domain:Move wp-admin to a separate domain"
-        'link:Use a plugin or theme folder from outside this project in a site'
-        'unlink:Remove a linked plugin or theme from a site'
-        'links:List linked plugins and themes'
+        'link:Use a folder from outside this project in a site'
+        'unlink:Remove a linked folder from a site'
+        'links:List linked folders'
         "link-browse:A folder's subfolders, marking plugins and themes"
         'wp:Run a WP-CLI command against a site'
         'help:Show usage'
@@ -171,15 +171,18 @@ _wpdev() {
             elif (( CURRENT == 4 )); then
                 _files -/
             else
-                compadd -- --name=
+                compadd -- --to= --name= --writable
             fi
             ;;
         unlink)
             if (( CURRENT == 3 )); then
                 compadd -- $(_wpdev_sites)
             elif (( CURRENT == 4 )); then
-                local root l
+                local root l e
                 root="$(_wpdev_root)" || return
+                for e in ${(s: :)"$(sed -n 's/^LINKS=//p' "$root/config/sites/${words[3]}.env" 2>/dev/null)"}; do
+                    compadd -- "${e%:rw}"
+                done
                 for l in "$root/sites/${words[3]}/wp-content/"{plugins,themes}/*(N@); do
                     compadd -- "${l:t}"
                 done

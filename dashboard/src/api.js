@@ -80,9 +80,10 @@ export const api = {
   adminDomainStatus: (name) => request('GET', `/api/sites/${name}/admin-domain`),
   adminDomain: (name, body) => request('POST', `/api/sites/${name}/admin-domain`, body),
   linked: (name) => request('GET', `/api/sites/${name}/linked`),
-  link: (name, folder, linkName) =>
-    request('POST', `/api/sites/${name}/linked`, linkName ? { folder, name: linkName } : { folder }),
-  unlink: (name, linkName) => request('DELETE', `/api/sites/${name}/linked/${encodeURIComponent(linkName)}`),
+  // opts: {to?, name?, writable?}; `to` is where it goes in the site.
+  link: (name, folder, opts = {}) => request('POST', `/api/sites/${name}/linked`, { folder, ...opts }),
+  // linkPath: the link's path in the site (wp-content/uploads), or its folder name.
+  unlink: (name, linkPath) => request('DELETE', `/api/sites/${name}/linked/${encodeURIComponent(linkPath)}`),
   hostFolders: (path) => request('GET', `/api/host-folders${path ? `?path=${encodeURIComponent(path)}` : ''}`),
   snapshots: (name) => request('GET', `/api/sites/${name}/snapshots`),
   wpCli: (name, args) => request('POST', `/api/sites/${name}/wp`, { args }),

@@ -30,10 +30,14 @@ function __wpdev_sites
     end
 end
 
-# The names linked into the site given as the 2nd token (`unlink`).
+# The links of the site given as the 2nd token (`unlink`): the paths wpdev
+# recorded, and the names of linked plugins and themes.
 function __wpdev_links
     set -l root (__wpdev_root); or return
     set -l site (commandline -opc)[3]
+    for e in (string split ' ' -- (sed -n 's/^LINKS=//p' $root/config/sites/$site.env 2>/dev/null))
+        string replace -r ':rw$' '' -- $e
+    end
     for l in $root/sites/$site/wp-content/plugins/* $root/sites/$site/wp-content/themes/*
         test -L $l; and basename $l
     end
@@ -130,9 +134,9 @@ complete -c wpdev -n "$__wpdev_top" -a cert -d "Reissue a site's HTTPS certifica
 complete -c wpdev -n "$__wpdev_top" -a fix-perms -d "Give a site's files back to you"
 complete -c wpdev -n "$__wpdev_top" -a media-proxy -d "Load uploads missing locally from production"
 complete -c wpdev -n "$__wpdev_top" -a admin-domain -d "Move wp-admin to a separate domain"
-complete -c wpdev -n "$__wpdev_top" -a link -d "Use a plugin/theme folder from outside this project in a site"
-complete -c wpdev -n "$__wpdev_top" -a unlink -d "Remove a linked plugin or theme from a site"
-complete -c wpdev -n "$__wpdev_top" -a links -d "List linked plugins and themes"
+complete -c wpdev -n "$__wpdev_top" -a link -d "Use a folder from outside this project in a site"
+complete -c wpdev -n "$__wpdev_top" -a unlink -d "Remove a linked folder from a site"
+complete -c wpdev -n "$__wpdev_top" -a links -d "List linked folders"
 complete -c wpdev -n "$__wpdev_top" -a link-browse -d "A folder's subfolders, marking plugins and themes"
 complete -c wpdev -n "$__wpdev_top" -a wp -d "Run a WP-CLI command against a site"
 complete -c wpdev -n "$__wpdev_top" -a help -d "Show usage"
@@ -142,9 +146,9 @@ for cmd in remove snapshot restore db-export db-import db-tables db-backup db-ba
     complete -c wpdev -f -n "__fish_seen_subcommand_from $cmd; and __wpdev_arg_n 2" -a "(__wpdev_sites)"
 end
 
-# `link <site> <folder> [--name=]`, `unlink <site> <linked name>`, `links [site] [--json]`
+# `link <site> <folder> [--to=] [--name=] [--writable]`, `unlink <site> <path|name>`, `links [site] [--json]`
 complete -c wpdev -f -n "__fish_seen_subcommand_from link; and __wpdev_arg_n 3" -a "(__fish_complete_directories)"
-complete -c wpdev -f -n "__fish_seen_subcommand_from link; and __wpdev_arg_n 4" -a "--name="
+complete -c wpdev -f -n "__fish_seen_subcommand_from link; and not __wpdev_arg_n 2; and not __wpdev_arg_n 3" -a "--to= --name= --writable"
 complete -c wpdev -f -n "__fish_seen_subcommand_from unlink; and __wpdev_arg_n 3" -a "(__wpdev_links)"
 complete -c wpdev -f -n "__fish_seen_subcommand_from links; and __wpdev_arg_n 2" -a "--json"
 complete -c wpdev -f -n "__fish_seen_subcommand_from link-browse; and __wpdev_arg_n 2" -a "(__fish_complete_directories)"

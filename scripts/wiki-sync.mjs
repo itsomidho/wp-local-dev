@@ -26,7 +26,7 @@ const PAGES = [
   ['Getting Started', ['Getting started', 'Access points']],
   ['Command Reference', ['Command reference']],
   ['Dashboard and API', ['Web dashboard', 'Status dashboard', 'Doctor', 'API service']],
-  ['Managing Sites', ['Multiple PHP versions', 'Cloning a site', 'Switching a site off', 'Sharing a site with other devices', 'Production media proxy', 'Admin domain', 'Default plugins', 'Linked plugins and themes', 'File permissions']],
+  ['Managing Sites', ['Multiple PHP versions', 'Cloning a site', 'Switching a site off', 'Sharing a site with other devices', 'Production media proxy', 'Admin domain', 'Default plugins', 'Linked folders', 'File permissions']],
   ['Databases and Backups', ['Snapshots', 'Full-stack backup and restore', 'Scheduled database backups', "Sharing a site's database"]],
   ['Caching and Performance', ['Performance', 'Redis object cache', 'Full-page cache (nginx FastCGI)', 'Real WP-Cron']],
   ['Debugging and Mail', ['WordPress debug mode and debug.log', 'Xdebug', 'Mail catching (Mailpit)']],

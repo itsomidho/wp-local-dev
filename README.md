@@ -35,10 +35,11 @@ Everything `wpdev` does is also in a web dashboard at `http://localhost:39006`
   auto-purge-on-save (via the nginx-helper plugin), per-site TTL, and
   configurable bypass cookies/paths. See
   [Full-page cache (nginx FastCGI)](#full-page-cache-nginx-fastcgi).
-- **Plugins and themes from outside the project** — `wpdev link` puts a
-  plugin or theme folder from anywhere on your machine into a site without
-  copying it, so one folder can serve several sites and each site picks its
-  own. See [Linked plugins and themes](#linked-plugins-and-themes).
+- **Folders from outside the project** — `wpdev link` puts a folder from
+  anywhere on your machine (a plugin, a theme, uploads, anything) into a
+  site without moving or copying it, read-only or writable, so one folder
+  can serve several sites and each site picks its own. See
+  [Linked folders](#linked-folders).
 - **Sensible default plugins** — Hello Dolly and Akismet removed, Query
   Monitor and WP Crontrol installed and activated, on every site. See
   [Default plugins](#default-plugins).
@@ -499,9 +500,9 @@ Everything is `wpdev <command> [argument]`:
 | `wpdev cert <name>` | Reissue a site's HTTPS certificate from the current mkcert CA, then reload nginx |
 | `wpdev media-proxy <name> [url\|on\|off]` | Load uploads missing locally from production, through the local site, with no plugin (see [Production media proxy](#production-media-proxy)) |
 | `wpdev admin-domain <name> [domain\|on\|off]` | Move the site's wp-admin to a separate domain, like a production admin reverse proxy (see [Admin domain](#admin-domain)) |
-| `wpdev link <site> <folder> [--name=<name>]` | Use a plugin or theme folder from outside this project in a site, without copying it: symlinked in, and mounted read-only into the containers (see [Linked plugins and themes](#linked-plugins-and-themes)) |
-| `wpdev unlink <site> <name>` | Remove a linked plugin or theme from a site, deactivating the plugin first. The folder itself is untouched |
-| `wpdev links [site] [--json]` | List linked plugins and themes, and whether their folders are still there |
+| `wpdev link <site> <folder> [--to=<path>] [--name=<name>] [--writable]` | Use a folder from outside this project in a site, without moving or copying it: a plugin or theme goes in its place by itself, anything else at `--to` (e.g. `wp-content/uploads`). Symlinked in, and mounted into the containers, read-only unless `--writable` (see [Linked folders](#linked-folders)) |
+| `wpdev unlink <site> <path\|name>` | Remove a link from a site (by its path in the site, or its name), deactivating a plugin first. The folder itself is untouched |
+| `wpdev links [site] [--json]` | List linked folders, read-only or writable, and whether they're still there |
 | `wpdev link-browse [folder] [--json]` | A folder's subfolders, marking which are plugins or themes (default: your home folder) — what the dashboard's folder browser shows |
 | `wpdev fix-perms <name>\|--all` | Give a site's files back to you (owner + write), e.g. after copying a site in from elsewhere |
 | `wpdev wp <name> <args...>` | Run any WP-CLI command against a site, e.g. `wpdev wp mysite plugin list` |
@@ -1026,68 +1027,88 @@ every plugin install here used to be able to take the *entire site*
 down with it if it failed, which defeats the point of a plugin being
 optional.
 
-## Linked plugins and themes
+## Linked folders
 
-A plugin or theme you keep outside this project — a shared plugins
-folder, its own git repo — can be used by any site without moving or
-copying it:
+A folder you keep outside this project — a shared plugins folder, a
+plugin's or theme's own git repo, a big uploads folder, anything — can be
+used by any site without moving or copying it:
 
 ```bash
-wpdev link wp-lab ~/wp-plugins/my-plugin       # into wp-lab's plugins
+wpdev link wp-lab ~/wp-plugins/my-plugin       # a plugin: into wp-lab's plugins
 wpdev link shop ~/wp-plugins/my-plugin         # the same folder, a second site
 wpdev link shop ~/themes/my-theme              # themes work the same way
 wpdev wp wp-lab plugin activate my-plugin      # then activate it as usual
+wpdev link wp-lab ~/media/uploads --to=wp-content/uploads --writable
+wpdev link wp-lab ~/data/feeds --to=wp-content/feeds   # any folder, anywhere in the site
 wpdev links                                    # what's linked where
 wpdev unlink wp-lab my-plugin                  # remove it from wp-lab only
+wpdev unlink wp-lab wp-content/uploads         # links are named by their path too
 ```
 
-`link` tells a plugin from a theme by its header (a `.php` file with
-`Plugin Name:`, or a `style.css` with `Theme Name:`) and links it under the
-folder's own name; `--name=<name>` picks another. It never replaces
-something already there: a real folder of the same name is left alone and
-the link is refused.
+**Where it goes.** `link` tells a plugin from a theme by its header (a
+`.php` file with `Plugin Name:`, or a `style.css` with `Theme Name:`) and
+puts it in `wp-content/plugins/` or `wp-content/themes/` under the folder's
+own name; `--name=<name>` picks another. Any other folder needs
+`--to=<path>`: where it shows up, relative to the site's folder
+(`wp-content/uploads`, `wp-content/mu-plugins/tools`, `data`). `--to`
+works for a plugin or theme too. `link` never replaces anything: a file or
+a folder with something in it is left alone and the link is refused. An
+empty folder in the way (a fresh site's `uploads`) is replaced; unlinking
+doesn't put it back.
+
+**Read-only or writable.** A linked folder is **read-only** in the
+containers by default, so wp-admin can't update or delete shared code.
+Add `--writable` for a folder WordPress has to write to, like uploads;
+link it again without `--writable` to make it read-only again. The
+containers are shared, so a folder is writable in every site that links
+it as soon as one link asks for that (`link` warns you).
 
 **How it works.** Every site on a PHP version shares that version's
 container, and nginx is shared by all of them, so a folder can't be mounted
 into just one site. Instead:
 
-- the folder is mounted **read-only** into every PHP container and nginx,
-  at the **same path** it has on your machine (nginx needs it too: it
-  serves the plugin's CSS, JS and images itself);
+- the folder is mounted into every PHP container and nginx at the **same
+  path** it has on your machine (nginx needs it too: it serves CSS, JS and
+  images itself);
 - the site gets a symlink, e.g. `sites/wp-lab/wp-content/plugins/my-plugin
   -> /home/you/wp-plugins/my-plugin`. Because the path is the same
   everywhere, that one symlink works in PHP, in nginx, and in your editor.
 
-Which sites use a folder is only down to which ones have the link. The
-links are the only record: wpdev works out the mounts from them on every
-run into `docker-compose.links.yml` (git-ignored), and sets `COMPOSE_FILE`
-in `.env` so a plain `docker compose` uses that file too. `link` and
-`unlink` recreate the running PHP containers and nginx when the mounts
-change, which pauses every site for a few seconds.
+Which sites use a folder is only down to which ones have the link. Each
+site's links are recorded as `LINKS` in `config/sites/<site>.env` (a
+symlink you make yourself in `wp-content/plugins` or `themes` counts too,
+read-only). wpdev works out the mounts from them on every run into
+`docker-compose.links.yml` (git-ignored), and sets `COMPOSE_FILE` in `.env`
+so a plain `docker compose` uses that file too. `link` and `unlink`
+recreate the running PHP containers and nginx when the mounts change,
+which pauses every site for a few seconds.
 
 Things to know:
 
-- **Read-only.** wp-admin can't update or delete a linked plugin (it would
-  change it for every site that uses it). Update it in its own folder.
 - **A folder that goes missing** is left out of the mounts, so the stack
   still starts; `wpdev links` shows it as `missing`. WordPress deactivates
   a plugin it can't find, so link it again once the folder's back.
+- **Not inside the project, and not a system folder.** Folders in this
+  project's `sites/` are already in the containers, and `/`, `/etc`,
+  `/home` and the like are refused: link the folder you need inside them.
 - **The link lives in the site's folder.** If the site is its own git repo,
   the link shows up there as a new file; add it to that repo's
-  `.gitignore` if you don't want it committed. Snapshots and clones keep
-  the link, not the folder's contents.
+  `.gitignore` if you don't want it committed. Snapshots keep the link,
+  not the folder's contents; a clone keeps the links and their record.
 - **From the dashboard** it's a site's **Manage → Linked folders** tab:
-  what's linked (with Activate/Deactivate and Unlink), and a folder browser
-  that marks which folders are plugins or themes, with a Link button on
-  each. The dashboard's container sees only this project, so wpdev checks
-  folders outside it from a throwaway container with your disk mounted
-  read-only (`wpdev link-browse` lists a folder the same way in the
-  terminal). That's no new power: the dashboard's container already
+  what's linked (with Activate/Deactivate for plugins and themes, and
+  Unlink), a form for the folder, where it goes in the site and whether
+  it's writable, and a folder browser that marks plugins and themes, with
+  a Link button on each. The dashboard's container sees only this project,
+  so wpdev checks folders outside it from a throwaway container with your
+  disk mounted read-only (`wpdev link-browse` lists a folder the same way
+  in the terminal). That's no new power: the dashboard's container already
   controls Docker, which is root on this machine. Linux only, like the
   rest of the host integration. The API behind it:
   `GET /api/sites/<site>/linked`, `POST /api/sites/<site>/linked` with
-  `{"folder": "/full/path" | "~/path", "name"?: "…"}`,
-  `DELETE /api/sites/<site>/linked/<name>`, and
+  `{"folder": "/full/path" | "~/path", "to"?: "wp-content/uploads",
+  "name"?: "…", "writable"?: true}`, `DELETE
+  /api/sites/<site>/linked/<path, URL-encoded, or name>`, and
   `GET /api/host-folders?path=…`.
 - **Your own `COMPOSE_FILE`.** If `.env` already sets one, wpdev leaves it
   alone and warns you to add `:docker-compose.links.yml` to it. Your own
@@ -1575,9 +1596,8 @@ Copy path still work.
 
 **Manage** on a site opens a side panel with its tabs: Overview
 (credentials, masked until you reveal or copy them, plus certificate and
-permission fixes), Cache, Media, Admin domain, Linked folders (plugins and
-themes from outside the project, see
-[Linked plugins and themes](#linked-plugins-and-themes)), Snapshots, Clone,
+permission fixes), Cache, Media, Admin domain, Linked folders (folders from
+outside the project, see [Linked folders](#linked-folders)), Snapshots, Clone,
 WP-CLI and Remove. **⌘K / Ctrl+K** opens a command palette that can jump to any
 page, open, manage or wp-admin any site, start/restart/stop the stack,
 open the tools and switch theme, all from the keyboard. Escape closes
@@ -1675,7 +1695,7 @@ there shows up here too; **Full README** switches to the whole text.
 ```
 wp-local-dev/
 ├── docker-compose.yml           # mysql, php74-85 (on demand), redis, mailpit, nginx, adminer, api, dashboard
-├── docker-compose.links.yml     # written by wpdev: mounts for linked plugins/themes (git-ignored, see "Linked plugins and themes")
+├── docker-compose.links.yml     # written by wpdev: mounts for linked folders (git-ignored, see "Linked folders")
 ├── .env                         # DB password, ports, optional build proxy (git-ignored)
 ├── .env.example                 # template for .env, copied by install.sh
 ├── wpdev                        # the whole interface — `wpdev help` (see Getting started)

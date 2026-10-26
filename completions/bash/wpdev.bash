@@ -35,10 +35,14 @@ _wpdev_sites() {
     done
 }
 
-# The names linked into a site (`wpdev unlink <site> <name>`).
+# A site's links (`wpdev unlink <site> <link>`): the paths wpdev recorded
+# (LINKS in its config), and the names of linked plugins and themes.
 _wpdev_links() {
-    local root l
+    local root l e
     root="$(_wpdev_root)" || return
+    for e in $(sed -n 's/^LINKS=//p' "$root/config/sites/$1.env" 2>/dev/null); do
+        echo "${e%:rw}"
+    done
     for l in "$root/sites/$1/wp-content/plugins"/* "$root/sites/$1/wp-content/themes"/*; do
         [ -L "$l" ] && echo "${l##*/}"
     done
@@ -141,7 +145,7 @@ _wpdev_complete() {
             elif [ "$COMP_CWORD" -eq 3 ]; then
                 COMPREPLY=($(compgen -d -- "$cur"))
             else
-                COMPREPLY=($(compgen -W "--name=" -- "$cur"))
+                COMPREPLY=($(compgen -W "--to= --name= --writable" -- "$cur"))
             fi
             ;;
         unlink)
