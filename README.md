@@ -11,7 +11,10 @@ wrong PHP version) show up here too, locally, before they show up somewhere
 that matters. Adding a site is one interactive call, `wpdev add`, and never
 touches `docker-compose.yml`.
 
-![The wpdev dashboard: the overview, a site's database tools, and the command cheatsheet](https://raw.githubusercontent.com/itsomidho/wp-local-dev/main/docs/dashboard.gif)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/itsomidho/wp-local-dev/main/docs/dashboard-dark.gif">
+  <img alt="The wpdev dashboard: the overview, a site's database tools, and the command cheatsheet" src="https://raw.githubusercontent.com/itsomidho/wp-local-dev/main/docs/dashboard-light.gif">
+</picture>
 
 Everything `wpdev` does is also in a web dashboard at `http://localhost:39006`
 (see [Web dashboard](#web-dashboard)).

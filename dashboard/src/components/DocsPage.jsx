@@ -24,6 +24,19 @@ const DOCS_MODES = [
 
 const HEADING_RE = /^(#{2,3})\s+(.+)$/gm;
 
+// The README's <picture> (a dark and a light image, which GitHub picks
+// between by its theme) as two markdown images marked by title: this page
+// doesn't render raw HTML, and ThemedImage shows the one for the
+// dashboard's own theme.
+const PICTURE_RE =
+  /<picture>\s*<source media="\(prefers-color-scheme: dark\)" srcset="([^"]+)">\s*<img alt="([^"]*)" src="([^"]+)">\s*<\/picture>/g;
+const readme = readmeRaw.replace(PICTURE_RE, (_, dark, alt, light) => `![${alt}](${dark} "theme-dark") ![${alt}](${light} "theme-light")`);
+
+function ThemedImage({ node: _node, title, ...rest }) {
+  const theme = title === 'theme-dark' || title === 'theme-light' ? title : undefined;
+  return <img {...rest} className={theme} title={theme ? undefined : title} />;
+}
+
 // Mirrors how the markdown will actually be rendered: rehype-slug (used
 // below) assigns heading ids via this exact same library, in document
 // order, including its stateful handling of duplicate headings (appends
@@ -124,7 +137,7 @@ export default function DocsPage({ sites = [] }) {
       // Private window or blocked storage: it just isn't remembered.
     }
   };
-  const commands = useMemo(() => parseCommandReference(readmeRaw), []);
+  const commands = useMemo(() => parseCommandReference(readme), []);
   // A cheatsheet link into the README: switch, then scroll once it's there.
   const openInReadme = (id) => {
     pendingAnchor.current = id;
@@ -138,8 +151,8 @@ export default function DocsPage({ sites = [] }) {
 
   const [query, setQuery] = useState('');
 
-  const toc = useMemo(() => buildToc(readmeRaw), []);
-  const sections = useMemo(() => buildSections(readmeRaw), []);
+  const toc = useMemo(() => buildToc(readme), []);
+  const sections = useMemo(() => buildSections(readme), []);
 
   const matchedSlugs = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -217,9 +230,9 @@ export default function DocsPage({ sites = [] }) {
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeSlug, rehypeHighlight]}
-            components={{ pre: CodeBlock }}
+            components={{ pre: CodeBlock, img: ThemedImage }}
           >
-            {readmeRaw}
+            {readme}
           </ReactMarkdown>
         </div>
       </div>

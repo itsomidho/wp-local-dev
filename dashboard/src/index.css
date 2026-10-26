@@ -4646,6 +4646,30 @@ button.version:hover {
   border-radius: var(--radius-sm);
 }
 
+/* A README image made for one theme (see DocsPage's <picture> handling):
+   only the one matching the dashboard's theme shows. */
+.docs-content img.theme-dark {
+  display: none;
+}
+
+:root[data-theme='dark'] .docs-content img.theme-dark {
+  display: block;
+}
+
+:root[data-theme='dark'] .docs-content img.theme-light {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .docs-content img.theme-dark {
+    display: block;
+  }
+
+  :root:not([data-theme='light']) .docs-content img.theme-light {
+    display: none;
+  }
+}
+
 .docs-code-block {
   position: relative;
   margin: 0 0 16px;
