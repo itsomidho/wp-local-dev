@@ -79,6 +79,9 @@ export default function UpdateDialog({ info, onCheck, onUpdate, onClose }) {
   const changes = info?.changes || [];
   const shown = showAll ? changes : changes.slice(0, 8);
   const blocked = info?.dirty > 0 || info?.ahead > 0;
+  // A release install counts releases, a git checkout commits.
+  const isRelease = info?.install === 'release';
+  const unit = (n) => (isRelease ? `release${n === 1 ? '' : 's'}` : `change${n === 1 ? '' : 's'}`);
 
   return (
     <Modal onClose={onClose} size="md">
@@ -95,7 +98,7 @@ export default function UpdateDialog({ info, onCheck, onUpdate, onClose }) {
                   {behind
                     ? info.latestTag && info.latestTag !== info.currentTag
                       ? `${info.latestTag} is available`
-                      : `${behind} new change${behind === 1 ? '' : 's'} available`
+                      : `${behind} new ${unit(behind)} available`
                     : "You're up to date"}
                 </strong>
                 <small>
@@ -127,7 +130,7 @@ export default function UpdateDialog({ info, onCheck, onUpdate, onClose }) {
             {changes.length > 0 && (
               <section className="update-section">
                 <h4>
-                  {behind} change{behind === 1 ? '' : 's'} since your version
+                  {behind} {unit(behind)} since your version
                 </h4>
                 <ul className="update-changes">
                   {shown.map((c) => (
@@ -148,10 +151,18 @@ export default function UpdateDialog({ info, onCheck, onUpdate, onClose }) {
             {behind > 0 && info.dirty > 0 && (
               <p className="update-warning">
                 <AlertTriangle size={15} />
-                <span>
-                  The project folder has {info.dirty} uncommitted change{info.dirty === 1 ? '' : 's'}. Updating needs a clean checkout:
-                  commit or stash them first (<code>git status</code> lists them).
-                </span>
+                {isRelease ? (
+                  <span>
+                    You&apos;ve changed {info.dirty} wp-local-dev file{info.dirty === 1 ? '' : 's'}, which an update would replace. Keep
+                    a copy of your changes, then run <code>wpdev update --force</code> in a terminal (plain <code>wpdev update</code>{' '}
+                    lists them).
+                  </span>
+                ) : (
+                  <span>
+                    The project folder has {info.dirty} uncommitted change{info.dirty === 1 ? '' : 's'}. Updating needs a clean
+                    checkout: commit or stash them first (<code>git status</code> lists them).
+                  </span>
+                )}
               </p>
             )}
             {behind > 0 && info.ahead > 0 && (
@@ -167,7 +178,11 @@ export default function UpdateDialog({ info, onCheck, onUpdate, onClose }) {
         )}
       </div>
       <div className="modal-footer">
-        {behind > 0 && <span className="update-footnote">Pulls, rebuilds images and recreates containers; sites are briefly unreachable.</span>}
+        {behind > 0 && (
+          <span className="update-footnote">
+            {isRelease ? 'Downloads the release' : 'Pulls'}, rebuilds images and recreates containers; sites are briefly unreachable.
+          </span>
+        )}
         <button type="button" className="btn btn-ghost" onClick={onClose}>
           Close
         </button>

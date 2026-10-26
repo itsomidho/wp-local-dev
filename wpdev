@@ -395,7 +395,7 @@ show_help() {
     echo "  up                        Start all containers"
     echo "  down                      Stop all containers"
     echo "  restart [service...]      Restart all containers, or just the named services"
-    echo "  update                    git pull, then rebuild + recreate all containers (rebuilds stale images even when already up to date)"
+    echo "  update [--force]          Get the newest release (git pull in a git checkout), then rebuild + recreate all containers (rebuilds stale images even when already up to date); --force replaces wp-local-dev files you've changed"
     echo "  update-check              Fetch and report whether an update is available (no changes made)"
     echo "  status                    Show container status"
     echo "  doctor                    Proactive health check (CA trust, orphan containers, per-site DB sanity)"
@@ -1094,17 +1094,26 @@ set_env_var() {
 
 # What the dashboard shows as its own version -- nearest tag plus
 # commits-since-and-hash (git describe), not a hand-maintained version file
-# that drifts the moment someone forgets to bump it. `--always` falls back
+# that drifts the moment someone forgets to bump it -- or, for a release
+# install (no .git), the release it was installed or last updated from. `--always` falls back
 # to a bare short hash if this checkout has no tags reachable at all;
 # `unknown` only if git itself fails (e.g. .git missing from a tarball
 # install). The dashboard reads it when its container starts, so this runs
 # before every `compose up` that should show a new version: `up`, and both
 # of `update`'s paths.
 sync_app_version() {
-    local app_version
     [ -f .env ] || return 0
-    app_version="$(git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null)" || app_version="unknown"
-    set_env_var APP_VERSION "$app_version"
+    set_env_var APP_VERSION "$(app_version)"
+}
+
+# This copy's version: a release install's VERSION file (see
+# is_release_install), or git describe for a checkout.
+app_version() {
+    if is_release_install; then
+        tr -d '[:space:]' < "${SCRIPT_DIR}/${VERSION_FILE}"
+    else
+        git -C "${SCRIPT_DIR}" describe --tags --always --dirty 2>/dev/null || echo unknown
+    fi
 }
 
 cmd_up() {
@@ -1493,9 +1502,145 @@ cmd_restart() {
 # silently sit on disk unapplied until something else happens to restart
 # that container. Discovered the hard way this session with exactly that
 # class of bug (a stale bind mount after an in-place file edit).
+# --- Release installs ---------------------------------------------------
+# install.sh puts a release here as plain files -- no .git, so it's a tool,
+# not a repo you work in -- with the release's tag in VERSION and every
+# file's checksum in .wpdev-manifest. update and update-check then follow
+# GitHub releases instead of git: the newest release's tarball replaces the
+# tool's files, and your own (.env, sites/, config/sites/, backups/, logs/,
+# data/...) are never in a release, so they're never touched. A git
+# checkout (a contributor's) keeps updating with git, as before.
+WPDEV_REPO="itsomidho/wp-local-dev"
+VERSION_FILE="VERSION"
+MANIFEST_FILE=".wpdev-manifest"
+
+is_release_install() { [ ! -d "${SCRIPT_DIR}/.git" ] && [ -f "${SCRIPT_DIR}/${VERSION_FILE}" ]; }
+
+http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 120 "$1"
+    else
+        wget -qO- --timeout=120 "$1"
+    fi
+}
+
+sha256_files() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+}
+
+# The checksum list for the files under $1, as .wpdev-manifest holds it.
+build_manifest() {
+    (cd "$1" && find . -type f ! -path "./${VERSION_FILE}" ! -path "./${MANIFEST_FILE}" -exec sh -c '
+        if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi' sh {} + | sort -k2)
+}
+
+# Releases, newest first: "<tag>\t<title>" per line, from the releases
+# feed (no API token or rate limit, no jq needed).
+release_list() {
+    http_get "https://github.com/${WPDEV_REPO}/releases.atom" | awk '
+        /<entry>/ { tag = ""; title = "" }
+        /<link / && /releases\/tag\// { match($0, /releases\/tag\/[^"]+/); tag = substr($0, RSTART + 13, RLENGTH - 13) }
+        /<title>/ { t = $0; sub(/.*<title>/, "", t); sub(/<\/title>.*/, "", t); title = t }
+        /<\/entry>/ { if (tag != "") print tag "\t" title }' \
+        | sed "s/&lt;/</g; s/&gt;/>/g; s/&quot;/\"/g; s/&#39;/'/g; s/&amp;/\\&/g"
+}
+
+# The releases in $2 (release_list's output) newer than $1, newest first.
+releases_after() {
+    local current="$1" list="$2" tag title
+    while IFS=$'\t' read -r tag title; do
+        [ -n "$tag" ] && [ "$tag" != "$current" ] || continue
+        [ "$(printf '%s\n%s\n' "$current" "$tag" | sort -V | tail -n1)" = "$tag" ] || continue
+        printf '%s\t%s\n' "$tag" "$title"
+    done <<<"$list"
+}
+
+# Tool files you've changed since the last install or update (checksum no
+# longer matches), one per line. Deleted ones don't count: an update just
+# puts them back.
+release_modified_files() {
+    [ -f "${SCRIPT_DIR}/${MANIFEST_FILE}" ] || return 0
+    (cd "${SCRIPT_DIR}" && sha256_files -c "$MANIFEST_FILE" 2>/dev/null | sed -n 's/: FAILED$//p' | sed 's#^\./##')
+}
+
+# Download release $1 into a new temp dir and print its path.
+fetch_release() {
+    local tmp
+    tmp="$(mktemp -d)"
+    if ! http_get "https://github.com/${WPDEV_REPO}/archive/refs/tags/${1}.tar.gz" | tar -xz -C "$tmp" --strip-components=1; then
+        rm -rf "$tmp"
+        return 1
+    fi
+    echo "$tmp"
+}
+
+# Put release $2 (unpacked at $1) in place of this copy's tool files. Files
+# the new release dropped go, unless you'd changed them. The rest are
+# replaced by new files rather than rewritten in place, so a running wpdev
+# keeps reading the version it started with.
+install_release_files() {
+    local src="$1" tag="$2" new_manifest unchanged f
+    new_manifest="$(build_manifest "$src")"
+    if [ -f "${SCRIPT_DIR}/${MANIFEST_FILE}" ]; then
+        unchanged="$(cd "${SCRIPT_DIR}" && sha256_files -c "$MANIFEST_FILE" 2>/dev/null | sed -n 's/: OK$//p')"
+        while read -r f; do
+            [ -n "$f" ] || continue
+            grep -qF "  ${f}" <<<"$new_manifest" || rm -f "${SCRIPT_DIR}/${f}"
+        done <<<"$unchanged"
+    fi
+    # tar unlinks each file before writing it, so it's a new file.
+    (cd "$src" && tar -cf - .) | (cd "${SCRIPT_DIR}" && tar -xpf -)
+    printf '%s\n' "$tag" > "${SCRIPT_DIR}/${VERSION_FILE}"
+    printf '%s\n' "$new_manifest" > "${SCRIPT_DIR}/${MANIFEST_FILE}"
+}
+
+# update for a release install. $1=1 (--force) replaces tool files you've
+# changed.
+update_from_release() {
+    local force="$1" current list latest newer modified src
+    current="$(app_version)"
+    print_info "Checking GitHub for the newest release..."
+    list="$(release_list)" || true
+    [ -n "$list" ] || print_error "Couldn't read the releases from github.com -- check network connectivity."
+    latest="$(cut -f1 <<<"$list" | sort -V | tail -n1)"
+    newer="$(releases_after "$current" "$list")"
+    if [ -z "$newer" ]; then
+        print_info "Already up to date (${current}) -- checking the images were built from this code..."
+        rebuild_stale_images
+        return
+    fi
+    modified="$(release_modified_files)"
+    if [ -n "$modified" ] && [ "$force" -ne 1 ]; then
+        echo "You've changed these wp-local-dev files since ${current}:"
+        sed 's/^/  /' <<<"$modified"
+        print_error "An update would replace them. Keep a copy of your changes, then run 'wpdev update --force'."
+    fi
+    print_info "Downloading ${latest}..."
+    src="$(fetch_release "$latest")" || print_error "Downloading ${latest} failed -- check network connectivity."
+    install_release_files "$src" "$latest"
+    rm -rf "$src"
+
+    echo
+    echo "Updated ${current} -> ${latest}:"
+    cut -f2 <<<"$newer" | sed 's/^/  /'
+    echo
+    update_rebuild
+}
+
 cmd_update() {
+    local force=0 a
+    for a in "$@"; do
+        case "$a" in
+            --force) force=1 ;;
+            *) print_error "Unknown option: ${a}" ;;
+        esac
+    done
     require_stack_services
-    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Not a git checkout -- can't update. Re-clone from https://github.com/itsomidho/wp-local-dev."
+    if is_release_install; then
+        update_from_release "$force"
+        return
+    fi
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Neither a release install (no VERSION file) nor a git checkout -- can't update. Reinstall: curl -fsSL https://raw.githubusercontent.com/itsomidho/wp-local-dev/main/install.sh | bash"
 
     # Untracked files don't count: a fast-forward pull leaves them alone
     # (and refuses, safely, if one is in the way). Run from the api, git
@@ -1540,7 +1685,12 @@ cmd_update() {
     echo "Updated:"
     git log --oneline "${local_rev}..HEAD"
     echo
+    update_rebuild
+}
 
+# After update has the new code in place: rebuild the images and recreate
+# the containers from it.
+update_rebuild() {
     print_info "Rebuilding images and recreating containers to apply changes..."
     require_wanted_services
     if [ -n "${WPDEV_IN_API:-}" ]; then
@@ -1607,6 +1757,29 @@ UPDATE_NOTICE_EVERY=$((24 * 3600))
 # KEY=value lines describing this checkout against origin, then one
 # CHANGE=<title> per incoming change (newest first, at most 50): a merged
 # pull request's title, or a plain commit's subject. Expects a fresh fetch.
+# update_check_porcelain's output for a release install: BEHIND counts the
+# releases newer than this one, a CHANGE per release (its title), DIRTY the
+# tool files you've changed.
+update_check_porcelain_release() {
+    local current list latest newer
+    current="$(app_version)"
+    list="$(release_list)" || true
+    [ -n "$list" ] || return 1
+    latest="$(cut -f1 <<<"$list" | sort -V | tail -n1)"
+    newer="$(releases_after "$current" "$list")"
+    echo "INSTALL=release"
+    echo "CURRENT=${current}"
+    echo "CURRENT_TAG=${current}"
+    echo "LATEST_TAG=${latest}"
+    echo "BEHIND=$(grep -c . <<<"$newer" || true)"
+    echo "AHEAD=0"
+    echo "DIRTY=$(release_modified_files | grep -c . || true)"
+    echo "BRANCH="
+    echo "REMOTE=https://github.com/${WPDEV_REPO}"
+    echo "CHECKED_AT=$(date +%s)"
+    [ -z "$newer" ] || cut -f2 <<<"$newer" | sed 's/^/CHANGE=/'
+}
+
 update_check_porcelain() {
     local remote_rev="$1" behind ahead current current_tag latest_tag dirty branch
     current="$(git describe --tags --always --dirty 2>/dev/null)" || current="unknown"
@@ -1619,6 +1792,7 @@ update_check_porcelain() {
     # Same rule as cmd_update's check: untracked files don't block it.
     dirty="$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')"
     branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    echo "INSTALL=git"
     echo "CURRENT=${current}"
     echo "CURRENT_TAG=${current_tag}"
     echo "LATEST_TAG=${latest_tag}"
@@ -1653,13 +1827,14 @@ cmd_update_check() {
             *) print_error "Unknown option: ${a}" ;;
         esac
     done
-    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Not a git checkout -- can't check for updates. Re-clone from https://github.com/itsomidho/wp-local-dev."
-
-    git fetch origin --quiet || print_error "git fetch failed -- check network connectivity."
-
-    remote_rev="$(git rev-parse '@{u}' 2>/dev/null)" || print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
-
-    out="$(update_check_porcelain "$remote_rev")"
+    if is_release_install; then
+        out="$(update_check_porcelain_release)" || print_error "Couldn't read the releases from github.com -- check network connectivity."
+    else
+        git rev-parse --is-inside-work-tree >/dev/null 2>&1 || print_error "Neither a release install (no VERSION file) nor a git checkout -- can't check for updates."
+        git fetch origin --quiet || print_error "git fetch failed -- check network connectivity."
+        remote_rev="$(git rev-parse '@{u}' 2>/dev/null)" || print_error "Current branch has no upstream configured (git branch --set-upstream-to=origin/<branch>)."
+        out="$(update_check_porcelain "$remote_rev")"
+    fi
     mkdir -p "$(dirname "$UPDATE_CHECK_CACHE")"
     printf '%s\n' "$out" > "$UPDATE_CHECK_CACHE"
 
@@ -1676,8 +1851,12 @@ cmd_update_check() {
     else
         current="$(sed -n 's/^CURRENT=//p' <<<"$out")"
         latest="$(sed -n 's/^LATEST_TAG=//p' <<<"$out")"
-        latest="$(git describe --tags --always "$remote_rev" 2>/dev/null || echo "${latest:-$remote_rev}")"
-        echo "Update available: ${latest} (currently ${current}, ${behind} commit(s) behind)."
+        if is_release_install; then
+            echo "Update available: ${latest} (currently ${current}, ${behind} new release(s))."
+        else
+            latest="$(git describe --tags --always "$remote_rev" 2>/dev/null || echo "${latest:-$remote_rev}")"
+            echo "Update available: ${latest} (currently ${current}, ${behind} commit(s) behind)."
+        fi
         sed -n 's/^CHANGE=/  - /p' <<<"$out" | head -n 10
         [ "$(grep -c '^CHANGE=' <<<"$out")" -le 10 ] || echo "  …"
         echo "Run: wpdev update"
@@ -1693,7 +1872,7 @@ update_notice() {
     local checked now behind latest
     [ -z "${WPDEV_IN_API:-}" ] || return 0
     [ "${WPDEV_UPDATE_CHECK:-$(grep -s '^WPDEV_UPDATE_CHECK=' .env | cut -d= -f2-)}" != "off" ] || return 0
-    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    is_release_install || git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
     now="$(date +%s)"
     # `|| true`: no cache yet (a fresh clone) makes sed fail, and under
     # set -e that would end `up` itself.
@@ -1705,7 +1884,9 @@ update_notice() {
     [ -n "$behind" ] && [ "$behind" -gt 0 ] 2>/dev/null || return 0
     latest="$(sed -n 's/^LATEST_TAG=//p' "$UPDATE_CHECK_CACHE" 2>/dev/null || true)"
     echo ""
-    echo -e "${BLUE}↑${NC} wp-local-dev has an update${latest:+ (latest release ${latest})}: ${behind} new change(s). See them with: wpdev update-check -- install with: wpdev update"
+    local unit="change(s)"
+    is_release_install && unit="release(s)"
+    echo -e "${BLUE}↑${NC} wp-local-dev has an update${latest:+ (latest release ${latest})}: ${behind} new ${unit}. See them with: wpdev update-check -- install with: wpdev update"
 }
 # 1 when MySQL answers, 2 when its container runs but the server doesn't
 # answer yet (just started or restarted: the entrypoint's first seconds,
@@ -6372,7 +6553,7 @@ case "${1:-help}" in
     up) cmd_up ;;
     down) cmd_down ;;
     restart) shift; cmd_restart "$@" ;;
-    update) cmd_update ;;
+    update) shift; cmd_update "$@" ;;
     update-check) shift; cmd_update_check "$@" ;;
     status) cmd_status ;;
     doctor) cmd_doctor ;;
