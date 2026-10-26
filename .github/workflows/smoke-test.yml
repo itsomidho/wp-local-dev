@@ -1260,6 +1260,65 @@ jobs:
           rm -rf "$d"
           docker inspect -f '{{.State.Running}}' wp-api | grep -qx true
 
+      - name: >
+          Feature test -- `wpdev link` uses a plugin folder from outside the
+          project: PHP loads it and nginx serves its files, read-only; the
+          dashboard's container only rewrites the mounts on link/unlink (it
+          sees the folders through a helper container, too slow for its
+          every-minute calls); `unlink` deactivates it and the mounts and
+          COMPOSE_FILE go once nothing is linked. Then the same through the
+          api, as the dashboard's Linked folders tab does it.
+        run: |
+          ext=$(mktemp -d)
+          mkdir "$ext/citest-linked"
+          printf '<?php\n/**\n * Plugin Name: CI linked plugin\n */\n' > "$ext/citest-linked/citest-linked.php"
+          echo 'body{}' > "$ext/citest-linked/linked.css"
+          mkdir "$ext/not-a-plugin"
+
+          ! ./wpdev link citest "$ext/not-a-plugin" </dev/null
+          (cd "$ext" && "$OLDPWD/wpdev" link citest citest-linked </dev/null)
+          [ -L sites/citest/wp-content/plugins/citest-linked ]
+          grep -qx 'COMPOSE_FILE=docker-compose.yml:docker-compose.links.yml' .env
+          grep -qF "source: \"$ext/citest-linked\"" docker-compose.links.yml
+
+          ./wpdev wp citest plugin activate citest-linked </dev/null
+          [ "$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/wp-content/plugins/citest-linked/linked.css)" = "200" ]
+          ! docker compose exec -T php82 touch "$ext/citest-linked/x"
+          ./wpdev links --json | grep -q '"name":"citest-linked","target":"'"$ext"'/citest-linked","state":"ok"'
+
+          # The api container sees the link but not the folder: it must
+          # leave the mounts alone.
+          mv "$ext/citest-linked" "$ext/away"
+          WPDEV_IN_API=1 ./wpdev links </dev/null
+          grep -qF "$ext/citest-linked" docker-compose.links.yml
+          mv "$ext/away" "$ext/citest-linked"
+
+          ./wpdev unlink citest citest-linked </dev/null
+          [ ! -e sites/citest/wp-content/plugins/citest-linked ]
+          ! ./wpdev wp citest plugin is-installed citest-linked </dev/null
+          [ ! -e docker-compose.links.yml ]
+          ! grep -q '^COMPOSE_FILE=' .env
+          [ -d "$ext/citest-linked" ]
+
+          api=http://127.0.0.1:39005/api
+          curl -sf "$api/host-folders?path=$ext" | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          kinds = {e["name"]: e["kind"] for e in d["entries"]}
+          assert kinds == {"citest-linked": "plugin", "not-a-plugin": ""}, d'
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "$api/host-folders?path=relative")" = "400" ]
+          curl -sf -X POST -H 'Content-Type: application/json' \
+            -d "{\"folder\":\"$ext/citest-linked\"}" "$api/sites/citest/linked" >/dev/null
+          curl -sf "$api/sites/citest/linked" | grep -q '"name":"citest-linked"'
+          grep -qF "source: \"$ext/citest-linked\"" docker-compose.links.yml
+          [ "$(curl -sk --resolve citest.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://citest.test/wp-content/plugins/citest-linked/linked.css)" = "200" ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d "{\"folder\":\"$ext/not-a-plugin\"}" "$api/sites/citest/linked")" = "500" ]
+          curl -sf -X DELETE "$api/sites/citest/linked/citest-linked" >/dev/null
+          [ ! -e sites/citest/wp-content/plugins/citest-linked ]
+          [ ! -e docker-compose.links.yml ]
+          rm -rf "$ext"
+
       - name: Remove both sites and confirm doctor reports no failures
         run: |
           printf 'citest-clone.test\n' | ./wpdev remove citest-clone

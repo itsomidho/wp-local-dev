@@ -36,6 +36,13 @@ import {
   Loader2,
   CheckCircle2,
   Circle,
+  Link2,
+  Unlink,
+  Puzzle,
+  Palette,
+  Folder,
+  FolderOpen,
+  CornerLeftUp,
 } from 'lucide-react';
 import { api, siteUrl, exportFileName } from '../api';
 import ConfirmDialog, { TypeToConfirmDialog } from './ConfirmDialog';
@@ -56,6 +63,7 @@ const TAB_GROUPS = [
       { id: 'Cache', icon: Gauge },
       { id: 'Media', icon: Image },
       { id: 'Admin domain', icon: ShieldCheck },
+      { id: 'Linked folders', icon: Link2 },
     ],
   },
   {
@@ -126,6 +134,7 @@ export default function SiteManageDialog({ site, initialTab = 'Overview', onClos
         {tab === 'Cache' && <CacheTab site={site} />}
         {tab === 'Media' && <MediaTab site={site} />}
         {tab === 'Admin domain' && <AdminDomainTab site={site} />}
+        {tab === 'Linked folders' && <LinkedTab site={site} />}
         {tab === 'Snapshots' && <SnapshotsTab site={site} onRunAction={onRunAction} />}
         {tab === 'Database' && <DatabaseTab site={site} />}
         {tab === 'Clone' && <CloneTab site={site} onRunAction={onRunAction} />}
@@ -851,6 +860,286 @@ function AdminDomainTab({ site }) {
           confirmLabel="Turn off"
           onCancel={() => setConfirmOff(false)}
           onConfirm={() => run({ mode: 'off' })}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Linked folders: plugins and themes from outside the project (`wpdev link`)
+// ---------------------------------------------------------------------------
+const LAST_FOLDER_KEY = 'wpdev_link_folder';
+
+function readLastFolder() {
+  try {
+    return localStorage.getItem(LAST_FOLDER_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveLastFolder(path) {
+  try {
+    localStorage.setItem(LAST_FOLDER_KEY, path);
+  } catch {
+    // Private window or blocked storage: the browser just starts at home.
+  }
+}
+
+// Names WordPress has active, for the kinds this site links ('plugin',
+// 'theme'). Null when it can't tell, e.g. the site is off.
+async function activeNames(site, kinds) {
+  const active = new Set();
+  try {
+    for (const kind of kinds) {
+      const r = await api.wpCli(site.name, [kind, 'list', '--status=active', '--field=name']);
+      stripAnsi(r.stdout)
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .forEach((n) => active.add(`${kind}:${n}`));
+    }
+    return active;
+  } catch {
+    return null;
+  }
+}
+
+function LinkedTab({ site }) {
+  const toast = useToast();
+  const [links, setLinks] = useState(null);
+  const [active, setActive] = useState(null);
+  const [error, setError] = useState(null);
+  const [folder, setFolder] = useState(readLastFolder);
+  const [browser, setBrowser] = useState(null); // {path, parent, entries} while open
+  const [browseError, setBrowseError] = useState(null);
+  const [busy, setBusy] = useState(null); // what's running, for its button's spinner
+  const [failure, setFailure] = useState(null);
+  const [confirmUnlink, setConfirmUnlink] = useState(null);
+
+  const refresh = async () => {
+    try {
+      const r = await api.linked(site.name);
+      setLinks(r.links);
+      setError(null);
+      const kinds = [...new Set(r.links.map((l) => l.kind))];
+      setActive(kinds.length ? await activeNames(site, kinds) : new Set());
+    } catch (e) {
+      setError(lastOutputLine(e));
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.name]);
+
+  const browse = async (path) => {
+    setBrowseError(null);
+    try {
+      const r = await api.hostFolders(path);
+      setBrowser(r);
+      setFolder(r.path);
+      saveLastFolder(r.path);
+    } catch (e) {
+      setBrowseError(e.status === 404 ? `No such folder: ${path}` : lastOutputLine(e));
+    }
+  };
+
+  const run = async (key, action, success) => {
+    setBusy(key);
+    setFailure(null);
+    try {
+      await action();
+      toast({ tone: 'success', title: success });
+    } catch (e) {
+      setFailure(stripAnsi(e.data?.stdout || '') + stripAnsi(e.data?.stderr || '') || e.message);
+    } finally {
+      setBusy(null);
+      refresh();
+    }
+  };
+
+  const link = (path) =>
+    run(`link:${path}`, () => api.link(site.name, path), `Linked ${path.split('/').pop()} into ${site.domain}`);
+
+  const unlink = (l) => {
+    setConfirmUnlink(null);
+    run(`unlink:${l.name}`, () => api.unlink(site.name, l.name), `Unlinked ${l.name} from ${site.domain}`);
+  };
+
+  const setActivation = (l, on) =>
+    run(
+      `activate:${l.name}`,
+      () => api.wpCli(site.name, [l.kind, on ? 'activate' : 'deactivate', l.name]),
+      `${on ? 'Activated' : 'Deactivated'} ${l.name}`,
+    );
+
+  const linkedTargets = new Set((links || []).map((l) => l.target));
+  const isActive = (l) => active && active.has(`${l.kind}:${l.name}`);
+
+  return (
+    <div className="tab-panel">
+      <p className="muted">
+        Use a plugin or theme that lives outside this project (a shared plugins folder, its own repo) without
+        copying it. The site gets a link to the folder, and the folder is mounted read-only into the containers,
+        so wp-admin can't update or delete it: change it in its own folder, and every site that links it sees the
+        change. Linking or unlinking pauses the sites for a few seconds while the containers pick it up.
+      </p>
+      {error && <p className="error">{error}</p>}
+
+      {links === null ? (
+        !error && <Skeleton height={56} />
+      ) : links.length === 0 ? (
+        <div className="empty empty-sm">
+          <span className="empty-icon">
+            <Link2 size={20} />
+          </span>
+          <p>Nothing linked into {site.domain} yet.</p>
+        </div>
+      ) : (
+        <>
+          <div className="section-row">
+            <h4>
+              {links.length} linked folder{links.length > 1 ? 's' : ''}
+            </h4>
+          </div>
+          <ul className="snapshot-list">
+            {links.map((l) => {
+              const KindIcon = l.kind === 'theme' ? Palette : Puzzle;
+              const on = isActive(l);
+              return (
+                <li key={`${l.kind}:${l.name}`}>
+                  <span className="snapshot-icon">
+                    <KindIcon size={15} />
+                  </span>
+                  <span className="snapshot-text">
+                    <strong>
+                      {l.name} <Chip>{l.kind}</Chip>{' '}
+                      {l.state !== 'ok' ? (
+                        <Chip tone="danger" title="The folder isn't there any more, so it isn't mounted.">
+                          folder missing
+                        </Chip>
+                      ) : on ? (
+                        <Chip tone="success">active</Chip>
+                      ) : null}
+                    </strong>
+                    <code title={l.target}>{l.target}</code>
+                  </span>
+                  {l.state === 'ok' && active && (l.kind === 'plugin' || !on) && (
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      disabled={busy !== null}
+                      onClick={() => setActivation(l, !on)}
+                    >
+                      {busy === `activate:${l.name}` && <Loader2 size={14} className="spin" />}
+                      {on ? 'Deactivate' : 'Activate'}
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={busy !== null}
+                    onClick={() => setConfirmUnlink(l)}
+                  >
+                    {busy === `unlink:${l.name}` ? <Loader2 size={14} className="spin" /> : <Unlink size={14} />} Unlink
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+
+      <div className="section-row" style={{ marginTop: 20 }}>
+        <h4>Link a folder</h4>
+      </div>
+      <div className="button-row">
+        <input
+          name="linkFolder"
+          placeholder="/full/path/to/plugin  or  ~/wp-plugins/my-plugin"
+          value={folder}
+          onChange={(e) => setFolder(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && folder.trim() && browse(folder.trim())}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <button className="btn btn-secondary" disabled={busy !== null} onClick={() => browse(folder.trim() || undefined)}>
+          <FolderOpen size={15} /> Browse
+        </button>
+        <button
+          className="btn btn-primary"
+          disabled={busy !== null || !folder.trim()}
+          onClick={() => link(folder.trim())}
+        >
+          {busy === `link:${folder.trim()}` ? <Loader2 size={15} className="spin" /> : <Link2 size={15} />} Link
+        </button>
+      </div>
+      {browseError && <p className="error">{browseError}</p>}
+
+      {browser && (
+        <div className="folder-browser">
+          <div className="folder-browser-head">
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={!browser.parent}
+              onClick={() => browse(browser.parent)}
+              title="Up one folder"
+            >
+              <CornerLeftUp size={14} /> Up
+            </button>
+            <code title={browser.path}>
+              {/* Isolated, so the right-to-left ellipsis trick keeps the slashes in place. */}
+              <bdi>{browser.path}</bdi>
+            </code>
+            <button className="btn btn-icon btn-ghost btn-sm" onClick={() => setBrowser(null)} aria-label="Close the folder browser">
+              <X size={14} />
+            </button>
+          </div>
+          {browser.entries.length === 0 ? (
+            <p className="muted folder-browser-empty">No folders in here.</p>
+          ) : (
+            <ul className="snapshot-list">
+              {browser.entries.map((entry) => {
+                const path = browser.path === '/' ? `/${entry.name}` : `${browser.path}/${entry.name}`;
+                const KindIcon = entry.kind === 'theme' ? Palette : entry.kind === 'plugin' ? Puzzle : Folder;
+                return (
+                  <li key={entry.name}>
+                    <span className="snapshot-icon">
+                      <KindIcon size={15} />
+                    </span>
+                    <span className="snapshot-text">
+                      <button type="button" className="folder-browser-name" onClick={() => browse(path)}>
+                        {entry.name}
+                      </button>
+                    </span>
+                    {entry.kind && <Chip tone="info">{entry.kind}</Chip>}
+                    {entry.kind &&
+                      (linkedTargets.has(path) ? (
+                        <Chip tone="success">linked</Chip>
+                      ) : (
+                        <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={() => link(path)}>
+                          {busy === `link:${path}` ? <Loader2 size={14} className="spin" /> : <Link2 size={14} />} Link
+                        </button>
+                      ))}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {failure && <Output>{failure}</Output>}
+      {confirmUnlink && (
+        <ConfirmDialog
+          title={`Unlink ${confirmUnlink.name}?`}
+          message={`${site.domain} stops using it${
+            confirmUnlink.kind === 'plugin' ? ' (it is deactivated first)' : ''
+          }. The folder itself isn't touched, and other sites that link it keep it.`}
+          confirmLabel="Unlink"
+          onCancel={() => setConfirmUnlink(null)}
+          onConfirm={() => unlink(confirmUnlink)}
         />
       )}
     </div>

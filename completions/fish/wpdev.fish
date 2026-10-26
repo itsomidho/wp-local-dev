@@ -30,6 +30,15 @@ function __wpdev_sites
     end
 end
 
+# The names linked into the site given as the 2nd token (`unlink`).
+function __wpdev_links
+    set -l root (__wpdev_root); or return
+    set -l site (commandline -opc)[3]
+    for l in $root/sites/$site/wp-content/plugins/* $root/sites/$site/wp-content/themes/*
+        test -L $l; and basename $l
+    end
+end
+
 function __wpdev_php_versions
     echo 7.4
     echo 8.0
@@ -67,7 +76,7 @@ function __wpdev_shell_php_chosen
     test (count $cmd) -ge 3; and test "$cmd[3]" = php
 end
 
-set -l __wpdev_cmds up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain wp help
+set -l __wpdev_cmds up down restart update update-check status doctor fix-vpn-network logs stats images volumes inspect shell db adminer mailpit reload-nginx cache cache-purge backup restore-all install-mkcert clean clean-all uninstall add remove clone snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share list hosts check-domain update-tlds open creds cert fix-perms media-proxy admin-domain link unlink links link-browse wp help
 
 complete -c wpdev -f
 
@@ -121,13 +130,24 @@ complete -c wpdev -n "$__wpdev_top" -a cert -d "Reissue a site's HTTPS certifica
 complete -c wpdev -n "$__wpdev_top" -a fix-perms -d "Give a site's files back to you"
 complete -c wpdev -n "$__wpdev_top" -a media-proxy -d "Load uploads missing locally from production"
 complete -c wpdev -n "$__wpdev_top" -a admin-domain -d "Move wp-admin to a separate domain"
+complete -c wpdev -n "$__wpdev_top" -a link -d "Use a plugin/theme folder from outside this project in a site"
+complete -c wpdev -n "$__wpdev_top" -a unlink -d "Remove a linked plugin or theme from a site"
+complete -c wpdev -n "$__wpdev_top" -a links -d "List linked plugins and themes"
+complete -c wpdev -n "$__wpdev_top" -a link-browse -d "A folder's subfolders, marking plugins and themes"
 complete -c wpdev -n "$__wpdev_top" -a wp -d "Run a WP-CLI command against a site"
 complete -c wpdev -n "$__wpdev_top" -a help -d "Show usage"
 
 # Site-name completion for commands taking <site>/<name> as their 2nd token
-for cmd in remove snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share creds cert fix-perms media-proxy admin-domain wp clone db adminer cache open
+for cmd in remove snapshot restore db-export db-import db-tables db-backup db-backups debug debug-log share creds cert fix-perms media-proxy admin-domain wp clone db adminer cache open link unlink links
     complete -c wpdev -f -n "__fish_seen_subcommand_from $cmd; and __wpdev_arg_n 2" -a "(__wpdev_sites)"
 end
+
+# `link <site> <folder> [--name=]`, `unlink <site> <linked name>`, `links [site] [--json]`
+complete -c wpdev -f -n "__fish_seen_subcommand_from link; and __wpdev_arg_n 3" -a "(__fish_complete_directories)"
+complete -c wpdev -f -n "__fish_seen_subcommand_from link; and __wpdev_arg_n 4" -a "--name="
+complete -c wpdev -f -n "__fish_seen_subcommand_from unlink; and __wpdev_arg_n 3" -a "(__wpdev_links)"
+complete -c wpdev -f -n "__fish_seen_subcommand_from links; and __wpdev_arg_n 2" -a "--json"
+complete -c wpdev -f -n "__fish_seen_subcommand_from link-browse; and __wpdev_arg_n 2" -a "(__fish_complete_directories)"
 
 # `shell php|db|nginx|redis`, then a PHP version if `php` was chosen
 complete -c wpdev -f -n "__fish_seen_subcommand_from shell; and __wpdev_arg_n 2" -a "php db nginx redis"

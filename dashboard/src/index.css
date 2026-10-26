@@ -2964,6 +2964,64 @@ button.version:hover {
   color: var(--dim);
 }
 
+/* The Linked folders tab's folder browser: a path bar over a folder list. */
+.folder-browser {
+  margin-bottom: 16px;
+}
+
+.folder-browser-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+
+.folder-browser-head code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: 12px;
+}
+
+.folder-browser .snapshot-list {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.folder-browser .snapshot-list li {
+  padding: 7px 12px;
+}
+
+.folder-browser-name {
+  all: unset;
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-browser-name:hover {
+  text-decoration: underline;
+}
+
+.folder-browser-name:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.folder-browser-empty {
+  margin: 8px 0 0;
+}
+
 .cli-prompt {
   display: flex;
   align-items: center;
