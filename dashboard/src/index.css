@@ -4636,6 +4636,16 @@ button.version:hover {
   padding: 1px 5px;
 }
 
+/* README images (the dashboard GIF) fit the column instead of widening the page. */
+.docs-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 18px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .docs-code-block {
   position: relative;
   margin: 0 0 16px;
